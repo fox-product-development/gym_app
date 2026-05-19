@@ -34,6 +34,8 @@ app.use("/auth", authRoutes);
 const bodyCompRoutes = require("./routes/bodycomp");
 app.use("/bodycomp", bodyCompRoutes);
 
+const sessionRoutes = require("./routes/sessions");
+app.use("/sessions", sessionRoutes);
 // ─── Start server ─────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
