@@ -36,6 +36,13 @@ app.use("/bodycomp", bodyCompRoutes);
 
 const sessionRoutes = require("./routes/sessions");
 app.use("/sessions", sessionRoutes);
+
+const oneRepMaxRoutes = require("./routes/onerepmax");
+app.use("/onerepmax", oneRepMaxRoutes);
+
+const userRoutes = require("./routes/user");
+app.use("/user", userRoutes);
+
 // ─── Start server ─────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
