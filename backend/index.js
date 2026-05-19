@@ -27,7 +27,9 @@ app.get("/health", (req, res) => {
 });
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
-// We will add routes here as we build each feature.
+
+const authRoutes = require("./routes/auth");
+app.use("/auth", authRoutes);
 
 // ─── Start server ─────────────────────────────────────────────────────────────
 
