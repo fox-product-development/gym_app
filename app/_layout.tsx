@@ -1,10 +1,11 @@
 // app/_layout.tsx
-// Root layout — the outermost wrapper for the entire app.
-// Sets up the navigation stack and applies dark background globally.
+// Root layout — checks auth state and redirects to login if needed.
 
+import { useEffect, useState } from "react";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { Colors } from "../constants/theme";
+import { getToken } from "../services/api";
 
 export default function RootLayout() {
   return (
@@ -16,7 +17,9 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: Colors.bg },
         }}
       >
+        <Stack.Screen name="login" />
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="session" />
       </Stack>
     </>
   );

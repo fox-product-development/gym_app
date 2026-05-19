@@ -3,8 +3,11 @@
 // Sections: greeting, current goal badge, start session CTA,
 //           body comp mini-charts, AI weekly report, recent sessions
 
+import { useEffect } from "react";
 import { View, Text, ScrollView, Pressable } from "react-native";
+import { router } from "expo-router";
 import { Colors } from "../../constants/theme";
+import { getToken } from "../../services/api";
 
 // ─── Reusable primitives ────────────────────────────────────────────────────
 
@@ -591,6 +594,12 @@ function RecentSessions() {
 // ─── Main screen ─────────────────────────────────────────────────────────────
 
 export default function DashboardScreen() {
+  useEffect(() => {
+    if (!getToken()) {
+      router.replace("/login");
+    }
+  }, []);
+
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
       <ScrollView showsVerticalScrollIndicator={false}>

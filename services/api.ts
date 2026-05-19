@@ -6,7 +6,7 @@
 // ─── Config ───────────────────────────────────────────────────────────────────
 // Replace this with your Railway URL. Never commit real secrets to GitHub.
 
-const BASE_URL = "https://gymapp-production-bdf6.up.railway.app/";
+const BASE_URL = "https://gymapp-production-bdf6.up.railway.app";
 
 // ─── Token storage ────────────────────────────────────────────────────────────
 // In memory token store. Will be replaced with secure storage later.
