@@ -31,6 +31,9 @@ app.get("/health", (req, res) => {
 const authRoutes = require("./routes/auth");
 app.use("/auth", authRoutes);
 
+const bodyCompRoutes = require("./routes/bodycomp");
+app.use("/bodycomp", bodyCompRoutes);
+
 // ─── Start server ─────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
