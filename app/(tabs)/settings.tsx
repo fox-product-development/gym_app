@@ -1,9 +1,27 @@
 // app/(tabs)/settings.tsx
-// Settings screen
-// Goal selector, gym selector, and misc app settings.
+// Settings screen — reads and writes real goal and gym data from the backend.
 
-import { View, Text, ScrollView, Pressable } from "react-native";
+import { useState, useCallback } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+} from "react-native";
+import { useFocusEffect } from "expo-router";
 import { Colors } from "../../constants/theme";
+import { getProfile, updateGoal, updateGym } from "../../services/api";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface UserProfile {
+  id: number;
+  username: string;
+  current_goal: string;
+  current_gym: string;
+  goal_start_date: string;
+}
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
 
@@ -100,86 +118,104 @@ function SectionLabel({ children }: { children: string }) {
 
 // ─── Goal selector ────────────────────────────────────────────────────────────
 
-interface Goal {
-  name: string;
-  description: string;
-  active: boolean;
-}
-
-const GOALS: Goal[] = [
+const GOALS = [
   {
+    id: "maintain",
     name: "Maintain",
     description: "Hold current bodyweight & strength",
-    active: false,
   },
-  { name: "Trim", description: "Lose fat, retain strength", active: false },
-  { name: "Size", description: "Bulk — emphasize hypertrophy", active: true },
-  { name: "Strength", description: "Focus on heavy compounds", active: false },
+  { id: "trim", name: "Trim", description: "Lose fat, retain strength" },
+  { id: "size", name: "Size", description: "Bulk — emphasize hypertrophy" },
+  { id: "strength", name: "Strength", description: "Focus on heavy compounds" },
 ];
 
-function GoalSelector() {
+function GoalSelector({
+  currentGoal,
+  goalStartDate,
+  onSelect,
+  saving,
+}: {
+  currentGoal: string;
+  goalStartDate: string;
+  onSelect: (goal: string) => void;
+  saving: boolean;
+}) {
+  // Calculate week number within current goal
+  const startDate = new Date(goalStartDate);
+  const today = new Date();
+  const weekNumber =
+    Math.floor(
+      (today.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000),
+    ) + 1;
+
   return (
     <View style={{ marginHorizontal: 20, marginTop: 20 }}>
       <SectionLabel>Active Goal</SectionLabel>
       <Card pad={0}>
-        {GOALS.map((goal, i) => (
-          <View key={i}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 14,
-                padding: 14,
-                backgroundColor: goal.active ? Colors.accentDim : "transparent",
-                borderRadius: i === 0 ? 16 : i === GOALS.length - 1 ? 16 : 0,
-              }}
-            >
-              {/* radio circle */}
-              <View
+        {GOALS.map((goal, i) => {
+          const isActive = goal.id === currentGoal;
+          return (
+            <View key={goal.id}>
+              <Pressable
+                onPress={() => !saving && onSelect(goal.id)}
                 style={{
-                  width: 22,
-                  height: 22,
-                  borderRadius: 999,
-                  backgroundColor: goal.active ? Colors.accent : "transparent",
-                  borderWidth: goal.active ? 0 : 1.5,
-                  borderColor: Colors.line2,
+                  flexDirection: "row",
                   alignItems: "center",
-                  justifyContent: "center",
+                  gap: 14,
+                  padding: 14,
+                  backgroundColor: isActive ? Colors.accentDim : "transparent",
+                  opacity: saving ? 0.6 : 1,
                 }}
               >
-                {goal.active && (
-                  <View
-                    style={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: 999,
-                      backgroundColor: Colors.accentInk,
-                    }}
-                  />
-                )}
-              </View>
-
-              {/* label */}
-              <View style={{ flex: 1 }}>
-                <Text
+                {/* radio circle */}
+                <View
                   style={{
-                    fontSize: 15,
-                    fontWeight: "600",
-                    color: goal.active ? Colors.accent : Colors.text,
+                    width: 22,
+                    height: 22,
+                    borderRadius: 999,
+                    backgroundColor: isActive ? Colors.accent : "transparent",
+                    borderWidth: isActive ? 0 : 1.5,
+                    borderColor: Colors.line2,
+                    alignItems: "center",
+                    justifyContent: "center",
                   }}
                 >
-                  {goal.name}
-                </Text>
-                <Text style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}>
-                  {goal.description}
-                </Text>
-              </View>
+                  {isActive && (
+                    <View
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: 999,
+                        backgroundColor: Colors.accentInk,
+                      }}
+                    />
+                  )}
+                </View>
 
-              {goal.active && <Tag color={Colors.accent}>Active · Wk 3</Tag>}
+                {/* label */}
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: "600",
+                      color: isActive ? Colors.accent : Colors.text,
+                    }}
+                  >
+                    {goal.name}
+                  </Text>
+                  <Text
+                    style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}
+                  >
+                    {goal.description}
+                  </Text>
+                </View>
+
+                {isActive && <Tag color={Colors.accent}>Week {weekNumber}</Tag>}
+              </Pressable>
+              {i < GOALS.length - 1 && <Divider />}
             </View>
-            {i < GOALS.length - 1 && <Divider />}
-          </View>
-        ))}
+          );
+        })}
       </Card>
     </View>
   );
@@ -187,80 +223,87 @@ function GoalSelector() {
 
 // ─── Gym selector ─────────────────────────────────────────────────────────────
 
-interface Gym {
-  name: string;
-  description: string;
-  active: boolean;
-}
-
-const GYMS: Gym[] = [
-  { name: "Work Gym", description: "Full barbell + cable rack", active: true },
-  { name: "Home Gym", description: "Dumbbells, bench, bands", active: false },
+const GYMS = [
+  { id: "work", name: "Work Gym", description: "Full barbell + cable rack" },
+  { id: "home", name: "Home Gym", description: "Dumbbells, bench, bands" },
 ];
 
-function GymSelector() {
+function GymSelector({
+  currentGym,
+  onSelect,
+  saving,
+}: {
+  currentGym: string;
+  onSelect: (gym: string) => void;
+  saving: boolean;
+}) {
   return (
     <View style={{ marginHorizontal: 20, marginTop: 24 }}>
       <SectionLabel>Current Gym</SectionLabel>
       <Card pad={0}>
-        {GYMS.map((gym, i) => (
-          <View key={i}>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 12,
-                padding: 14,
-              }}
-            >
-              {/* gym icon */}
-              <View
+        {GYMS.map((gym, i) => {
+          const isActive = gym.id === currentGym;
+          return (
+            <View key={gym.id}>
+              <Pressable
+                onPress={() => !saving && onSelect(gym.id)}
                 style={{
-                  width: 38,
-                  height: 38,
-                  borderRadius: 10,
-                  backgroundColor: gym.active ? Colors.text : Colors.card2,
+                  flexDirection: "row",
                   alignItems: "center",
-                  justifyContent: "center",
+                  gap: 12,
+                  padding: 14,
+                  opacity: saving ? 0.6 : 1,
                 }}
               >
-                <Text style={{ fontSize: 18 }}>🏋️</Text>
-              </View>
-
-              {/* label */}
-              <View style={{ flex: 1 }}>
-                <Text
+                {/* gym icon */}
+                <View
                   style={{
-                    fontSize: 15,
-                    fontWeight: "600",
-                    color: Colors.text,
+                    width: 38,
+                    height: 38,
+                    borderRadius: 10,
+                    backgroundColor: isActive ? Colors.text : Colors.card2,
+                    alignItems: "center",
+                    justifyContent: "center",
                   }}
                 >
-                  {gym.name}
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 11,
-                    color: Colors.ter,
-                    fontFamily: "Courier",
-                    marginTop: 2,
-                  }}
-                >
-                  {gym.description}
-                </Text>
-              </View>
+                  <Text style={{ fontSize: 18 }}>🏋️</Text>
+                </View>
 
-              {gym.active ? (
-                <Tag color={Colors.accent} bg={Colors.accentDim}>
-                  ● Active
-                </Tag>
-              ) : (
-                <Text style={{ color: Colors.qua, fontSize: 16 }}>›</Text>
-              )}
+                {/* label */}
+                <View style={{ flex: 1 }}>
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: "600",
+                      color: Colors.text,
+                    }}
+                  >
+                    {gym.name}
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      color: Colors.ter,
+                      fontFamily: "Courier",
+                      marginTop: 2,
+                    }}
+                  >
+                    {gym.description}
+                  </Text>
+                </View>
+
+                {isActive ? (
+                  <Tag color={Colors.accent} bg={Colors.accentDim}>
+                    ● Active
+                  </Tag>
+                ) : (
+                  <Text style={{ color: Colors.qua, fontSize: 16 }}>›</Text>
+                )}
+              </Pressable>
+              {i < GYMS.length - 1 && <Divider />}
             </View>
-            {i < GYMS.length - 1 && <Divider />}
-          </View>
-        ))}
+          );
+        })}
       </Card>
     </View>
   );
@@ -272,7 +315,7 @@ const MISC_SETTINGS = [
   { label: "Units", value: "Metric (kg)" },
   { label: "Weekly AI Report", value: "Sundays · 8 PM" },
   { label: "Rest Timer Sound", value: "On" },
-  { label: "Apple Health", value: "Connected" },
+  { label: "Apple Health", value: "Not connected" },
 ];
 
 function MiscSettings() {
@@ -307,6 +350,55 @@ function MiscSettings() {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function SettingsScreen() {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useFocusEffect(
+    useCallback(() => {
+      loadProfile();
+    }, []),
+  );
+
+  async function loadProfile() {
+    setLoading(true);
+    try {
+      const data = await getProfile();
+      setProfile(data);
+    } catch (err: any) {
+      setError("Failed to load profile");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleGoalChange(goal: string) {
+    if (!profile || goal === profile.current_goal) return;
+    setSaving(true);
+    try {
+      const updated = await updateGoal(goal);
+      setProfile((prev) => (prev ? { ...prev, ...updated } : prev));
+    } catch (err: any) {
+      setError("Failed to update goal");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleGymChange(gym: string) {
+    if (!profile || gym === profile.current_gym) return;
+    setSaving(true);
+    try {
+      const updated = await updateGym(gym);
+      setProfile((prev) => (prev ? { ...prev, ...updated } : prev));
+    } catch (err: any) {
+      setError("Failed to update gym");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -325,21 +417,55 @@ export default function SettingsScreen() {
           >
             Profile
           </Text>
-          <Text
+          <View
             style={{
-              fontSize: 30,
-              fontWeight: "700",
-              color: Colors.text,
-              letterSpacing: -0.6,
+              flexDirection: "row",
+              alignItems: "flex-end",
               marginTop: 4,
             }}
           >
-            Settings
-          </Text>
+            <Text
+              style={{
+                fontSize: 30,
+                fontWeight: "700",
+                color: Colors.text,
+                letterSpacing: -0.6,
+              }}
+            >
+              Settings
+            </Text>
+            {saving && (
+              <ActivityIndicator
+                color={Colors.accent}
+                style={{ marginLeft: 12, marginBottom: 6 }}
+              />
+            )}
+          </View>
+          {error ? (
+            <Text style={{ fontSize: 12, color: Colors.warn, marginTop: 4 }}>
+              {error}
+            </Text>
+          ) : null}
         </View>
 
-        <GoalSelector />
-        <GymSelector />
+        {loading ? (
+          <ActivityIndicator color={Colors.accent} style={{ marginTop: 60 }} />
+        ) : profile ? (
+          <>
+            <GoalSelector
+              currentGoal={profile.current_goal}
+              goalStartDate={profile.goal_start_date}
+              onSelect={handleGoalChange}
+              saving={saving}
+            />
+            <GymSelector
+              currentGym={profile.current_gym}
+              onSelect={handleGymChange}
+              saving={saving}
+            />
+          </>
+        ) : null}
+
         <MiscSettings />
 
         {/* version footer */}

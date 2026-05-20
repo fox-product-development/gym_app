@@ -1,9 +1,27 @@
 // app/(tabs)/log.tsx
 // Body Composition Log screen
-// Manual entry for weight and muscle mass, with trend charts.
+// Saves real entries to the database and displays real trend data.
 
-import { View, Text, ScrollView, Pressable } from "react-native";
+import { useState, useEffect, useCallback } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+} from "react-native";
+import { useFocusEffect } from "expo-router";
 import { Colors } from "../../constants/theme";
+import { logBodyComp, getBodyComp } from "../../services/api";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface BodyCompEntry {
+  id: number;
+  weight_kg: string | null;
+  muscle_mass_kg: string | null;
+  logged_at: string;
+}
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
 
@@ -83,6 +101,25 @@ function MiniChart({
   label?: string;
   yLabels?: [string, string];
 }) {
+  if (points.length === 0) {
+    return (
+      <View
+        style={{
+          height,
+          alignItems: "center",
+          justifyContent: "center",
+          marginTop: 8,
+        }}
+      >
+        <Text
+          style={{ fontFamily: "Courier", fontSize: 10, color: Colors.ter }}
+        >
+          No data yet
+        </Text>
+      </View>
+    );
+  }
+
   const min = Math.min(...points);
   const max = Math.max(...points);
   const range = max - min || 1;
@@ -134,22 +171,21 @@ function MiniChart({
 
 // ─── Numpad ───────────────────────────────────────────────────────────────────
 
-function Numpad() {
-  const keys = [1, 2, 3, 4, 5, 6, 7, 8, 9, ".", 0, "⌫"];
+function Numpad({ onPress }: { onPress: (key: string) => void }) {
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"];
   return (
     <Card pad={10} style={{ marginHorizontal: 20, marginTop: 10 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
         {keys.map((k, i) => (
           <Pressable
             key={i}
+            onPress={() => onPress(k)}
             style={{
               width: "30%",
               paddingVertical: 12,
               alignItems: "center",
               backgroundColor: Colors.card2,
               borderRadius: 8,
-              // account for gap
-              marginBottom: 0,
             }}
           >
             <Text
@@ -157,7 +193,7 @@ function Numpad() {
                 fontFamily: "Courier",
                 fontSize: 18,
                 fontWeight: "600",
-                color: typeof k === "number" ? Colors.text : Colors.sec,
+                color: k === "⌫" ? Colors.sec : Colors.text,
               }}
             >
               {k}
@@ -169,18 +205,98 @@ function Numpad() {
   );
 }
 
-// ─── Chart data ───────────────────────────────────────────────────────────────
-
-const WEIGHT_POINTS = [
-  77.2, 77.0, 77.4, 77.1, 77.5, 77.6, 77.8, 77.7, 78.0, 78.2, 78.1, 78.4,
-];
-const MUSCLE_POINTS = [
-  36.0, 36.1, 36.0, 36.2, 36.3, 36.3, 36.4, 36.5, 36.5, 36.6, 36.7, 36.8,
-];
-
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function LogScreen() {
+  const [activeField, setActiveField] = useState<"weight" | "muscle">("weight");
+  const [weightInput, setWeightInput] = useState("");
+  const [muscleInput, setMuscleInput] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [entries, setEntries] = useState<BodyCompEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Load data whenever screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      loadEntries();
+    }, []),
+  );
+
+  async function loadEntries() {
+    setLoading(true);
+    try {
+      const data = await getBodyComp(12);
+      setEntries(data);
+    } catch (err) {
+      console.error("Failed to load body comp:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleNumpad(key: string) {
+    const current = activeField === "weight" ? weightInput : muscleInput;
+    const setter = activeField === "weight" ? setWeightInput : setMuscleInput;
+
+    if (key === "⌫") {
+      setter(current.slice(0, -1));
+    } else if (key === "." && current.includes(".")) {
+      return;
+    } else {
+      setter(current + key);
+    }
+  }
+
+  async function handleSave() {
+    if (!weightInput && !muscleInput) {
+      setSaveError("Enter at least one value");
+      return;
+    }
+
+    setSaveError("");
+    setSaving(true);
+    setSaveSuccess(false);
+
+    try {
+      await logBodyComp({
+        weight_kg: weightInput ? parseFloat(weightInput) : undefined,
+        muscle_mass_kg: muscleInput ? parseFloat(muscleInput) : undefined,
+      });
+
+      setSaveSuccess(true);
+      setWeightInput("");
+      setMuscleInput("");
+      await loadEntries();
+
+      setTimeout(() => setSaveSuccess(false), 2000);
+    } catch (err: any) {
+      setSaveError(err.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const weightPoints = entries
+    .filter((e) => e.weight_kg !== null)
+    .map((e) => parseFloat(e.weight_kg!));
+
+  const musclePoints = entries
+    .filter((e) => e.muscle_mass_kg !== null)
+    .map((e) => parseFloat(e.muscle_mass_kg!));
+
+  const latestWeight =
+    weightPoints.length > 0 ? weightPoints[weightPoints.length - 1] : null;
+  const latestMuscle =
+    musclePoints.length > 0 ? musclePoints[musclePoints.length - 1] : null;
+
+  const today = new Date().toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -215,7 +331,6 @@ export default function LogScreen() {
         {/* entry card */}
         <View style={{ marginHorizontal: 20, marginTop: 14 }}>
           <Card pad={16}>
-            {/* card header */}
             <View
               style={{
                 flexDirection: "row",
@@ -233,22 +348,27 @@ export default function LogScreen() {
                   textTransform: "uppercase",
                 }}
               >
-                Log · Today, May 18
+                Log · {today}
               </Text>
-              <Tag color={Colors.accent}>2-day streak</Tag>
+              {saveSuccess && (
+                <Tag color={Colors.accent} bg={Colors.accentDim}>
+                  ✓ Saved
+                </Tag>
+              )}
             </View>
 
-            {/* input fields */}
             <View style={{ flexDirection: "row", gap: 10 }}>
-              {/* weight — active */}
-              <View
+              {/* weight */}
+              <Pressable
+                onPress={() => setActiveField("weight")}
                 style={{
                   flex: 1,
                   backgroundColor: Colors.bg,
                   borderRadius: 12,
                   padding: 12,
                   borderWidth: 1,
-                  borderColor: Colors.accent,
+                  borderColor:
+                    activeField === "weight" ? Colors.accent : Colors.line2,
                 }}
               >
                 <Text
@@ -274,39 +394,42 @@ export default function LogScreen() {
                     style={{
                       fontSize: 30,
                       fontWeight: "700",
-                      color: Colors.text,
+                      color: weightInput ? Colors.text : Colors.ter,
                       letterSpacing: -0.6,
                     }}
                   >
-                    78.4
+                    {weightInput || "—"}
                   </Text>
                   <Text
                     style={{ fontSize: 12, color: Colors.sec, marginBottom: 4 }}
                   >
                     kg
                   </Text>
-                  {/* cursor blink */}
-                  <View
-                    style={{
-                      width: 1.5,
-                      height: 24,
-                      backgroundColor: Colors.accent,
-                      marginLeft: 2,
-                      marginBottom: 4,
-                    }}
-                  />
+                  {activeField === "weight" && (
+                    <View
+                      style={{
+                        width: 1.5,
+                        height: 24,
+                        backgroundColor: Colors.accent,
+                        marginLeft: 2,
+                        marginBottom: 4,
+                      }}
+                    />
+                  )}
                 </View>
-              </View>
+              </Pressable>
 
-              {/* muscle mass — inactive */}
-              <View
+              {/* muscle mass */}
+              <Pressable
+                onPress={() => setActiveField("muscle")}
                 style={{
                   flex: 1,
                   backgroundColor: Colors.bg,
                   borderRadius: 12,
                   padding: 12,
-                  borderWidth: 0.5,
-                  borderColor: Colors.line2,
+                  borderWidth: 1,
+                  borderColor:
+                    activeField === "muscle" ? Colors.accent : Colors.line2,
                 }}
               >
                 <Text
@@ -332,40 +455,65 @@ export default function LogScreen() {
                     style={{
                       fontSize: 30,
                       fontWeight: "700",
-                      color: Colors.ter,
+                      color: muscleInput ? Colors.text : Colors.ter,
                       letterSpacing: -0.6,
                     }}
                   >
-                    —
+                    {muscleInput || "—"}
                   </Text>
                   <Text
-                    style={{ fontSize: 12, color: Colors.ter, marginBottom: 4 }}
+                    style={{ fontSize: 12, color: Colors.sec, marginBottom: 4 }}
                   >
                     kg
                   </Text>
+                  {activeField === "muscle" && (
+                    <View
+                      style={{
+                        width: 1.5,
+                        height: 24,
+                        backgroundColor: Colors.accent,
+                        marginLeft: 2,
+                        marginBottom: 4,
+                      }}
+                    />
+                  )}
                 </View>
-              </View>
+              </Pressable>
             </View>
 
-            {/* save button */}
+            {saveError ? (
+              <Text style={{ fontSize: 12, color: Colors.warn, marginTop: 8 }}>
+                {saveError}
+              </Text>
+            ) : null}
+
             <Pressable
+              onPress={handleSave}
+              disabled={saving}
               style={{
                 marginTop: 12,
                 backgroundColor: Colors.text,
                 borderRadius: 10,
                 padding: 12,
                 alignItems: "center",
+                opacity: saving ? 0.7 : 1,
               }}
             >
-              <Text style={{ fontSize: 14, fontWeight: "700", color: "#000" }}>
-                Save Entry
-              </Text>
+              {saving ? (
+                <ActivityIndicator color="#000" />
+              ) : (
+                <Text
+                  style={{ fontSize: 14, fontWeight: "700", color: "#000" }}
+                >
+                  Save Entry
+                </Text>
+              )}
             </Pressable>
           </Card>
         </View>
 
         {/* numpad */}
-        <Numpad />
+        <Numpad onPress={handleNumpad} />
 
         {/* weight trend chart */}
         <View style={{ marginHorizontal: 20, marginTop: 14 }}>
@@ -382,44 +530,45 @@ export default function LogScreen() {
               >
                 Weight
               </Text>
-              <View
-                style={{ flexDirection: "row", alignItems: "flex-end", gap: 4 }}
-              >
-                <Text
+              {latestWeight !== null && (
+                <View
                   style={{
-                    fontFamily: "Courier",
-                    fontSize: 14,
-                    fontWeight: "700",
-                    color: Colors.text,
+                    flexDirection: "row",
+                    alignItems: "flex-end",
+                    gap: 4,
                   }}
                 >
-                  78.4
-                </Text>
-                <Text
-                  style={{ fontSize: 10, color: Colors.ter, marginBottom: 2 }}
-                >
-                  kg
-                </Text>
-                <Text
-                  style={{
-                    fontFamily: "Courier",
-                    fontSize: 10,
-                    color: Colors.accent,
-                    marginLeft: 6,
-                    marginBottom: 2,
-                  }}
-                >
-                  +1.2
-                </Text>
-              </View>
+                  <Text
+                    style={{
+                      fontFamily: "Courier",
+                      fontSize: 14,
+                      fontWeight: "700",
+                      color: Colors.text,
+                    }}
+                  >
+                    {latestWeight.toFixed(1)}
+                  </Text>
+                  <Text
+                    style={{ fontSize: 10, color: Colors.ter, marginBottom: 2 }}
+                  >
+                    kg
+                  </Text>
+                </View>
+              )}
             </View>
-            <MiniChart
-              points={WEIGHT_POINTS}
-              color={Colors.text}
-              height={88}
-              label="12W"
-              yLabels={["77 kg", "79 kg"]}
-            />
+            {loading ? (
+              <ActivityIndicator
+                color={Colors.accent}
+                style={{ marginTop: 20 }}
+              />
+            ) : (
+              <MiniChart
+                points={weightPoints}
+                color={Colors.text}
+                height={88}
+                label="12W"
+              />
+            )}
           </Card>
         </View>
 
@@ -438,44 +587,45 @@ export default function LogScreen() {
               >
                 Muscle Mass
               </Text>
-              <View
-                style={{ flexDirection: "row", alignItems: "flex-end", gap: 4 }}
-              >
-                <Text
+              {latestMuscle !== null && (
+                <View
                   style={{
-                    fontFamily: "Courier",
-                    fontSize: 14,
-                    fontWeight: "700",
-                    color: Colors.text,
+                    flexDirection: "row",
+                    alignItems: "flex-end",
+                    gap: 4,
                   }}
                 >
-                  36.8
-                </Text>
-                <Text
-                  style={{ fontSize: 10, color: Colors.ter, marginBottom: 2 }}
-                >
-                  kg
-                </Text>
-                <Text
-                  style={{
-                    fontFamily: "Courier",
-                    fontSize: 10,
-                    color: Colors.accent,
-                    marginLeft: 6,
-                    marginBottom: 2,
-                  }}
-                >
-                  +0.6
-                </Text>
-              </View>
+                  <Text
+                    style={{
+                      fontFamily: "Courier",
+                      fontSize: 14,
+                      fontWeight: "700",
+                      color: Colors.text,
+                    }}
+                  >
+                    {latestMuscle.toFixed(1)}
+                  </Text>
+                  <Text
+                    style={{ fontSize: 10, color: Colors.ter, marginBottom: 2 }}
+                  >
+                    kg
+                  </Text>
+                </View>
+              )}
             </View>
-            <MiniChart
-              points={MUSCLE_POINTS}
-              color={Colors.accent}
-              height={88}
-              label="12W"
-              yLabels={["36 kg", "37 kg"]}
-            />
+            {loading ? (
+              <ActivityIndicator
+                color={Colors.accent}
+                style={{ marginTop: 20 }}
+              />
+            ) : (
+              <MiniChart
+                points={musclePoints}
+                color={Colors.accent}
+                height={88}
+                label="12W"
+              />
+            )}
           </Card>
         </View>
       </ScrollView>
