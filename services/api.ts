@@ -4,13 +4,10 @@
 // Never make fetch() calls directly from screens — always use these functions.
 
 // ─── Config ───────────────────────────────────────────────────────────────────
-// Replace this with your Railway URL. Never commit real secrets to GitHub.
 
 const BASE_URL = "https://gymapp-production-bdf6.up.railway.app";
 
 // ─── Token storage ────────────────────────────────────────────────────────────
-// Stores the auth token securely on the device so the user stays logged in
-// between sessions. Falls back to in-memory storage in web/browser.
 
 import * as SecureStore from "expo-secure-store";
 
@@ -48,8 +45,6 @@ export async function clearToken() {
 }
 
 // ─── Base fetch ───────────────────────────────────────────────────────────────
-// All API calls go through this function.
-// It adds the auth token header and handles errors consistently.
 
 async function request(
   path: string,
@@ -99,10 +94,6 @@ export async function getProfile() {
   return request("/user/profile");
 }
 
-export async function updateGoal(goal: string) {
-  return request("/user/goal", "PATCH", { goal });
-}
-
 export async function updateGym(gym: string) {
   return request("/user/gym", "PATCH", { gym });
 }
@@ -118,15 +109,19 @@ export async function getSession(id: number) {
 }
 
 export async function createSession(data: {
-  date: string;
+  programme_id?: number;
+  session_type: "compound" | "isolation" | "extra";
+  occurrence: number;
+  week_number: number;
   gym: string;
-  day_focus: string;
   exercises: {
     exercise_name: string;
+    muscles_primary?: string;
+    sub_component?: string;
+    order_index: number;
     target_sets: number;
     target_reps: number;
     target_weight: number;
-    warmup_sets?: { weight: string; reps: number }[];
   }[];
 }) {
   return request("/sessions", "POST", data);
@@ -175,4 +170,23 @@ export async function getAllOneRepMax() {
 
 export async function getOneRepMaxHistory(exercise: string) {
   return request(`/onerepmax/${encodeURIComponent(exercise)}`);
+}
+
+// ─── AI ───────────────────────────────────────────────────────────────────────
+
+export async function generateBlock(data: {
+  phase: string;
+  block_number: number;
+  phase_week: number;
+  gym: string;
+}) {
+  return request("/ai/generate-block", "POST", data);
+}
+
+export async function getExtraSession(gym: string) {
+  return request("/ai/extra-session", "POST", { gym });
+}
+
+export async function getWeeklyFeedback() {
+  return request("/weekly-feedback/latest");
 }
