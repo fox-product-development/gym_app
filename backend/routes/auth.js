@@ -43,11 +43,11 @@ router.post("/register", async (req, res) => {
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-    // Create the user
+    // Create the user — starts at AA week 1 block 1 by default
     const result = await pool.query(
       `INSERT INTO users (username, password)
        VALUES ($1, $2)
-       RETURNING id, username, current_goal, current_gym`,
+       RETURNING id, username, current_phase, current_block, phase_week, current_gym, phase_start_date`,
       [username, hashedPassword],
     );
 
@@ -111,8 +111,11 @@ router.post("/login", async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
-        current_goal: user.current_goal,
+        current_phase: user.current_phase,
+        current_block: user.current_block,
+        phase_week: user.phase_week,
         current_gym: user.current_gym,
+        phase_start_date: user.phase_start_date,
       },
     });
   } catch (err) {

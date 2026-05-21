@@ -1,5 +1,6 @@
 // app/(tabs)/settings.tsx
-// Settings screen — reads and writes real goal and gym data from the backend.
+// Settings screen — displays current phase info and allows gym selection.
+// Phase progression is automatic — no manual goal selection.
 
 import { useState, useCallback } from "react";
 import {
@@ -11,16 +12,18 @@ import {
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { Colors } from "../../constants/theme";
-import { getProfile, updateGoal, updateGym } from "../../services/api";
+import { getProfile, updateGym } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface UserProfile {
   id: number;
   username: string;
-  current_goal: string;
+  current_phase: string;
+  current_block: number;
+  phase_week: number;
   current_gym: string;
-  goal_start_date: string;
+  phase_start_date: string;
 }
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
@@ -89,11 +92,7 @@ function Card({
 function Divider({ inset = 0 }: { inset?: number }) {
   return (
     <View
-      style={{
-        height: 0.5,
-        backgroundColor: Colors.line,
-        marginLeft: inset,
-      }}
+      style={{ height: 0.5, backgroundColor: Colors.line, marginLeft: inset }}
     />
   );
 }
@@ -116,106 +115,151 @@ function SectionLabel({ children }: { children: string }) {
   );
 }
 
-// ─── Goal selector ────────────────────────────────────────────────────────────
+// ─── Phase display ────────────────────────────────────────────────────────────
+// Read-only — shows current phase, block, and week. Phase advances automatically.
 
-const GOALS = [
-  {
-    id: "maintain",
-    name: "Maintain",
-    description: "Hold current bodyweight & strength",
-  },
-  { id: "trim", name: "Trim", description: "Lose fat, retain strength" },
-  { id: "size", name: "Size", description: "Bulk — emphasize hypertrophy" },
-  { id: "strength", name: "Strength", description: "Focus on heavy compounds" },
+const PHASE_LABELS: Record<string, string> = {
+  anatomical_adaptation: "Anatomical Adaptation",
+  hypertrophy: "Hypertrophy",
+  maximum_strength: "Maximum Strength",
+  muscle_definition: "Muscle Definition",
+  rest: "Rest Week",
+};
+
+const PHASE_DESCRIPTIONS: Record<string, string> = {
+  anatomical_adaptation: "Joint & tendon conditioning — 20 reps, 3 sets",
+  hypertrophy: "Muscle growth — 12 reps, 4 sets, 70–80% 1RM",
+  maximum_strength: "Neural strength — 6 reps, 4 sets, 85–95% 1RM",
+  muscle_definition: "Metabolic endurance — 40 reps, 1 set",
+  rest: "Active recovery — light compound work only",
+};
+
+const PHASE_ORDER = [
+  "anatomical_adaptation",
+  "hypertrophy",
+  "maximum_strength",
+  "muscle_definition",
 ];
 
-function GoalSelector({
-  currentGoal,
-  goalStartDate,
-  onSelect,
-  saving,
-}: {
-  currentGoal: string;
-  goalStartDate: string;
-  onSelect: (goal: string) => void;
-  saving: boolean;
-}) {
-  // Calculate week number within current goal
-  const startDate = new Date(goalStartDate);
-  const today = new Date();
-  const weekNumber =
-    Math.floor(
-      (today.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000),
-    ) + 1;
+function PhaseDisplay({ profile }: { profile: UserProfile }) {
+  const currentIndex = PHASE_ORDER.indexOf(profile.current_phase);
+  const nextPhase =
+    profile.current_phase === "rest"
+      ? null
+      : PHASE_ORDER[(currentIndex + 1) % PHASE_ORDER.length];
 
   return (
     <View style={{ marginHorizontal: 20, marginTop: 20 }}>
-      <SectionLabel>Active Goal</SectionLabel>
+      <SectionLabel>Current Phase</SectionLabel>
       <Card pad={0}>
-        {GOALS.map((goal, i) => {
-          const isActive = goal.id === currentGoal;
-          return (
-            <View key={goal.id}>
-              <Pressable
-                onPress={() => !saving && onSelect(goal.id)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 14,
-                  padding: 14,
-                  backgroundColor: isActive ? Colors.accentDim : "transparent",
-                  opacity: saving ? 0.6 : 1,
-                }}
-              >
-                {/* radio circle */}
-                <View
-                  style={{
-                    width: 22,
-                    height: 22,
-                    borderRadius: 999,
-                    backgroundColor: isActive ? Colors.accent : "transparent",
-                    borderWidth: isActive ? 0 : 1.5,
-                    borderColor: Colors.line2,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  {isActive && (
-                    <View
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 999,
-                        backgroundColor: Colors.accentInk,
-                      }}
-                    />
-                  )}
-                </View>
+        {/* current phase row */}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 14,
+            padding: 14,
+            backgroundColor: Colors.accentDim,
+            borderRadius: 15,
+          }}
+        >
+          <View
+            style={{
+              width: 22,
+              height: 22,
+              borderRadius: 999,
+              backgroundColor: Colors.accent,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <View
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                backgroundColor: Colors.accentInk,
+              }}
+            />
+          </View>
 
-                {/* label */}
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={{
-                      fontSize: 15,
-                      fontWeight: "600",
-                      color: isActive ? Colors.accent : Colors.text,
-                    }}
-                  >
-                    {goal.name}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}
-                  >
-                    {goal.description}
-                  </Text>
-                </View>
+          <View style={{ flex: 1 }}>
+            <Text
+              style={{ fontSize: 15, fontWeight: "600", color: Colors.accent }}
+            >
+              {PHASE_LABELS[profile.current_phase] || profile.current_phase}
+            </Text>
+            <Text style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}>
+              {PHASE_DESCRIPTIONS[profile.current_phase]}
+            </Text>
+          </View>
 
-                {isActive && <Tag color={Colors.accent}>Week {weekNumber}</Tag>}
-              </Pressable>
-              {i < GOALS.length - 1 && <Divider />}
-            </View>
-          );
-        })}
+          <View style={{ alignItems: "flex-end", gap: 4 }}>
+            <Tag color={Colors.accent}>Week {profile.phase_week}</Tag>
+            <Tag color={Colors.ter}>Block {profile.current_block}</Tag>
+          </View>
+        </View>
+
+        <Divider />
+
+        {/* phase progress */}
+        <View style={{ padding: 14 }}>
+          <View
+            style={{
+              flexDirection: "row",
+              justifyContent: "space-between",
+              marginBottom: 8,
+            }}
+          >
+            <Text
+              style={{
+                fontFamily: "Courier",
+                fontSize: 10,
+                color: Colors.ter,
+                letterSpacing: 0.4,
+              }}
+            >
+              PHASE PROGRESS
+            </Text>
+            <Text
+              style={{ fontFamily: "Courier", fontSize: 10, color: Colors.ter }}
+            >
+              {profile.phase_week} / 6
+            </Text>
+          </View>
+
+          {/* progress bar */}
+          <View
+            style={{
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: Colors.line2,
+              overflow: "hidden",
+            }}
+          >
+            <View
+              style={{
+                width: `${(profile.phase_week / 6) * 100}%`,
+                height: "100%",
+                backgroundColor: Colors.accent,
+                borderRadius: 2,
+              }}
+            />
+          </View>
+
+          {nextPhase && (
+            <Text
+              style={{
+                fontFamily: "Courier",
+                fontSize: 10,
+                color: Colors.ter,
+                marginTop: 8,
+              }}
+            >
+              NEXT → {PHASE_LABELS[nextPhase]}
+            </Text>
+          )}
+        </View>
       </Card>
     </View>
   );
@@ -255,7 +299,6 @@ function GymSelector({
                   opacity: saving ? 0.6 : 1,
                 }}
               >
-                {/* gym icon */}
                 <View
                   style={{
                     width: 38,
@@ -269,7 +312,6 @@ function GymSelector({
                   <Text style={{ fontSize: 18 }}>🏋️</Text>
                 </View>
 
-                {/* label */}
                 <View style={{ flex: 1 }}>
                   <Text
                     style={{
@@ -373,19 +415,6 @@ export default function SettingsScreen() {
     }
   }
 
-  async function handleGoalChange(goal: string) {
-    if (!profile || goal === profile.current_goal) return;
-    setSaving(true);
-    try {
-      const updated = await updateGoal(goal);
-      setProfile((prev) => (prev ? { ...prev, ...updated } : prev));
-    } catch (err: any) {
-      setError("Failed to update goal");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   async function handleGymChange(gym: string) {
     if (!profile || gym === profile.current_gym) return;
     setSaving(true);
@@ -452,12 +481,7 @@ export default function SettingsScreen() {
           <ActivityIndicator color={Colors.accent} style={{ marginTop: 60 }} />
         ) : profile ? (
           <>
-            <GoalSelector
-              currentGoal={profile.current_goal}
-              goalStartDate={profile.goal_start_date}
-              onSelect={handleGoalChange}
-              saving={saving}
-            />
+            <PhaseDisplay profile={profile} />
             <GymSelector
               currentGym={profile.current_gym}
               onSelect={handleGymChange}
@@ -468,7 +492,6 @@ export default function SettingsScreen() {
 
         <MiscSettings />
 
-        {/* version footer */}
         <View style={{ alignItems: "center", paddingVertical: 24 }}>
           <Text
             style={{

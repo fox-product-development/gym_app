@@ -1,5 +1,5 @@
 // backend/routes/user.js
-// User profile routes — read and update current goal and gym.
+// User profile routes — read and update current phase and gym.
 
 const express = require("express");
 const pool = require("../db");
@@ -9,12 +9,12 @@ const router = express.Router();
 
 // ─── Get user profile ─────────────────────────────────────────────────────────
 // GET /user/profile
-// Returns the current user's profile.
 
 router.get("/profile", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, username, current_goal, current_gym, goal_start_date, created_at
+      `SELECT id, username, current_phase, current_block, phase_week,
+              current_gym, phase_start_date, created_at
        FROM users
        WHERE id = $1`,
       [req.userId],
@@ -31,41 +31,8 @@ router.get("/profile", requireAuth, async (req, res) => {
   }
 });
 
-// ─── Update current goal ──────────────────────────────────────────────────────
-// PATCH /user/goal
-// Updates the user's active training goal.
-// Resets goal_start_date to today when the goal changes.
-
-router.patch("/goal", requireAuth, async (req, res) => {
-  const { goal } = req.body;
-  const validGoals = ["maintain", "trim", "size", "strength"];
-
-  if (!goal || !validGoals.includes(goal)) {
-    return res.status(400).json({
-      error: `goal must be one of: ${validGoals.join(", ")}`,
-    });
-  }
-
-  try {
-    const result = await pool.query(
-      `UPDATE users
-       SET current_goal = $1,
-           goal_start_date = CURRENT_DATE
-       WHERE id = $2
-       RETURNING id, username, current_goal, current_gym, goal_start_date`,
-      [goal, req.userId],
-    );
-
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error("Update goal error:", err.message);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
 // ─── Update current gym ───────────────────────────────────────────────────────
 // PATCH /user/gym
-// Updates the user's currently selected gym.
 
 router.patch("/gym", requireAuth, async (req, res) => {
   const { gym } = req.body;
@@ -82,7 +49,8 @@ router.patch("/gym", requireAuth, async (req, res) => {
       `UPDATE users
        SET current_gym = $1
        WHERE id = $2
-       RETURNING id, username, current_goal, current_gym, goal_start_date`,
+       RETURNING id, username, current_phase, current_block, phase_week,
+                 current_gym, phase_start_date`,
       [gym, req.userId],
     );
 
