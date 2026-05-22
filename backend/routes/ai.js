@@ -192,8 +192,6 @@ Return ONLY this exact JSON structure, nothing else:
       .map((block) => block.text)
       .join("");
 
-    console.log("Claude raw response:", rawText);
-
     const blockPlan = JSON.parse(cleanJSON(rawText));
 
     // Validate structure
