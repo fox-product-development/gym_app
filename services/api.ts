@@ -94,10 +94,6 @@ export async function getProfile() {
   return request("/user/profile");
 }
 
-export async function updateGym(gym: string) {
-  return request("/user/gym", "PATCH", { gym });
-}
-
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
 export async function getWeekSessions() {
@@ -174,13 +170,12 @@ export async function getOneRepMaxHistory(exercise: string) {
 
 // ─── AI ───────────────────────────────────────────────────────────────────────
 
-export async function generateBlock(data: {
-  phase: string;
-  block_number: number;
-  phase_week: number;
-  gym: string;
-}) {
-  return request("/ai/generate-block", "POST", data);
+export async function generateBlock() {
+  return request("/ai/generate-block", "POST", {});
+}
+
+export async function generateHomeSession(session_id: number) {
+  return request("/ai/generate-home-session", "POST", { session_id });
 }
 
 export async function getExtraSession(gym: string) {
@@ -188,5 +183,5 @@ export async function getExtraSession(gym: string) {
 }
 
 export async function getWeeklyFeedback() {
-  return request("/weekly-feedback/latest");
+  return request("/ai/weekly-feedback");
 }
