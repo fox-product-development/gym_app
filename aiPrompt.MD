@@ -331,4 +331,4 @@ Return JSON only, no preamble.
 - Strip any accidental markdown code fences from JSON responses before parsing — use `.replace(/```json|```/g, '').trim()`
 - The exercise library CSV should be converted to a readable format before insertion into the prompt — either as CSV text or a JSON array of exercise objects
 - Session history should be limited to the last 4 weeks to stay within context limits
-- For the first ever block where no history exists, pass empty arrays for session history, 1RM history and body composition — the agent will fall back to EMG score and table order for selection
+- For the first ever block where no history exists, pass empty arrays for session history, 1RM history and body composition — the agent will fall back to EMG score and table order for selection.
