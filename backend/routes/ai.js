@@ -1,6 +1,5 @@
 // backend/routes/ai.js
 // AI routes — block generation, extra session, and weekly feedback retrieval.
-// All Claude API calls live here.
 
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -12,17 +11,15 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// Cleans JSON responses from Claude — strips markdown code fences if present
 function cleanJSON(text) {
   return text.replace(/```json|```/g, "").trim();
 }
 
-// Fetches the last 4 weeks of session history for a user
 async function getSessionHistory(userId) {
   const result = await pool.query(
     `SELECT
        s.id, s.session_type, s.occurrence, s.week_number, s.gym,
-       s.status, s.notes, s.started_at, s.completed_at,
+       s.status, s.notes, s.completed_at,
        json_agg(
          json_build_object(
            'exercise_name', pe.exercise_name,
@@ -54,7 +51,6 @@ async function getSessionHistory(userId) {
   return result.rows;
 }
 
-// Fetches the latest 1RM estimate for each exercise
 async function getOneRepMaxHistory(userId) {
   const result = await pool.query(
     `SELECT DISTINCT ON (exercise_name)
@@ -67,7 +63,6 @@ async function getOneRepMaxHistory(userId) {
   return result.rows;
 }
 
-// Fetches the last 4 weeks of body composition data
 async function getBodyCompHistory(userId) {
   const result = await pool.query(
     `SELECT weight_kg, muscle_mass_kg, logged_at
@@ -80,7 +75,6 @@ async function getBodyCompHistory(userId) {
   return result.rows;
 }
 
-// Fetches exercises used in the previous block (for block exclusion rule)
 async function getPreviousBlockExercises(userId, phase, blockNumber) {
   const previousBlock = blockNumber === 2 ? 1 : null;
   if (!previousBlock) return [];
@@ -100,12 +94,10 @@ async function getPreviousBlockExercises(userId, phase, blockNumber) {
 
 // ─── Generate block ───────────────────────────────────────────────────────────
 // POST /ai/generate-block
-// Called at the start of Week 1 and Week 4 of each phase.
-// Generates a 3-week training block and writes it to the database.
+// Generates a training block and writes sessions to the database.
 
 router.post("/generate-block", requireAuth, async (req, res) => {
   try {
-    // Get user profile
     const userResult = await pool.query(
       `SELECT current_phase, current_block, phase_week, current_gym
        FROM users WHERE id = $1`,
@@ -119,7 +111,6 @@ router.post("/generate-block", requireAuth, async (req, res) => {
     const user = userResult.rows[0];
     const { current_phase, current_block, phase_week, current_gym } = user;
 
-    // Gather context for the prompt
     const [
       sessionHistory,
       oneRepMaxHistory,
@@ -132,16 +123,13 @@ router.post("/generate-block", requireAuth, async (req, res) => {
       getPreviousBlockExercises(req.userId, current_phase, current_block),
     ]);
 
-    // Build the exercise library CSV for the selected gym
-    // We import inline to avoid circular dependency issues
     const gymCSV = buildGymCSV(current_gym);
 
-    // Build the user prompt
-    const userPrompt = `Generate a 3-week training block for the following athlete.
+    const userPrompt = `Generate a training block for the following athlete.
 
 CURRENT STATE
 - Phase: ${current_phase}
-- Block: ${current_block} (${current_block === 1 ? "1" : "2"})
+- Block: ${current_block}
 - Phase week: ${phase_week} of 6
 - Gym: ${current_gym}
 
@@ -160,26 +148,59 @@ ${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None 
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
 
-Generate the full 3-week block plan. Return JSON only, no preamble or explanation.`;
+Return ONLY this exact JSON structure, nothing else:
+{
+  "block": <number>,
+  "phase": "<phase_name>",
+  "compound_session": {
+    "exercises": [
+      {
+        "exercise": "<name>",
+        "muscles_primary": "<primary muscle>",
+        "sub_component": "<sub component>",
+        "sets": <number>,
+        "target_reps": <number>,
+        "weight_kg": <number>
+      }
+    ]
+  },
+  "isolation_session": {
+    "exercises": [
+      {
+        "exercise": "<name>",
+        "muscles_primary": "<primary muscle>",
+        "sub_component": "<sub component>",
+        "sets": <number>,
+        "target_reps": <number>,
+        "weight_kg": <number>
+      }
+    ]
+  }
+}
 
-    // Call Claude
+6 exercises in compound_session, 6 exercises in isolation_session. No extra fields. No explanation. No markdown.`;
+
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 8000,
+      max_tokens: 2000,
       system: BLOCK_GENERATION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     });
 
-    // Parse the response
     const rawText = message.content
       .filter((block) => block.type === "text")
       .map((block) => block.text)
       .join("");
 
     console.log("Claude raw response:", rawText);
+
     const blockPlan = JSON.parse(cleanJSON(rawText));
 
-    // Write the plan to the database
+    // Validate structure
+    if (!blockPlan.compound_session || !blockPlan.isolation_session) {
+      throw new Error("Invalid block plan structure from Claude");
+    }
+
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -194,77 +215,96 @@ Generate the full 3-week block plan. Return JSON only, no preamble or explanatio
 
       const programmeId = progResult.rows[0].id;
 
-      // Insert sessions and exercises from the generated plan
-      for (const week of blockPlan.weeks) {
-        for (const session of week.sessions) {
-          // Skip the duplicate compound session — it shares exercises with session 1
-          if (
-            session.session_type === "compound" &&
-            session.exercises.length === 0
-          ) {
-            // Create the occurrence 2 session pointing to same exercises
-            await client.query(
-              `INSERT INTO sessions
-                 (user_id, programme_id, session_type, occurrence, week_number, gym)
-               VALUES ($1, $2, $3, 2, $4, $5)`,
-              [
-                req.userId,
-                programmeId,
-                "compound",
-                week.week_number,
-                current_gym,
-              ],
-            );
-            continue;
-          }
+      // Create 3 weeks of sessions from the two session plans
+      for (let week = 1; week <= 3; week++) {
+        // Compound session — occurrence 1
+        const comp1Result = await client.query(
+          `INSERT INTO sessions
+             (user_id, programme_id, session_type, occurrence, week_number, gym)
+           VALUES ($1, $2, 'compound', 1, $3, $4)
+           RETURNING id`,
+          [req.userId, programmeId, week, current_gym],
+        );
 
-          const sessionResult = await client.query(
-            `INSERT INTO sessions
-               (user_id, programme_id, session_type, occurrence, week_number, gym)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             RETURNING id`,
+        // Insert compound exercises for occurrence 1
+        for (let i = 0; i < blockPlan.compound_session.exercises.length; i++) {
+          const ex = blockPlan.compound_session.exercises[i];
+          await client.query(
+            `INSERT INTO planned_exercises
+               (session_id, exercise_name, muscles_primary, sub_component,
+                order_index, target_sets, target_reps, target_weight)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             [
-              req.userId,
-              programmeId,
-              session.session_type,
-              session.session_type === "compound" ? 1 : 1,
-              week.week_number,
-              current_gym,
+              comp1Result.rows[0].id,
+              ex.exercise,
+              ex.muscles_primary,
+              ex.sub_component,
+              i,
+              ex.sets,
+              ex.target_reps,
+              ex.weight_kg,
             ],
           );
+        }
 
-          const sessionId = sessionResult.rows[0].id;
+        // Compound session — occurrence 2 (same exercises)
+        const comp2Result = await client.query(
+          `INSERT INTO sessions
+             (user_id, programme_id, session_type, occurrence, week_number, gym)
+           VALUES ($1, $2, 'compound', 2, $3, $4)
+           RETURNING id`,
+          [req.userId, programmeId, week, current_gym],
+        );
 
-          // Insert exercises
-          for (let i = 0; i < session.exercises.length; i++) {
-            const ex = session.exercises[i];
-            await client.query(
-              `INSERT INTO planned_exercises
-                 (session_id, exercise_name, muscles_primary, sub_component,
-                  order_index, target_sets, target_reps, target_weight)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-              [
-                sessionId,
-                ex.exercise,
-                ex.muscles_primary,
-                ex.sub_component,
-                i,
-                ex.working_sets.sets,
-                ex.working_sets.reps,
-                ex.working_sets.weight_kg,
-              ],
-            );
-          }
+        // Copy exercises to occurrence 2
+        for (let i = 0; i < blockPlan.compound_session.exercises.length; i++) {
+          const ex = blockPlan.compound_session.exercises[i];
+          await client.query(
+            `INSERT INTO planned_exercises
+               (session_id, exercise_name, muscles_primary, sub_component,
+                order_index, target_sets, target_reps, target_weight)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              comp2Result.rows[0].id,
+              ex.exercise,
+              ex.muscles_primary,
+              ex.sub_component,
+              i,
+              ex.sets,
+              ex.target_reps,
+              ex.weight_kg,
+            ],
+          );
+        }
 
-          // Create the occurrence 2 compound session for week
-          if (session.session_type === "compound") {
-            await client.query(
-              `INSERT INTO sessions
-                 (user_id, programme_id, session_type, occurrence, week_number, gym)
-               VALUES ($1, $2, 'compound', 2, $3, $4)`,
-              [req.userId, programmeId, week.week_number, current_gym],
-            );
-          }
+        // Isolation session — occurrence 1
+        const isoResult = await client.query(
+          `INSERT INTO sessions
+             (user_id, programme_id, session_type, occurrence, week_number, gym)
+           VALUES ($1, $2, 'isolation', 1, $3, $4)
+           RETURNING id`,
+          [req.userId, programmeId, week, current_gym],
+        );
+
+        // Insert isolation exercises
+        for (let i = 0; i < blockPlan.isolation_session.exercises.length; i++) {
+          const ex = blockPlan.isolation_session.exercises[i];
+          await client.query(
+            `INSERT INTO planned_exercises
+               (session_id, exercise_name, muscles_primary, sub_component,
+                order_index, target_sets, target_reps, target_weight)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              isoResult.rows[0].id,
+              ex.exercise,
+              ex.muscles_primary,
+              ex.sub_component,
+              i,
+              ex.sets,
+              ex.target_reps,
+              ex.weight_kg,
+            ],
+          );
         }
       }
 
@@ -273,7 +313,8 @@ Generate the full 3-week block plan. Return JSON only, no preamble or explanatio
       res.status(201).json({
         message: "Block generated successfully",
         programme_id: programmeId,
-        block: blockPlan,
+        compound_session: blockPlan.compound_session,
+        isolation_session: blockPlan.isolation_session,
       });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -289,8 +330,6 @@ Generate the full 3-week block plan. Return JSON only, no preamble or explanatio
 
 // ─── Extra session ────────────────────────────────────────────────────────────
 // POST /ai/extra-session
-// Called when the user taps Extra Session and selects a gym.
-// Returns a ranked list of exercises with reasons.
 
 router.post("/extra-session", requireAuth, async (req, res) => {
   const { gym } = req.body;
@@ -308,7 +347,6 @@ router.post("/extra-session", requireAuth, async (req, res) => {
     const user = userResult.rows[0];
     const sessionHistory = await getSessionHistory(req.userId);
 
-    // Days since last session
     const lastSession = sessionHistory[0];
     const daysSinceLast = lastSession
       ? Math.floor(
@@ -333,13 +371,13 @@ ${gymCSV}
 SESSION HISTORY — LAST 4 WEEKS
 ${JSON.stringify(sessionHistory, null, 2)}
 
-Rank every exercise in the library from most to least recommended for today. For each exercise provide a one-line reason. Consider: what has been undertrained, what needs rest, how many days since last session, body composition trend, and any patterns in the session notes.
+Rank every exercise in the library from most to least recommended for today. For each exercise provide a one-line reason. Consider: what has been undertrained, what needs rest, how many days since last session, and any patterns in the session notes.
 
 Return JSON only, no preamble.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 1000,
+      max_tokens: 2000,
       system: EXTRA_SESSION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     });
@@ -350,7 +388,6 @@ Return JSON only, no preamble.`;
       .join("");
 
     const result = JSON.parse(cleanJSON(rawText));
-
     res.json(result);
   } catch (err) {
     console.error("Extra session error:", err.message);
@@ -360,7 +397,6 @@ Return JSON only, no preamble.`;
 
 // ─── Get latest weekly feedback ───────────────────────────────────────────────
 // GET /ai/weekly-feedback
-// Returns the most recent Sunday report for the user.
 
 router.get("/weekly-feedback", requireAuth, async (req, res) => {
   try {
@@ -372,11 +408,7 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
       [req.userId],
     );
 
-    if (result.rows.length === 0) {
-      return res.json(null);
-    }
-
-    res.json(result.rows[0]);
+    res.json(result.rows.length > 0 ? result.rows[0] : null);
   } catch (err) {
     console.error("Get weekly feedback error:", err.message);
     res.status(500).json({ error: "Server error" });
@@ -384,8 +416,6 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
 });
 
 // ─── Gym CSV builder ──────────────────────────────────────────────────────────
-// Builds a CSV string from the hardcoded gym library.
-// Used in AI prompts — kept here to avoid importing from constants in backend.
 
 function buildGymCSV(gym) {
   const exercises = gym === "work" ? WORK_GYM_EXERCISES : HOME_GYM_EXERCISES;
@@ -402,79 +432,38 @@ function buildGymCSV(gym) {
 
 const BLOCK_GENERATION_SYSTEM_PROMPT = `You are a personal gym coach and training planner. You follow periodisation principles from Tudor Bompa's Serious Strength Training and Zatsiorsky's Science and Practice of Strength Training, adapted for a recreational level athlete training alone 3 times per week.
 
-Your job is to generate a structured 3-week training block. You think like an experienced coach reviewing a training diary — you look at the data, spot patterns, and make intelligent decisions. You are direct, encouraging, and never sentimental.
-
 TRAINING STRUCTURE
-- Each week consists of exactly 2 unique session plans: one Compound session and one Isolation session
-- The weekly pattern is: Compound session → Isolation session → Compound session
-- The Compound session plan is performed TWICE per week — the same exercises, sets, reps and weights both times. Do not generate two different compound sessions.
-- The Isolation session plan is performed ONCE per week
-- Sessions are not mapped to specific days. The user trains when their schedule allows.
-- Compound session contains 6 exercises: 1 from each of Back, Chest, Lower Back, Quads, Shoulders, plus 1 Wildcard
-- Isolation session contains 6 exercises: Biceps, Triceps, Shoulders, Forearms, Core, and a Wildcard. The Core exercise is always placed first. The Wildcard is drawn from {Core, Calves, Hamstrings} isolation exercises only — if Core is drawn, it is placed last to avoid two consecutive core exercises.
-- Exercise order within sessions follows best practice: largest compound movements first, isolation last, core always last
+- Each week: Compound session → Isolation session → Compound session
+- The same compound plan is used twice per week
+- Compound session: 6 exercises — 1 each from Back, Chest, Lower Back, Quads, Shoulders, plus 1 Wildcard compound
+- Isolation session: 6 exercises — Core (always first), Biceps, Triceps, Shoulders, Forearms, Wildcard from {Core, Calves, Hamstrings}
 
 EXERCISE SELECTION RULES
-Select exercises using the following priority order:
+1. SUB-COMPONENT COVERAGE — exclude sub-components used in previous block
+2. PROGRESSIVE OVERLOAD — favour exercises with stronger historical performance
+3. RECENCY — deprioritise exercises from last block unless EMG gap is 2+ points
+4. EMG SCORE — prefer higher scores when other factors are equal
+5. TIEBREAKER — use table order
 
-1. SUB-COMPONENT COVERAGE (hard filter)
-   - If a sub-component was targeted in the previous block, exclude exercises targeting that same sub-component before any other scoring
-   - This ensures full muscle coverage across blocks
+BLOCK EXCLUSION — no exercise from Block 1 may appear in Block 2
 
-2. PROGRESSIVE OVERLOAD RESPONSE
-   - Favour exercises with stronger historical PO performance (more weight added over time)
-   - After 2 consecutive block selections, apply a dampening factor so the exercise becomes less likely to be selected again even with a strong PO score
+WEIGHT CALCULATION
+- Compound exercises (Size/Strength phases): percentage of estimated 1RM
+- Isolation exercises: direct working weight, conservative starting point
+- AA phase: no 1RM percentage — suggest conservative starting weights
+- If no history exists, use conservative starting weights
 
-3. RECENCY
-   - Deprioritise exercises selected in the last consecutive block
-   - Recency can be overridden if the EMG score gap between candidates is 2 or more points
+PHASE SCHEMES
+- Anatomical Adaptation: 3 sets x 20 reps target (min 15)
+- Hypertrophy: 4 sets x 12 reps target (min 8)
+- Maximum Strength: 4 sets x 6 reps target (min 3)
+- Muscle Definition: 1 set x 40 reps target (min 30)
 
-4. EMG SCORE (1-5, based on MVC percentage research)
-   - Use as a fine-tuning layer. Prefer higher scores when other factors do not differentiate candidates.
-   - A score gap of 2 or more points can override recency
+You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 
-5. TIEBREAKER
-   - When candidates are equal across all factors, select by position order in the exercise library
-
-WILDCARD SLOT RULES
-- Identify which primary muscle group has been least represented across recent sessions
-- Select one exercise from that muscle group applying the standard scoring rules above
-- If multiple groups are equally underrepresented, use table order as tiebreaker
-
-BLOCK EXCLUSION RULE
-- No exercise used in Block 1 (Weeks 1-3) may appear in Block 2 (Weeks 4-6)
-- This applies across both compound and isolation sessions
-- No exercise may appear in both the compound and isolation session within the same week
-
-1RM AND WEIGHT CALCULATION
-- Use the Epley formula to estimate 1RM: Weight x (1 + Reps / 30)
-- Only apply Epley when logged reps are in the 3-10 rep range
-- For compound exercises in Size and Strength phases, calculate working weight as a percentage of estimated 1RM
-- For isolation exercises: track working weight directly, suggest small increments based on logged performance
-- For Trim phase: suggest a light starting weight, track progression by rep completion only, no 1RM percentage logic
-
-PHASE REP AND SET SCHEMES
-- Anatomical Adaptation (AA): Target 20 reps, 3 sets. Minimum acceptable 15 reps per set.
-- Hypertrophy: Target 12 reps, 4 sets. Minimum acceptable 8 reps per set.
-- Maximum Strength: Target 6 reps, 4 sets. Minimum acceptable 3 reps per set.
-- Muscle Definition (Trim): Target 40 reps, 1 set. Minimum acceptable 30 reps.
-
-PROGRESSIVE OVERLOAD TRIGGERS
-- Weight increase: athlete completes all sets at the target rep number
-- Weight decrease: athlete fails to reach the minimum acceptable reps on any set
-- No change: athlete completes all sets above minimum but below target
-- Compound lifts: apply +2.5kg on increase, -2.5kg on decrease
-- Isolation exercises: apply +1-2kg on increase, -1-2kg on decrease
-
-YOUR TONE
-You are direct and encouraging — like a knowledgeable training partner who has been alongside the athlete for years. You celebrate progress without sentiment. You call out patterns honestly. You never use motivational fluff.`;
-
-const EXTRA_SESSION_SYSTEM_PROMPT = `You are a personal gym coach. The athlete has shown up and asked what they should do today. You have their recent training history. Your job is to recommend a ranked list of exercises from the available gym library, with a one-line reason for each ranking.
-
-Think like a trainer who has been working with this athlete for months. You know what they have been doing, what they have neglected, and what their body needs right now. Be direct. One line per exercise. No fluff.`;
+const EXTRA_SESSION_SYSTEM_PROMPT = `You are a personal gym coach. The athlete has shown up for an extra session. Rank every exercise in the provided library from most to least recommended. One line reason per exercise. Be direct. No fluff.`;
 
 // ─── Exercise data ────────────────────────────────────────────────────────────
-// Duplicated from constants/gyms.ts for use in the backend without TypeScript.
 
 const HOME_GYM_EXERCISES = [
   {
