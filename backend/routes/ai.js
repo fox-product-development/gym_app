@@ -176,6 +176,7 @@ Generate the full 3-week block plan. Return JSON only, no preamble or explanatio
       .map((block) => block.text)
       .join("");
 
+    console.log("Claude raw response:", rawText);
     const blockPlan = JSON.parse(cleanJSON(rawText));
 
     // Write the plan to the database
