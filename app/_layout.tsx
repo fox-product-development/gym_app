@@ -12,14 +12,11 @@ export default function RootLayout() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    async function init() {
-      await loadToken();
-      setReady(true);
-      if (!getToken()) {
-        router.replace("/login");
-      }
+    loadToken();
+    setReady(true);
+    if (!getToken()) {
+      router.replace("/login");
     }
-    init();
   }, []);
 
   if (!ready) {

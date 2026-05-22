@@ -8,39 +8,39 @@
 const BASE_URL = "https://gymapp-production-bdf6.up.railway.app";
 
 // ─── Token storage ────────────────────────────────────────────────────────────
-
-import * as SecureStore from "expo-secure-store";
+// Uses localStorage for web — token persists across browser sessions.
+// Falls back to in-memory if localStorage is not available.
 
 const TOKEN_KEY = "gymapp_auth_token";
 let authToken: string | null = null;
 
-export async function setToken(token: string) {
+export function setToken(token: string) {
   authToken = token;
   try {
-    await SecureStore.setItemAsync(TOKEN_KEY, token);
+    localStorage.setItem(TOKEN_KEY, token);
   } catch {
-    // SecureStore not available in browser — in-memory fallback is fine
+    // localStorage not available — in-memory fallback
   }
 }
 
-export async function loadToken(): Promise<string | null> {
+export function loadToken(): string | null {
   try {
-    const stored = await SecureStore.getItemAsync(TOKEN_KEY);
+    const stored = localStorage.getItem(TOKEN_KEY);
     if (stored) authToken = stored;
-    return authToken;
   } catch {
-    return authToken;
+    // localStorage not available
   }
+  return authToken;
 }
 
 export function getToken(): string | null {
   return authToken;
 }
 
-export async function clearToken() {
+export function clearToken() {
   authToken = null;
   try {
-    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    localStorage.removeItem(TOKEN_KEY);
   } catch {}
 }
 
