@@ -1,5 +1,5 @@
 // backend/routes/ai.js
-// AI routes — block generation, extra session, and weekly feedback retrieval.
+// AI routes — block generation, home gym session swap, extra session, weekly feedback.
 
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -94,12 +94,13 @@ async function getPreviousBlockExercises(userId, phase, blockNumber) {
 
 // ─── Generate block ───────────────────────────────────────────────────────────
 // POST /ai/generate-block
-// Generates a training block and writes sessions to the database.
+// Always generates for Work Gym (the default).
+// Called on Week 1 and Week 4 of every phase by the Sunday cron job.
 
 router.post("/generate-block", requireAuth, async (req, res) => {
   try {
     const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week, current_gym
+      `SELECT current_phase, current_block, phase_week
        FROM users WHERE id = $1`,
       [req.userId],
     );
@@ -109,7 +110,8 @@ router.post("/generate-block", requireAuth, async (req, res) => {
     }
 
     const user = userResult.rows[0];
-    const { current_phase, current_block, phase_week, current_gym } = user;
+    const { current_phase, current_block, phase_week } = user;
+    const gym = "work"; // Always generate for Work Gym
 
     const [
       sessionHistory,
@@ -123,7 +125,7 @@ router.post("/generate-block", requireAuth, async (req, res) => {
       getPreviousBlockExercises(req.userId, current_phase, current_block),
     ]);
 
-    const gymCSV = buildGymCSV(current_gym);
+    const gymCSV = buildGymCSV(gym);
 
     const userPrompt = `Generate a training block for the following athlete.
 
@@ -131,7 +133,7 @@ CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
-- Gym: ${current_gym}
+- Gym: ${gym}
 
 EXERCISE LIBRARY
 ${gymCSV}
@@ -194,7 +196,6 @@ Return ONLY this exact JSON structure, nothing else:
 
     const blockPlan = JSON.parse(cleanJSON(rawText));
 
-    // Validate structure
     if (!blockPlan.compound_session || !blockPlan.isolation_session) {
       throw new Error("Invalid block plan structure from Claude");
     }
@@ -203,7 +204,6 @@ Return ONLY this exact JSON structure, nothing else:
     try {
       await client.query("BEGIN");
 
-      // Create the programme record
       const progResult = await client.query(
         `INSERT INTO programmes (user_id, phase, block_number, week_start)
          VALUES ($1, $2, $3, CURRENT_DATE)
@@ -213,7 +213,6 @@ Return ONLY this exact JSON structure, nothing else:
 
       const programmeId = progResult.rows[0].id;
 
-      // Create 3 weeks of sessions from the two session plans
       for (let week = 1; week <= 3; week++) {
         // Compound session — occurrence 1
         const comp1Result = await client.query(
@@ -221,10 +220,9 @@ Return ONLY this exact JSON structure, nothing else:
              (user_id, programme_id, session_type, occurrence, week_number, gym)
            VALUES ($1, $2, 'compound', 1, $3, $4)
            RETURNING id`,
-          [req.userId, programmeId, week, current_gym],
+          [req.userId, programmeId, week, gym],
         );
 
-        // Insert compound exercises for occurrence 1
         for (let i = 0; i < blockPlan.compound_session.exercises.length; i++) {
           const ex = blockPlan.compound_session.exercises[i];
           await client.query(
@@ -245,16 +243,15 @@ Return ONLY this exact JSON structure, nothing else:
           );
         }
 
-        // Compound session — occurrence 2 (same exercises)
+        // Compound session — occurrence 2
         const comp2Result = await client.query(
           `INSERT INTO sessions
              (user_id, programme_id, session_type, occurrence, week_number, gym)
            VALUES ($1, $2, 'compound', 2, $3, $4)
            RETURNING id`,
-          [req.userId, programmeId, week, current_gym],
+          [req.userId, programmeId, week, gym],
         );
 
-        // Copy exercises to occurrence 2
         for (let i = 0; i < blockPlan.compound_session.exercises.length; i++) {
           const ex = blockPlan.compound_session.exercises[i];
           await client.query(
@@ -275,16 +272,15 @@ Return ONLY this exact JSON structure, nothing else:
           );
         }
 
-        // Isolation session — occurrence 1
+        // Isolation session
         const isoResult = await client.query(
           `INSERT INTO sessions
              (user_id, programme_id, session_type, occurrence, week_number, gym)
            VALUES ($1, $2, 'isolation', 1, $3, $4)
            RETURNING id`,
-          [req.userId, programmeId, week, current_gym],
+          [req.userId, programmeId, week, gym],
         );
 
-        // Insert isolation exercises
         for (let i = 0; i < blockPlan.isolation_session.exercises.length; i++) {
           const ex = blockPlan.isolation_session.exercises[i];
           await client.query(
@@ -322,6 +318,180 @@ Return ONLY this exact JSON structure, nothing else:
     }
   } catch (err) {
     console.error("Generate block error:", err.message);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// ─── Generate home gym session ────────────────────────────────────────────────
+// POST /ai/generate-home-session
+// Called when the user confirms they want to switch to Home Gym for a session.
+// Uses the same full block-generation logic but for Home Gym only.
+// Replaces the planned exercises for the given session in the database.
+// The session is then started immediately.
+
+router.post("/generate-home-session", requireAuth, async (req, res) => {
+  const { session_id } = req.body;
+
+  if (!session_id) {
+    return res.status(400).json({ error: "session_id is required" });
+  }
+
+  try {
+    // Get the session to confirm it belongs to this user and get its type
+    const sessionResult = await pool.query(
+      `SELECT s.*, p.phase, p.block_number
+       FROM sessions s
+       JOIN programmes p ON p.id = s.programme_id
+       WHERE s.id = $1 AND s.user_id = $2`,
+      [session_id, req.userId],
+    );
+
+    if (sessionResult.rows.length === 0) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    const session = sessionResult.rows[0];
+    const { session_type, phase, block_number, phase_week } = session;
+
+    // Gather full context — same as block generation
+    const [
+      sessionHistory,
+      oneRepMaxHistory,
+      bodyCompHistory,
+      previousBlockExercises,
+    ] = await Promise.all([
+      getSessionHistory(req.userId),
+      getOneRepMaxHistory(req.userId),
+      getBodyCompHistory(req.userId),
+      getPreviousBlockExercises(req.userId, phase, block_number),
+    ]);
+
+    const gymCSV = buildGymCSV("home");
+
+    // Determine what to generate based on session type
+    const sessionTypeLabel =
+      session_type === "compound" ? "compound" : "isolation";
+
+    const userPrompt = `Generate a single ${sessionTypeLabel} session for the following athlete at their Home Gym.
+
+This session replaces a planned Work Gym session. Apply the same exercise selection logic you would use when generating a full block — sub-component coverage, progressive overload response, recency, EMG score, and tiebreaker rules all apply.
+
+CURRENT STATE
+- Phase: ${phase}
+- Block: ${block_number}
+- Phase week: ${phase_week || "unknown"} of 6
+- Gym: home
+- Session type: ${sessionTypeLabel}
+
+EXERCISE LIBRARY (Home Gym only)
+${gymCSV}
+
+ESTIMATED 1RM HISTORY
+${JSON.stringify(oneRepMaxHistory, null, 2)}
+
+SESSION HISTORY — LAST 4 WEEKS
+${JSON.stringify(sessionHistory, null, 2)}
+
+PREVIOUS BLOCK EXERCISES
+${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None — this is the first block"}
+
+BODY COMPOSITION — LAST 4 WEEKS
+${JSON.stringify(bodyCompHistory, null, 2)}
+
+Return ONLY this exact JSON structure, nothing else:
+{
+  "exercises": [
+    {
+      "exercise": "<name>",
+      "muscles_primary": "<primary muscle>",
+      "sub_component": "<sub component>",
+      "sets": <number>,
+      "target_reps": <number>,
+      "weight_kg": <number>
+    }
+  ]
+}
+
+${
+  session_type === "compound"
+    ? "6 exercises: 1 each from Back, Chest, Lower Back, Quads, Shoulders, plus 1 Wildcard compound."
+    : "6 exercises: Core (always first), Biceps, Triceps, Shoulders, Forearms, Wildcard from {Core, Calves, Hamstrings}."
+}
+No extra fields. No explanation. No markdown.`;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1500,
+      system: BLOCK_GENERATION_SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userPrompt }],
+    });
+
+    const rawText = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+
+    const result = JSON.parse(cleanJSON(rawText));
+
+    if (!result.exercises || result.exercises.length === 0) {
+      throw new Error("Invalid session structure from Claude");
+    }
+
+    // Replace planned exercises and update gym + start the session
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Delete existing planned exercises for this session
+      await client.query(
+        `DELETE FROM planned_exercises WHERE session_id = $1`,
+        [session_id],
+      );
+
+      // Insert new Home Gym exercises
+      for (let i = 0; i < result.exercises.length; i++) {
+        const ex = result.exercises[i];
+        await client.query(
+          `INSERT INTO planned_exercises
+             (session_id, exercise_name, muscles_primary, sub_component,
+              order_index, target_sets, target_reps, target_weight)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            session_id,
+            ex.exercise,
+            ex.muscles_primary,
+            ex.sub_component,
+            i,
+            ex.sets,
+            ex.target_reps,
+            ex.weight_kg,
+          ],
+        );
+      }
+
+      // Update session gym to home and start it
+      await client.query(
+        `UPDATE sessions
+         SET gym = 'home', status = 'in_progress', started_at = NOW()
+         WHERE id = $1`,
+        [session_id],
+      );
+
+      await client.query("COMMIT");
+
+      res.status(200).json({
+        message: "Home Gym session generated and started",
+        session_id,
+        exercises: result.exercises,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error("Generate home session error:", err.message);
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
