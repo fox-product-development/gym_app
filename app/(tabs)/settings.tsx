@@ -1,18 +1,12 @@
 // app/(tabs)/settings.tsx
-// Settings screen — displays current phase info and allows gym selection.
-// Phase progression is automatic — no manual goal selection.
+// Settings screen — displays current phase info and misc settings.
+// Phase progression is automatic. Gym selection happens at session start time.
 
 import { useState, useCallback } from "react";
-import {
-  View,
-  Text,
-  ScrollView,
-  Pressable,
-  ActivityIndicator,
-} from "react-native";
+import { View, Text, ScrollView, ActivityIndicator } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { Colors } from "../../constants/theme";
-import { getProfile, updateGym } from "../../services/api";
+import { getProfile } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,7 +16,6 @@ interface UserProfile {
   current_phase: string;
   current_block: number;
   phase_week: number;
-  current_gym: string;
   phase_start_date: string;
 }
 
@@ -116,7 +109,6 @@ function SectionLabel({ children }: { children: string }) {
 }
 
 // ─── Phase display ────────────────────────────────────────────────────────────
-// Read-only — shows current phase, block, and week. Phase advances automatically.
 
 const PHASE_LABELS: Record<string, string> = {
   anatomical_adaptation: "Anatomical Adaptation",
@@ -228,7 +220,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
             </Text>
           </View>
 
-          {/* progress bar */}
           <View
             style={{
               height: 4,
@@ -260,92 +251,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
             </Text>
           )}
         </View>
-      </Card>
-    </View>
-  );
-}
-
-// ─── Gym selector ─────────────────────────────────────────────────────────────
-
-const GYMS = [
-  { id: "work", name: "Work Gym", description: "Full barbell + cable rack" },
-  { id: "home", name: "Home Gym", description: "Dumbbells, bench, bands" },
-];
-
-function GymSelector({
-  currentGym,
-  onSelect,
-  saving,
-}: {
-  currentGym: string;
-  onSelect: (gym: string) => void;
-  saving: boolean;
-}) {
-  return (
-    <View style={{ marginHorizontal: 20, marginTop: 24 }}>
-      <SectionLabel>Current Gym</SectionLabel>
-      <Card pad={0}>
-        {GYMS.map((gym, i) => {
-          const isActive = gym.id === currentGym;
-          return (
-            <View key={gym.id}>
-              <Pressable
-                onPress={() => !saving && onSelect(gym.id)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: 14,
-                  opacity: saving ? 0.6 : 1,
-                }}
-              >
-                <View
-                  style={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: 10,
-                    backgroundColor: isActive ? Colors.text : Colors.card2,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <Text style={{ fontSize: 18 }}>🏋️</Text>
-                </View>
-
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={{
-                      fontSize: 15,
-                      fontWeight: "600",
-                      color: Colors.text,
-                    }}
-                  >
-                    {gym.name}
-                  </Text>
-                  <Text
-                    style={{
-                      fontSize: 11,
-                      color: Colors.ter,
-                      fontFamily: "Courier",
-                      marginTop: 2,
-                    }}
-                  >
-                    {gym.description}
-                  </Text>
-                </View>
-
-                {isActive ? (
-                  <Tag color={Colors.accent} bg={Colors.accentDim}>
-                    ● Active
-                  </Tag>
-                ) : (
-                  <Text style={{ color: Colors.qua, fontSize: 16 }}>›</Text>
-                )}
-              </Pressable>
-              {i < GYMS.length - 1 && <Divider />}
-            </View>
-          );
-        })}
       </Card>
     </View>
   );
@@ -394,7 +299,6 @@ function MiscSettings() {
 export default function SettingsScreen() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   useFocusEffect(
@@ -412,19 +316,6 @@ export default function SettingsScreen() {
       setError("Failed to load profile");
     } finally {
       setLoading(false);
-    }
-  }
-
-  async function handleGymChange(gym: string) {
-    if (!profile || gym === profile.current_gym) return;
-    setSaving(true);
-    try {
-      const updated = await updateGym(gym);
-      setProfile((prev) => (prev ? { ...prev, ...updated } : prev));
-    } catch (err: any) {
-      setError("Failed to update gym");
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -446,30 +337,17 @@ export default function SettingsScreen() {
           >
             Profile
           </Text>
-          <View
+          <Text
             style={{
-              flexDirection: "row",
-              alignItems: "flex-end",
+              fontSize: 30,
+              fontWeight: "700",
+              color: Colors.text,
+              letterSpacing: -0.6,
               marginTop: 4,
             }}
           >
-            <Text
-              style={{
-                fontSize: 30,
-                fontWeight: "700",
-                color: Colors.text,
-                letterSpacing: -0.6,
-              }}
-            >
-              Settings
-            </Text>
-            {saving && (
-              <ActivityIndicator
-                color={Colors.accent}
-                style={{ marginLeft: 12, marginBottom: 6 }}
-              />
-            )}
-          </View>
+            Settings
+          </Text>
           {error ? (
             <Text style={{ fontSize: 12, color: Colors.warn, marginTop: 4 }}>
               {error}
@@ -480,14 +358,7 @@ export default function SettingsScreen() {
         {loading ? (
           <ActivityIndicator color={Colors.accent} style={{ marginTop: 60 }} />
         ) : profile ? (
-          <>
-            <PhaseDisplay profile={profile} />
-            <GymSelector
-              currentGym={profile.current_gym}
-              onSelect={handleGymChange}
-              saving={saving}
-            />
-          </>
+          <PhaseDisplay profile={profile} />
         ) : null}
 
         <MiscSettings />
