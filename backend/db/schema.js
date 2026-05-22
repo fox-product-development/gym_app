@@ -41,8 +41,6 @@ async function createTables() {
         current_block    INTEGER NOT NULL DEFAULT 1
           CHECK (current_block IN (1, 2)),
         phase_week       INTEGER NOT NULL DEFAULT 1,
-        current_gym      TEXT NOT NULL DEFAULT 'work'
-          CHECK (current_gym IN ('work', 'home')),
         phase_start_date DATE NOT NULL DEFAULT CURRENT_DATE,
         created_at       TIMESTAMP DEFAULT NOW()
       );
