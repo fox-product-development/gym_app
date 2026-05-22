@@ -643,11 +643,11 @@ function SessionCard({
 // ─── Phase label helper ───────────────────────────────────────────────────────
 
 const PHASE_LABELS: Record<string, string> = {
-  anatomical_adaptation: "AA",
+  anatomical_adaptation: "Anatomical Adaptation",
   hypertrophy: "Hypertrophy",
-  maximum_strength: "Max Strength",
-  muscle_definition: "Muscle Def",
-  rest: "Rest",
+  maximum_strength: "Maximum Strength",
+  muscle_definition: "Muscle Definition",
+  rest: "Rest Week",
 };
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
@@ -732,9 +732,9 @@ export default function WeekScreen() {
           <Text
             style={{
               fontFamily: "Courier",
-              fontSize: 11,
-              color: Colors.ter,
-              letterSpacing: 0.6,
+              fontSize: 13,
+              color: Colors.text,
+              letterSpacing: 0.5,
               textTransform: "uppercase",
             }}
           >
