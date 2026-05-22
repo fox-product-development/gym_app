@@ -706,7 +706,7 @@ export default function WeekScreen() {
   }
 
   const completedCount = sessions.filter((s) => s.status === "complete").length;
-  const currentWeekSessions = sessions.filter((s) => s.week_number === 1);
+  const currentWeekSessions = sessions;
 
   const orderedSessions = [
     currentWeekSessions.find(

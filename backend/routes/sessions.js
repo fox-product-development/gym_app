@@ -7,15 +7,14 @@ const requireAuth = require("../middleware");
 
 const router = express.Router();
 
-// ─── Get sessions for current block ──────────────────────────────────────────
+// ─── Get sessions for current week ───────────────────────────────────────────
 // GET /sessions/week
-// Returns all sessions for the current programme block for the logged in user.
+// Returns sessions for the user's current phase_week only.
 
 router.get("/week", requireAuth, async (req, res) => {
   try {
-    // Get the user's current programme
     const userResult = await pool.query(
-      `SELECT current_phase, current_block FROM users WHERE id = $1`,
+      `SELECT current_phase, current_block, phase_week FROM users WHERE id = $1`,
       [req.userId],
     );
 
@@ -23,9 +22,8 @@ router.get("/week", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const { current_phase, current_block } = userResult.rows[0];
+    const { current_phase, current_block, phase_week } = userResult.rows[0];
 
-    // Get the current programme
     const progResult = await pool.query(
       `SELECT id FROM programmes
        WHERE user_id = $1
@@ -42,7 +40,7 @@ router.get("/week", requireAuth, async (req, res) => {
 
     const programmeId = progResult.rows[0].id;
 
-    // Get all sessions for this programme with their planned exercises
+    // Filter to current phase_week only
     const result = await pool.query(
       `SELECT
          s.*,
@@ -53,9 +51,10 @@ router.get("/week", requireAuth, async (req, res) => {
        LEFT JOIN planned_exercises pe ON pe.session_id = s.id
        WHERE s.programme_id = $1
          AND s.user_id = $2
+         AND s.week_number = $3
        GROUP BY s.id
-       ORDER BY s.week_number ASC, s.session_type ASC, s.occurrence ASC`,
-      [programmeId, req.userId],
+       ORDER BY s.session_type ASC, s.occurrence ASC`,
+      [programmeId, req.userId, phase_week],
     );
 
     res.json(result.rows);
@@ -110,8 +109,6 @@ router.get("/:id", requireAuth, async (req, res) => {
 
 // ─── Create a session ─────────────────────────────────────────────────────────
 // POST /sessions
-// Creates a new planned session with its exercises.
-// Called by the AI block generation route — not directly by the app.
 
 router.post("/", requireAuth, async (req, res) => {
   const {
@@ -142,7 +139,6 @@ router.post("/", requireAuth, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Create the session
     const sessionResult = await client.query(
       `INSERT INTO sessions
          (user_id, programme_id, session_type, occurrence, week_number, gym)
@@ -160,7 +156,6 @@ router.post("/", requireAuth, async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    // Insert planned exercises
     for (let i = 0; i < exercises.length; i++) {
       const ex = exercises[i];
       await client.query(
@@ -182,7 +177,6 @@ router.post("/", requireAuth, async (req, res) => {
     }
 
     await client.query("COMMIT");
-
     res.status(201).json(session);
   } catch (err) {
     await client.query("ROLLBACK");
@@ -221,7 +215,6 @@ router.patch("/:id/start", requireAuth, async (req, res) => {
 
 // ─── Log a set ────────────────────────────────────────────────────────────────
 // POST /sessions/:id/sets
-// Logs a completed set. Auto-calculates 1RM if reps are in the 3-10 range.
 
 router.post("/:id/sets", requireAuth, async (req, res) => {
   const { id } = req.params;
@@ -238,7 +231,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Log the set
     const setResult = await client.query(
       `INSERT INTO logged_sets
          (session_id, exercise_name, set_number, weight, reps, notes)
@@ -247,7 +239,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
       [id, exercise_name, set_number, weight, reps, notes || null],
     );
 
-    // Auto-calculate 1RM using Epley formula for reps in 3-10 range
     if (reps >= 3 && reps <= 10) {
       const estimated1RM = weight * (1 + reps / 30);
       await client.query(
@@ -259,7 +250,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     }
 
     await client.query("COMMIT");
-
     res.status(201).json(setResult.rows[0]);
   } catch (err) {
     await client.query("ROLLBACK");
