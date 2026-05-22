@@ -164,7 +164,7 @@ Generate the full 3-week block plan. Return JSON only, no preamble or explanatio
 
     // Call Claude
     const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 4000,
       system: BLOCK_GENERATION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
@@ -337,7 +337,7 @@ Rank every exercise in the library from most to least recommended for today. For
 Return JSON only, no preamble.`;
 
     const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 1000,
       system: EXTRA_SESSION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
