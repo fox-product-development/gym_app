@@ -1,5 +1,6 @@
 // app/(tabs)/week.tsx
 // This Week's Plan screen — shows real sessions from the database.
+// Gym selection happens at session start time via a two-step modal.
 
 import { useState, useCallback } from "react";
 import {
@@ -8,10 +9,16 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
+  Modal,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { Colors } from "../../constants/theme";
-import { getWeekSessions, getProfile, updateGym } from "../../services/api";
+import {
+  getWeekSessions,
+  getProfile,
+  startSession,
+  generateHomeSession,
+} from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +47,6 @@ interface UserProfile {
   current_phase: string;
   current_block: number;
   phase_week: number;
-  current_gym: string;
 }
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
@@ -89,105 +95,303 @@ function Divider({ inset = 0 }: { inset?: number }) {
   );
 }
 
-// ─── Gym selector ─────────────────────────────────────────────────────────────
+// ─── Start session modal ──────────────────────────────────────────────────────
+// Step 1: Choose Work Gym or Home Gym
+// Step 2 (Home Gym only): Confirm exercise regeneration
 
-function GymSelector({
-  currentGym,
-  onSelect,
-  saving,
+type ModalStep = "choose" | "confirm_home";
+
+function StartSessionModal({
+  session,
+  visible,
+  onClose,
+  onStarted,
 }: {
-  currentGym: string;
-  onSelect: (gym: string) => void;
-  saving: boolean;
+  session: Session | null;
+  visible: boolean;
+  onClose: () => void;
+  onStarted: () => void;
 }) {
-  const gyms = [
-    { id: "work", name: "Work Gym", desc: "Full rack" },
-    { id: "home", name: "Home Gym", desc: "DB + bands" },
-  ];
+  const [step, setStep] = useState<ModalStep>("choose");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Reset step when modal opens
+  const handleOpen = () => {
+    setStep("choose");
+    setError("");
+  };
+
+  async function handleStartWorkGym() {
+    if (!session) return;
+    setLoading(true);
+    setError("");
+    try {
+      await startSession(session.id);
+      onClose();
+      onStarted();
+    } catch (err: any) {
+      setError("Failed to start session");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleConfirmHomeGym() {
+    if (!session) return;
+    setLoading(true);
+    setError("");
+    try {
+      await generateHomeSession(session.id);
+      onClose();
+      onStarted();
+    } catch (err: any) {
+      setError("Failed to generate Home Gym session");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!session) return null;
 
   return (
-    <View style={{ marginHorizontal: 20, marginTop: 14 }}>
-      <Text
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onShow={handleOpen}
+      onRequestClose={onClose}
+    >
+      {/* backdrop */}
+      <Pressable
         style={{
-          fontFamily: "Courier",
-          fontSize: 9,
-          color: Colors.ter,
-          letterSpacing: 0.6,
-          textTransform: "uppercase",
-          marginBottom: 6,
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "flex-end",
         }}
+        onPress={onClose}
       >
-        Today's Gym
-      </Text>
-      <View
-        style={{
-          flexDirection: "row",
-          backgroundColor: Colors.card,
-          borderRadius: 12,
-          padding: 4,
-          borderWidth: 0.5,
-          borderColor: Colors.line,
-          opacity: saving ? 0.6 : 1,
-        }}
-      >
-        {gyms.map((gym) => {
-          const isActive = gym.id === currentGym;
-          return (
-            <Pressable
-              key={gym.id}
-              onPress={() => !saving && onSelect(gym.id)}
-              style={{
-                flex: 1,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 10,
-                padding: 10,
-                borderRadius: 9,
-                backgroundColor: isActive ? Colors.text : "transparent",
-              }}
-            >
+        {/* sheet — stops press propagation */}
+        <Pressable
+          style={{
+            backgroundColor: Colors.card,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 24,
+            paddingBottom: 40,
+            borderTopWidth: 0.5,
+            borderColor: Colors.line,
+          }}
+          onPress={() => {}}
+        >
+          {step === "choose" ? (
+            <>
+              {/* header */}
               <Text
-                style={{ fontSize: 16, color: isActive ? "#000" : Colors.sec }}
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 10,
+                  color: Colors.ter,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  marginBottom: 6,
+                }}
               >
-                🏋️
+                Starting Session
               </Text>
-              <View style={{ flex: 1 }}>
+              <Text
+                style={{
+                  fontSize: 22,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.4,
+                  marginBottom: 20,
+                }}
+              >
+                {session.session_type === "compound"
+                  ? `Compound · Session ${session.occurrence}`
+                  : "Isolation"}
+              </Text>
+
+              {/* Work Gym button */}
+              <Pressable
+                onPress={handleStartWorkGym}
+                disabled={loading}
+                style={{
+                  backgroundColor: Colors.text,
+                  borderRadius: 14,
+                  padding: 16,
+                  alignItems: "center",
+                  marginBottom: 10,
+                  opacity: loading ? 0.6 : 1,
+                }}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <>
+                    <Text
+                      style={{ fontSize: 16, fontWeight: "700", color: "#000" }}
+                    >
+                      🏋️ Start — Work Gym
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 12,
+                        color: "rgba(0,0,0,0.5)",
+                        marginTop: 2,
+                      }}
+                    >
+                      Use the planned programme
+                    </Text>
+                  </>
+                )}
+              </Pressable>
+
+              {/* Home Gym button */}
+              <Pressable
+                onPress={() => setStep("confirm_home")}
+                disabled={loading}
+                style={{
+                  backgroundColor: "transparent",
+                  borderRadius: 14,
+                  padding: 16,
+                  alignItems: "center",
+                  borderWidth: 0.5,
+                  borderColor: Colors.line2,
+                  opacity: loading ? 0.6 : 1,
+                }}
+              >
                 <Text
                   style={{
-                    fontSize: 13,
+                    fontSize: 16,
                     fontWeight: "600",
-                    color: isActive ? "#000" : Colors.text,
-                    letterSpacing: -0.1,
+                    color: Colors.text,
                   }}
                 >
-                  {gym.name}
+                  🏠 Switch to Home Gym
                 </Text>
+                <Text style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}>
+                  Regenerate with home equipment
+                </Text>
+              </Pressable>
+
+              {error ? (
                 <Text
                   style={{
-                    fontFamily: "Courier",
-                    fontSize: 10,
-                    color: isActive ? "rgba(0,0,0,0.5)" : Colors.ter,
-                    marginTop: 1,
+                    fontSize: 12,
+                    color: Colors.warn,
+                    marginTop: 12,
+                    textAlign: "center",
                   }}
                 >
-                  {gym.desc}
+                  {error}
                 </Text>
-              </View>
-              {isActive && (
-                <View
+              ) : null}
+
+              {/* cancel */}
+              <Pressable
+                onPress={onClose}
+                style={{ marginTop: 16, alignItems: "center" }}
+              >
+                <Text style={{ fontSize: 14, color: Colors.ter }}>Cancel</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              {/* confirmation step */}
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 10,
+                  color: Colors.warn,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  marginBottom: 6,
+                }}
+              >
+                Confirm Switch
+              </Text>
+              <Text
+                style={{
+                  fontSize: 22,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.4,
+                  marginBottom: 10,
+                }}
+              >
+                Switch to Home Gym?
+              </Text>
+              <Text
+                style={{
+                  fontSize: 14,
+                  color: Colors.sec,
+                  lineHeight: 22,
+                  marginBottom: 24,
+                }}
+              >
+                This will replace all planned exercises with Home Gym
+                alternatives using the same selection logic. This cannot be
+                undone.
+              </Text>
+
+              {/* Confirm button */}
+              <Pressable
+                onPress={handleConfirmHomeGym}
+                disabled={loading}
+                style={{
+                  backgroundColor: Colors.accent,
+                  borderRadius: 14,
+                  padding: 16,
+                  alignItems: "center",
+                  marginBottom: 10,
+                  opacity: loading ? 0.6 : 1,
+                }}
+              >
+                {loading ? (
+                  <ActivityIndicator color={Colors.accentInk} />
+                ) : (
+                  <Text
+                    style={{
+                      fontSize: 16,
+                      fontWeight: "700",
+                      color: Colors.accentInk,
+                    }}
+                  >
+                    Confirm — Switch to Home Gym
+                  </Text>
+                )}
+              </Pressable>
+
+              {error ? (
+                <Text
                   style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: 999,
-                    backgroundColor: Colors.accent,
+                    fontSize: 12,
+                    color: Colors.warn,
+                    marginTop: 4,
+                    textAlign: "center",
                   }}
-                />
-              )}
-            </Pressable>
-          );
-        })}
-      </View>
-    </View>
+                >
+                  {error}
+                </Text>
+              ) : null}
+
+              {/* back */}
+              <Pressable
+                onPress={() => {
+                  setStep("choose");
+                  setError("");
+                }}
+                style={{ marginTop: 8, alignItems: "center" }}
+              >
+                <Text style={{ fontSize: 14, color: Colors.ter }}>← Back</Text>
+              </Pressable>
+            </>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -206,7 +410,7 @@ function ProgressDots({
         flexDirection: "row",
         gap: 6,
         marginHorizontal: 20,
-        marginTop: 10,
+        marginTop: 14,
         marginBottom: 16,
       }}
     >
@@ -230,17 +434,16 @@ function ProgressDots({
 function SessionCard({
   session,
   index,
-  totalSessions,
+  onStartPress,
 }: {
   session: Session;
   index: number;
-  totalSessions: number;
+  onStartPress: (session: Session) => void;
 }) {
   const isActive = session.status === "in_progress";
   const isDone = session.status === "complete";
   const exercises = session.planned_exercises || [];
 
-  // Human readable session label
   const sessionLabel =
     session.session_type === "compound"
       ? `Compound · Session ${session.occurrence}`
@@ -275,7 +478,7 @@ function SessionCard({
           padding: 14,
         }}
       >
-        {/* session number badge */}
+        {/* session badge */}
         <View
           style={{
             width: 44,
@@ -340,6 +543,11 @@ function SessionCard({
             }}
           >
             <Tag color={statusColor}>{statusLabel}</Tag>
+            {session.gym === "home" && isActive && (
+              <Tag color={Colors.warn} bg="rgba(242,181,100,0.12)">
+                🏠 Home
+              </Tag>
+            )}
             <Text
               style={{ fontFamily: "Courier", fontSize: 11, color: Colors.ter }}
             >
@@ -349,26 +557,29 @@ function SessionCard({
         </View>
 
         {/* action button */}
-        <Pressable
-          style={{
-            backgroundColor: isActive ? Colors.text : "transparent",
-            borderWidth: isActive ? 0 : 0.5,
-            borderColor: Colors.line2,
-            borderRadius: 999,
-            paddingVertical: 7,
-            paddingHorizontal: 14,
-          }}
-        >
-          <Text
+        {!isDone && (
+          <Pressable
+            onPress={() => !isDone && onStartPress(session)}
             style={{
-              fontSize: 12,
-              fontWeight: "600",
-              color: isActive ? "#000" : Colors.sec,
+              backgroundColor: isActive ? Colors.text : "transparent",
+              borderWidth: isActive ? 0 : 0.5,
+              borderColor: Colors.line2,
+              borderRadius: 999,
+              paddingVertical: 7,
+              paddingHorizontal: 14,
             }}
           >
-            {isActive ? "Continue →" : isDone ? "View" : "Start →"}
-          </Text>
-        </Pressable>
+            <Text
+              style={{
+                fontSize: 12,
+                fontWeight: "600",
+                color: isActive ? "#000" : Colors.sec,
+              }}
+            >
+              {isActive ? "Continue →" : "Start →"}
+            </Text>
+          </Pressable>
+        )}
       </View>
 
       <Divider inset={16} />
@@ -445,8 +656,9 @@ export default function WeekScreen() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [savingGym, setSavingGym] = useState(false);
   const [error, setError] = useState("");
+  const [modalSession, setModalSession] = useState<Session | null>(null);
+  const [modalVisible, setModalVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -471,27 +683,31 @@ export default function WeekScreen() {
     }
   }
 
-  async function handleGymChange(gym: string) {
-    if (!profile || gym === profile.current_gym) return;
-    setSavingGym(true);
-    try {
-      await updateGym(gym);
-      setProfile((prev) => (prev ? { ...prev, current_gym: gym } : prev));
-    } catch (err) {
-      setError("Failed to update gym");
-    } finally {
-      setSavingGym(false);
+  function handleStartPress(session: Session) {
+    // If session is already in progress, go straight to active session
+    // (navigation to active session screen will be wired up next)
+    if (session.status === "in_progress") {
+      // TODO: navigate to active session screen
+      return;
     }
+    // Otherwise show the gym choice modal
+    setModalSession(session);
+    setModalVisible(true);
   }
 
-  // Count completed sessions this week
-  const completedCount = sessions.filter((s) => s.status === "complete").length;
+  function handleModalClose() {
+    setModalVisible(false);
+    setModalSession(null);
+  }
 
-  // Filter to just week 1 sessions for display (the current week)
-  // Sessions are ordered: compound occ1, compound occ2, isolation occ1 per week
+  function handleSessionStarted() {
+    // Reload sessions to reflect new status
+    loadData();
+  }
+
+  const completedCount = sessions.filter((s) => s.status === "complete").length;
   const currentWeekSessions = sessions.filter((s) => s.week_number === 1);
 
-  // Reorder to match training pattern: compound occ1, isolation, compound occ2
   const orderedSessions = [
     currentWeekSessions.find(
       (s) => s.session_type === "compound" && s.occurrence === 1,
@@ -564,14 +780,6 @@ export default function WeekScreen() {
           ) : null}
         </View>
 
-        {profile && (
-          <GymSelector
-            currentGym={profile.current_gym}
-            onSelect={handleGymChange}
-            saving={savingGym}
-          />
-        )}
-
         <ProgressDots
           completed={completedCount}
           total={orderedSessions.length || 3}
@@ -616,7 +824,7 @@ export default function WeekScreen() {
                 key={session.id}
                 session={session}
                 index={i}
-                totalSessions={orderedSessions.length}
+                onStartPress={handleStartPress}
               />
             ))}
           </View>
@@ -637,6 +845,14 @@ export default function WeekScreen() {
           </Text>
         </View>
       </ScrollView>
+
+      {/* Start session modal */}
+      <StartSessionModal
+        session={modalSession}
+        visible={modalVisible}
+        onClose={handleModalClose}
+        onStarted={handleSessionStarted}
+      />
     </View>
   );
 }
