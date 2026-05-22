@@ -11,7 +11,7 @@ import {
   ActivityIndicator,
   Modal,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, router } from "expo-router";
 import { Colors } from "../../constants/theme";
 import {
   getWeekSessions,
@@ -687,7 +687,7 @@ export default function WeekScreen() {
     // If session is already in progress, go straight to active session
     // (navigation to active session screen will be wired up next)
     if (session.status === "in_progress") {
-      // TODO: navigate to active session screen
+      router.push(`/session?id=${session.id}`);
       return;
     }
     // Otherwise show the gym choice modal

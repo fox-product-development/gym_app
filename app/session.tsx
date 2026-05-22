@@ -1,168 +1,216 @@
 // app/session.tsx
-// Active Session screen
-// Shows the live workout with exercises, warmup sets, working sets,
-// notes, and a sticky Complete Session button.
+// Active Session screen — loads real session data and handles set logging.
 
-import { View, Text, ScrollView, Pressable } from "react-native";
+import { useState, useEffect, useCallback } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+  TextInput,
+  Modal,
+} from "react-native";
+import { useLocalSearchParams, router } from "expo-router";
 import { Colors } from "../constants/theme";
+import { getSession, logSet, completeSession } from "../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface WarmupSet {
-  weight: string;
+interface PlannedExercise {
+  id: number;
+  exercise_name: string;
+  muscles_primary: string;
+  sub_component: string;
+  order_index: number;
+  target_sets: number;
+  target_reps: number;
+  target_weight: number;
+}
+
+interface LoggedSet {
+  exercise_name: string;
+  set_number: number;
+  weight: number;
   reps: number;
+  notes?: string;
 }
 
-interface WorkingSet {
-  weight: string | number;
-  reps: number | null;
-  done: boolean;
-  active?: boolean;
+interface SessionData {
+  id: number;
+  session_type: string;
+  occurrence: number;
+  gym: string;
+  status: string;
+  notes: string | null;
+  planned_exercises: PlannedExercise[];
+  logged_sets: LoggedSet[];
 }
 
-interface Exercise {
-  name: string;
-  target: string;
-  expanded: boolean;
-  warmup?: WarmupSet[];
-  working: WorkingSet[];
-  note?: string;
-}
-
-// ─── Divider ──────────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function Divider() {
   return <View style={{ height: 0.5, backgroundColor: Colors.line }} />;
 }
 
-// ─── Warmup row ───────────────────────────────────────────────────────────────
+// ─── Rep entry modal ──────────────────────────────────────────────────────────
+// Simple numpad for entering actual reps completed
 
-function WarmupRow({ set, index }: { set: WarmupSet; index: number }) {
+function RepEntryModal({
+  visible,
+  targetReps,
+  weight,
+  onConfirm,
+  onClose,
+}: {
+  visible: boolean;
+  targetReps: number;
+  weight: number;
+  onConfirm: (reps: number) => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    if (visible) setValue(String(targetReps));
+  }, [visible, targetReps]);
+
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"];
+
+  function handleKey(key: string) {
+    if (key === "⌫") {
+      setValue((v) => v.slice(0, -1));
+    } else if (key === "") {
+      return;
+    } else {
+      setValue((v) => (v.length < 3 ? v + key : v));
+    }
+  }
+
   return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 12,
-        paddingVertical: 6,
-      }}
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
     >
-      <Text
-        style={{
-          width: 18,
-          fontFamily: "Courier",
-          fontSize: 10,
-          color: Colors.ter,
-        }}
-      >
-        W{index + 1}
-      </Text>
-      {/* dashed line */}
-      <View
+      <Pressable
         style={{
           flex: 1,
-          height: 1,
-          borderStyle: "dashed",
-          borderWidth: 0.5,
-          borderColor: Colors.ter,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "flex-end",
         }}
-      />
-      <Text style={{ fontFamily: "Courier", fontSize: 12, color: Colors.ter }}>
-        {set.weight} × {set.reps}
-      </Text>
-    </View>
-  );
-}
-
-// ─── Working set row ──────────────────────────────────────────────────────────
-
-function WorkingSetRow({ set, index }: { set: WorkingSet; index: number }) {
-  const isActive = !!set.active;
-
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 12,
-        backgroundColor: isActive ? Colors.card2 : "transparent",
-        borderWidth: isActive ? 1 : 0.5,
-        borderColor: isActive ? Colors.accent : Colors.line,
-        borderRadius: 10,
-        padding: 10,
-      }}
-    >
-      {/* done checkbox */}
-      <View
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: 6,
-          backgroundColor: set.done ? Colors.accent : "transparent",
-          borderWidth: set.done ? 0 : 1,
-          borderColor: Colors.line2,
-          alignItems: "center",
-          justifyContent: "center",
-        }}
+        onPress={onClose}
       >
-        {set.done && (
-          <Text
-            style={{ color: Colors.accentInk, fontSize: 12, fontWeight: "700" }}
-          >
-            ✓
-          </Text>
-        )}
-      </View>
-
-      {/* set label */}
-      <Text
-        style={{
-          fontFamily: "Courier",
-          fontSize: 11,
-          color: Colors.ter,
-          width: 36,
-        }}
-      >
-        SET {index + 1}
-      </Text>
-
-      {/* weight */}
-      <Text
-        style={{
-          fontFamily: "Courier",
-          fontSize: 18,
-          fontWeight: "700",
-          color: isActive ? Colors.accent : Colors.text,
-        }}
-      >
-        {set.weight}
-      </Text>
-      <Text style={{ fontSize: 11, color: Colors.ter }}>kg</Text>
-
-      {/* reps */}
-      <View
-        style={{
-          marginLeft: "auto",
-          flexDirection: "row",
-          alignItems: "flex-end",
-          gap: 4,
-        }}
-      >
-        <Text
+        <Pressable
           style={{
-            fontFamily: "Courier",
-            fontSize: 18,
-            fontWeight: "700",
-            color: set.reps == null ? Colors.qua : Colors.text,
+            backgroundColor: Colors.card,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 24,
+            paddingBottom: 40,
           }}
+          onPress={() => {}}
         >
-          {set.reps == null ? "—" : set.reps}
-        </Text>
-        <Text style={{ fontSize: 11, color: Colors.ter, marginBottom: 2 }}>
-          reps
-        </Text>
-      </View>
-    </View>
+          <Text
+            style={{
+              fontFamily: "Courier",
+              fontSize: 10,
+              color: Colors.ter,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              marginBottom: 4,
+            }}
+          >
+            Reps completed
+          </Text>
+          <Text
+            style={{
+              fontFamily: "Courier",
+              fontSize: 11,
+              color: Colors.sec,
+              marginBottom: 16,
+            }}
+          >
+            Target: {targetReps} reps @ {weight} kg
+          </Text>
+
+          {/* display */}
+          <View style={{ alignItems: "center", marginBottom: 20 }}>
+            <Text
+              style={{
+                fontSize: 64,
+                fontWeight: "700",
+                color: Colors.text,
+                fontFamily: "Courier",
+                letterSpacing: -2,
+              }}
+            >
+              {value || "—"}
+            </Text>
+          </View>
+
+          {/* numpad */}
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: 8,
+              marginBottom: 16,
+            }}
+          >
+            {keys.map((k, i) => (
+              <Pressable
+                key={i}
+                onPress={() => handleKey(k)}
+                style={{
+                  width: "30%",
+                  paddingVertical: 14,
+                  alignItems: "center",
+                  backgroundColor: k === "" ? "transparent" : Colors.card2,
+                  borderRadius: 10,
+                }}
+              >
+                <Text
+                  style={{
+                    fontFamily: "Courier",
+                    fontSize: 20,
+                    fontWeight: "600",
+                    color: k === "⌫" ? Colors.sec : Colors.text,
+                  }}
+                >
+                  {k}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {/* confirm */}
+          <Pressable
+            onPress={() => {
+              const reps = parseInt(value);
+              if (reps > 0) onConfirm(reps);
+            }}
+            style={{
+              backgroundColor: Colors.accent,
+              borderRadius: 14,
+              padding: 16,
+              alignItems: "center",
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 16,
+                fontWeight: "700",
+                color: Colors.accentInk,
+              }}
+            >
+              Log Set
+            </Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -170,14 +218,44 @@ function WorkingSetRow({ set, index }: { set: WorkingSet; index: number }) {
 
 function ExerciseBlock({
   exercise,
-  index,
-  total,
+  isOpen,
+  onToggle,
+  loggedSetsForExercise,
+  onLogSet,
+  sessionId,
 }: {
-  exercise: Exercise;
-  index: number;
-  total: number;
+  exercise: PlannedExercise;
+  isOpen: boolean;
+  onToggle: () => void;
+  loggedSetsForExercise: LoggedSet[];
+  onLogSet: (setNumber: number, reps: number) => void;
+  sessionId: number;
 }) {
-  const isOpen = exercise.expanded;
+  const [repModalOpen, setRepModalOpen] = useState(false);
+  const [activeSetNumber, setActiveSetNumber] = useState<number | null>(null);
+  const [note, setNote] = useState("");
+  const [showNote, setShowNote] = useState(false);
+
+  const totalSets = exercise.target_sets;
+  const completedSets = loggedSetsForExercise.length;
+  const allDone = completedSets >= totalSets;
+
+  function handleSetPress(setNumber: number) {
+    const alreadyLogged = loggedSetsForExercise.find(
+      (s) => s.set_number === setNumber,
+    );
+    if (alreadyLogged) return; // Don't re-log
+    setActiveSetNumber(setNumber);
+    setRepModalOpen(true);
+  }
+
+  function handleRepConfirm(reps: number) {
+    if (activeSetNumber !== null) {
+      onLogSet(activeSetNumber, reps);
+    }
+    setRepModalOpen(false);
+    setActiveSetNumber(null);
+  }
 
   return (
     <View
@@ -187,8 +265,9 @@ function ExerciseBlock({
         backgroundColor: isOpen ? Colors.card : "transparent",
       }}
     >
-      {/* collapsed header — always visible */}
-      <View
+      {/* header — always visible */}
+      <Pressable
+        onPress={onToggle}
         style={{
           flexDirection: "row",
           alignItems: "center",
@@ -199,19 +278,25 @@ function ExerciseBlock({
         {/* index circle */}
         <View
           style={{
-            width: 22,
-            height: 22,
+            width: 24,
+            height: 24,
             borderRadius: 999,
-            borderWidth: 1,
+            backgroundColor: allDone ? Colors.accent : "transparent",
+            borderWidth: allDone ? 0 : 1,
             borderColor: Colors.line2,
             alignItems: "center",
             justifyContent: "center",
           }}
         >
           <Text
-            style={{ fontFamily: "Courier", fontSize: 10, color: Colors.sec }}
+            style={{
+              fontFamily: "Courier",
+              fontSize: 10,
+              color: allDone ? Colors.accentInk : Colors.sec,
+              fontWeight: "700",
+            }}
           >
-            {index}
+            {allDone ? "✓" : exercise.order_index + 1}
           </Text>
         </View>
 
@@ -224,7 +309,7 @@ function ExerciseBlock({
               letterSpacing: -0.2,
             }}
           >
-            {exercise.name}
+            {exercise.exercise_name}
           </Text>
           <Text
             style={{
@@ -234,46 +319,22 @@ function ExerciseBlock({
               marginTop: 2,
             }}
           >
-            {exercise.target}
+            {exercise.target_sets} × {exercise.target_reps} @{" "}
+            {exercise.target_weight} kg
+            {completedSets > 0 && !allDone
+              ? `  ·  ${completedSets}/${totalSets} done`
+              : ""}
           </Text>
         </View>
 
-        {/* chevron */}
-        <Text
-          style={{
-            color: Colors.sec,
-            fontSize: 14,
-            transform: [{ rotate: isOpen ? "180deg" : "0deg" }],
-          }}
-        >
-          ›
+        <Text style={{ color: Colors.sec, fontSize: 16 }}>
+          {isOpen ? "∧" : "›"}
         </Text>
-      </View>
+      </Pressable>
 
       {/* expanded content */}
       {isOpen && (
         <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
-          {/* warmup sets */}
-          {exercise.warmup && exercise.warmup.length > 0 && (
-            <View style={{ marginBottom: 12 }}>
-              <Text
-                style={{
-                  fontFamily: "Courier",
-                  fontSize: 9,
-                  color: Colors.ter,
-                  letterSpacing: 0.6,
-                  textTransform: "uppercase",
-                  marginBottom: 6,
-                }}
-              >
-                Warmup · not logged
-              </Text>
-              {exercise.warmup.map((w, i) => (
-                <WarmupRow key={i} set={w} index={i} />
-              ))}
-            </View>
-          )}
-
           {/* working sets */}
           <Text
             style={{
@@ -282,141 +343,308 @@ function ExerciseBlock({
               color: Colors.sec,
               letterSpacing: 0.6,
               textTransform: "uppercase",
-              marginBottom: 6,
+              marginBottom: 8,
             }}
           >
-            Working sets
+            Working Sets
           </Text>
           <View style={{ gap: 6 }}>
-            {exercise.working.map((s, i) => (
-              <WorkingSetRow key={i} set={s} index={i} />
-            ))}
+            {Array.from({ length: totalSets }).map((_, i) => {
+              const setNumber = i + 1;
+              const logged = loggedSetsForExercise.find(
+                (s) => s.set_number === setNumber,
+              );
+              const isDone = !!logged;
+              const isNext = !isDone && loggedSetsForExercise.length === i;
+
+              return (
+                <Pressable
+                  key={i}
+                  onPress={() => handleSetPress(setNumber)}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 12,
+                    backgroundColor: isNext ? Colors.card2 : "transparent",
+                    borderWidth: isNext ? 1 : 0.5,
+                    borderColor: isNext ? Colors.accent : Colors.line,
+                    borderRadius: 10,
+                    padding: 10,
+                  }}
+                >
+                  {/* checkbox */}
+                  <View
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: 6,
+                      backgroundColor: isDone ? Colors.accent : "transparent",
+                      borderWidth: isDone ? 0 : 1,
+                      borderColor: Colors.line2,
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    {isDone && (
+                      <Text
+                        style={{
+                          color: Colors.accentInk,
+                          fontSize: 12,
+                          fontWeight: "700",
+                        }}
+                      >
+                        ✓
+                      </Text>
+                    )}
+                  </View>
+
+                  <Text
+                    style={{
+                      fontFamily: "Courier",
+                      fontSize: 11,
+                      color: Colors.ter,
+                      width: 40,
+                    }}
+                  >
+                    SET {setNumber}
+                  </Text>
+
+                  <Text
+                    style={{
+                      fontFamily: "Courier",
+                      fontSize: 18,
+                      fontWeight: "700",
+                      color: isNext ? Colors.accent : Colors.text,
+                    }}
+                  >
+                    {exercise.target_weight}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: Colors.ter }}>kg</Text>
+
+                  <View
+                    style={{
+                      marginLeft: "auto",
+                      flexDirection: "row",
+                      alignItems: "flex-end",
+                      gap: 4,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontFamily: "Courier",
+                        fontSize: 18,
+                        fontWeight: "700",
+                        color: isDone ? Colors.text : Colors.qua,
+                      }}
+                    >
+                      {isDone ? logged!.reps : "—"}
+                    </Text>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        color: Colors.ter,
+                        marginBottom: 2,
+                      }}
+                    >
+                      reps
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
           </View>
 
-          {/* per-exercise note */}
-          {exercise.note && (
-            <View
+          {/* note section */}
+          {showNote ? (
+            <TextInput
+              value={note}
+              onChangeText={setNote}
+              placeholder="Add a note for this exercise..."
+              placeholderTextColor={Colors.qua}
+              multiline
               style={{
                 marginTop: 10,
-                padding: 10,
                 backgroundColor: Colors.card2,
                 borderRadius: 8,
+                padding: 10,
+                fontSize: 13,
+                color: Colors.text,
                 borderLeftWidth: 2,
                 borderLeftColor: Colors.accent,
+                minHeight: 60,
+              }}
+            />
+          ) : (
+            <Pressable
+              onPress={() => setShowNote(true)}
+              style={{
+                marginTop: 10,
+                borderWidth: 0.5,
+                borderColor: Colors.line2,
+                borderStyle: "dashed",
+                borderRadius: 8,
+                padding: 8,
+                alignItems: "center",
               }}
             >
-              <Text
-                style={{
-                  fontFamily: "Courier",
-                  fontSize: 10,
-                  color: Colors.ter,
-                  letterSpacing: 0.4,
-                }}
-              >
-                NOTE ·{" "}
+              <Text style={{ fontSize: 12, color: Colors.sec }}>
+                + Add note
               </Text>
-              <Text
-                style={{
-                  fontSize: 12,
-                  color: Colors.sec,
-                  lineHeight: 18,
-                  marginTop: 2,
-                }}
-              >
-                {exercise.note}
-              </Text>
-            </View>
+            </Pressable>
           )}
-
-          {/* add note button */}
-          <Pressable
-            style={{
-              marginTop: 10,
-              borderWidth: 0.5,
-              borderColor: Colors.line2,
-              borderStyle: "dashed",
-              borderRadius: 8,
-              padding: 8,
-              alignItems: "center",
-            }}
-          >
-            <Text style={{ fontSize: 12, color: Colors.sec }}>+ Add note</Text>
-          </Pressable>
         </View>
       )}
+
+      {/* rep entry modal */}
+      <RepEntryModal
+        visible={repModalOpen}
+        targetReps={exercise.target_reps}
+        weight={exercise.target_weight}
+        onConfirm={handleRepConfirm}
+        onClose={() => {
+          setRepModalOpen(false);
+          setActiveSetNumber(null);
+        }}
+      />
     </View>
   );
 }
 
-// ─── Session data ─────────────────────────────────────────────────────────────
-
-const EXERCISES: Exercise[] = [
-  {
-    name: "Deadlift",
-    target: "3 × 5 @ 140 kg",
-    expanded: true,
-    warmup: [
-      { weight: "60 kg", reps: 8 },
-      { weight: "100 kg", reps: 5 },
-      { weight: "120 kg", reps: 3 },
-    ],
-    working: [
-      { weight: 140, reps: 5, done: true },
-      { weight: 140, reps: 5, done: true },
-      { weight: 140, reps: null, done: false, active: true },
-    ],
-    note: "Felt heavy on set 2 — hook grip held up.",
-  },
-  {
-    name: "Pull-up",
-    target: "4 × 8 @ BW + 5 kg",
-    expanded: false,
-    warmup: [{ weight: "BW", reps: 5 }],
-    working: [
-      { weight: "BW+5", reps: null, done: false },
-      { weight: "BW+5", reps: null, done: false },
-      { weight: "BW+5", reps: null, done: false },
-      { weight: "BW+5", reps: null, done: false },
-    ],
-  },
-  {
-    name: "Barbell Row",
-    target: "3 × 8 @ 70 kg",
-    expanded: false,
-    working: [
-      { weight: 70, reps: null, done: false },
-      { weight: 70, reps: null, done: false },
-      { weight: 70, reps: null, done: false },
-    ],
-  },
-  {
-    name: "Face Pull",
-    target: "3 × 15 @ 20 kg",
-    expanded: false,
-    working: [
-      { weight: 20, reps: null, done: false },
-      { weight: 20, reps: null, done: false },
-      { weight: 20, reps: null, done: false },
-    ],
-  },
-  {
-    name: "Hammer Curl",
-    target: "3 × 10 @ 14 kg",
-    expanded: false,
-    working: [
-      { weight: 14, reps: null, done: false },
-      { weight: 14, reps: null, done: false },
-      { weight: 14, reps: null, done: false },
-    ],
-  },
-];
-
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function ActiveSessionScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const sessionId = parseInt(id || "0");
+
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [openExerciseId, setOpenExerciseId] = useState<number | null>(null);
+  const [loggedSets, setLoggedSets] = useState<LoggedSet[]>([]);
+  const [sessionNote, setSessionNote] = useState("");
+  const [completing, setCompleting] = useState(false);
+
+  useEffect(() => {
+    loadSession();
+  }, [sessionId]);
+
+  async function loadSession() {
+    setLoading(true);
+    try {
+      const data = await getSession(sessionId);
+      setSession(data);
+      setLoggedSets(data.logged_sets || []);
+      // Auto-expand first exercise
+      if (data.planned_exercises?.length > 0) {
+        setOpenExerciseId(data.planned_exercises[0].id);
+      }
+    } catch (err: any) {
+      setError("Failed to load session");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleLogSet(
+    exercise: PlannedExercise,
+    setNumber: number,
+    reps: number,
+  ) {
+    try {
+      await logSet(sessionId, {
+        exercise_name: exercise.exercise_name,
+        set_number: setNumber,
+        weight: exercise.target_weight,
+        reps,
+      });
+
+      // Update local state immediately so UI reflects the logged set
+      setLoggedSets((prev) => [
+        ...prev.filter(
+          (s) =>
+            !(
+              s.exercise_name === exercise.exercise_name &&
+              s.set_number === setNumber
+            ),
+        ),
+        {
+          exercise_name: exercise.exercise_name,
+          set_number: setNumber,
+          weight: exercise.target_weight,
+          reps,
+        },
+      ]);
+
+      // Auto-advance to next exercise if all sets done
+      const newLogged =
+        loggedSets.filter((s) => s.exercise_name === exercise.exercise_name)
+          .length + 1;
+      if (newLogged >= exercise.target_sets && session) {
+        const exercises = session.planned_exercises;
+        const currentIndex = exercises.findIndex((e) => e.id === exercise.id);
+        if (currentIndex < exercises.length - 1) {
+          setOpenExerciseId(exercises[currentIndex + 1].id);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to log set:", err);
+    }
+  }
+
+  async function handleComplete() {
+    setCompleting(true);
+    try {
+      await completeSession(sessionId, sessionNote || undefined);
+      router.back();
+    } catch (err) {
+      setCompleting(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: Colors.bg,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <ActivityIndicator color={Colors.accent} />
+      </View>
+    );
+  }
+
+  if (error || !session) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: Colors.bg,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Text style={{ color: Colors.warn, fontSize: 14 }}>
+          {error || "Session not found"}
+        </Text>
+      </View>
+    );
+  }
+
+  const exercises = session.planned_exercises || [];
+  const totalSets = exercises.reduce((sum, ex) => sum + ex.target_sets, 0);
+  const completedSets = loggedSets.length;
+  const sessionLabel =
+    session.session_type === "compound"
+      ? `Compound · Session ${session.occurrence}`
+      : "Isolation";
+  const gymLabel = session.gym === "home" ? "🏠 Home Gym" : "🏋️ Work Gym";
+
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
-      {/* sticky session header */}
+      {/* sticky header */}
       <View
         style={{
           paddingTop: 60,
@@ -426,41 +654,29 @@ export default function ActiveSessionScreen() {
           borderBottomColor: Colors.line,
         }}
       >
-        {/* gym + timer row */}
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        {/* gym + back row */}
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
           <Text
             style={{
-              fontSize: 11,
               fontFamily: "Courier",
+              fontSize: 11,
               color: Colors.ter,
               letterSpacing: 0.6,
               textTransform: "uppercase",
             }}
           >
-            🏋️ Work Gym
+            {gymLabel}
           </Text>
-          <View
-            style={{
-              marginLeft: "auto",
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 6,
-            }}
+          <Pressable
+            onPress={() => router.back()}
+            style={{ marginLeft: "auto" }}
           >
-            <View
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: 999,
-                backgroundColor: Colors.accent,
-              }}
-            />
             <Text
               style={{ fontFamily: "Courier", fontSize: 11, color: Colors.sec }}
             >
-              24:18
+              ✕ Exit
             </Text>
-          </View>
+          </Pressable>
         </View>
 
         {/* session title */}
@@ -473,7 +689,7 @@ export default function ActiveSessionScreen() {
             marginTop: 8,
           }}
         >
-          Pull Day
+          {sessionLabel}
         </Text>
 
         {/* progress bar */}
@@ -488,7 +704,7 @@ export default function ActiveSessionScreen() {
           <Text
             style={{ fontFamily: "Courier", fontSize: 11, color: Colors.sec }}
           >
-            4 / 12 sets
+            {completedSets} / {totalSets} sets
           </Text>
           <View
             style={{
@@ -501,7 +717,10 @@ export default function ActiveSessionScreen() {
           >
             <View
               style={{
-                width: "33%",
+                width:
+                  totalSets > 0
+                    ? `${(completedSets / totalSets) * 100}%`
+                    : "0%",
                 height: "100%",
                 backgroundColor: Colors.accent,
               }}
@@ -515,12 +734,19 @@ export default function ActiveSessionScreen() {
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 120 }}
       >
-        {EXERCISES.map((ex, i) => (
+        {exercises.map((ex) => (
           <ExerciseBlock
-            key={i}
+            key={ex.id}
             exercise={ex}
-            index={i + 1}
-            total={EXERCISES.length}
+            isOpen={openExerciseId === ex.id}
+            onToggle={() =>
+              setOpenExerciseId((prev) => (prev === ex.id ? null : ex.id))
+            }
+            loggedSetsForExercise={loggedSets.filter(
+              (s) => s.exercise_name === ex.exercise_name,
+            )}
+            onLogSet={(setNumber, reps) => handleLogSet(ex, setNumber, reps)}
+            sessionId={sessionId}
           />
         ))}
 
@@ -542,23 +768,27 @@ export default function ActiveSessionScreen() {
                 color: Colors.ter,
                 letterSpacing: 0.6,
                 textTransform: "uppercase",
+                marginBottom: 8,
               }}
             >
               Session Note
             </Text>
-            <Text
+            <TextInput
+              value={sessionNote}
+              onChangeText={setSessionNote}
+              placeholder="Add a note about today's session…"
+              placeholderTextColor={Colors.qua}
+              multiline
               style={{
-                marginTop: 8,
                 fontSize: 13,
-                color: Colors.ter,
+                color: Colors.text,
                 lineHeight: 20,
                 borderLeftWidth: 2,
                 borderLeftColor: Colors.line2,
                 paddingLeft: 10,
+                minHeight: 40,
               }}
-            >
-              Add a note about today's session…
-            </Text>
+            />
           </View>
         </View>
       </ScrollView>
@@ -576,23 +806,30 @@ export default function ActiveSessionScreen() {
         }}
       >
         <Pressable
+          onPress={handleComplete}
+          disabled={completing}
           style={{
             backgroundColor: Colors.accent,
             borderRadius: 14,
             padding: 16,
             alignItems: "center",
+            opacity: completing ? 0.7 : 1,
           }}
         >
-          <Text
-            style={{
-              fontSize: 16,
-              fontWeight: "700",
-              color: Colors.accentInk,
-              letterSpacing: -0.2,
-            }}
-          >
-            Complete Session
-          </Text>
+          {completing ? (
+            <ActivityIndicator color={Colors.accentInk} />
+          ) : (
+            <Text
+              style={{
+                fontSize: 16,
+                fontWeight: "700",
+                color: Colors.accentInk,
+                letterSpacing: -0.2,
+              }}
+            >
+              Complete Session
+            </Text>
+          )}
         </Pressable>
       </View>
     </View>
