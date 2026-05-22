@@ -37,6 +37,9 @@ app.use("/bodycomp", bodyCompRoutes);
 const sessionRoutes = require("./routes/sessions");
 app.use("/sessions", sessionRoutes);
 
+const aiRoutes = require("./routes/ai");
+app.use("/ai", aiRoutes);
+
 const oneRepMaxRoutes = require("./routes/onerepmax");
 app.use("/onerepmax", oneRepMaxRoutes);
 
