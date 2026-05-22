@@ -1,5 +1,5 @@
 // backend/routes/sessions.js
-// Session routes — create, retrieve, log sets, and complete sessions.
+// Session routes — create, retrieve, log sets, start and complete sessions.
 
 const express = require("express");
 const pool = require("../db");
@@ -7,12 +7,42 @@ const requireAuth = require("../middleware");
 
 const router = express.Router();
 
-// ─── Get all sessions for current week ───────────────────────────────────────
+// ─── Get sessions for current block ──────────────────────────────────────────
 // GET /sessions/week
-// Returns all sessions for the current week for the logged in user.
+// Returns all sessions for the current programme block for the logged in user.
 
 router.get("/week", requireAuth, async (req, res) => {
   try {
+    // Get the user's current programme
+    const userResult = await pool.query(
+      `SELECT current_phase, current_block FROM users WHERE id = $1`,
+      [req.userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const { current_phase, current_block } = userResult.rows[0];
+
+    // Get the current programme
+    const progResult = await pool.query(
+      `SELECT id FROM programmes
+       WHERE user_id = $1
+         AND phase = $2
+         AND block_number = $3
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [req.userId, current_phase, current_block],
+    );
+
+    if (progResult.rows.length === 0) {
+      return res.json([]);
+    }
+
+    const programmeId = progResult.rows[0].id;
+
+    // Get all sessions for this programme with their planned exercises
     const result = await pool.query(
       `SELECT
          s.*,
@@ -21,12 +51,11 @@ router.get("/week", requireAuth, async (req, res) => {
          ) FILTER (WHERE pe.id IS NOT NULL) AS planned_exercises
        FROM sessions s
        LEFT JOIN planned_exercises pe ON pe.session_id = s.id
-       WHERE s.user_id = $1
-         AND s.date >= date_trunc('week', CURRENT_DATE)
-         AND s.date < date_trunc('week', CURRENT_DATE) + INTERVAL '7 days'
+       WHERE s.programme_id = $1
+         AND s.user_id = $2
        GROUP BY s.id
-       ORDER BY s.date ASC`,
-      [req.userId],
+       ORDER BY s.week_number ASC, s.session_type ASC, s.occurrence ASC`,
+      [programmeId, req.userId],
     );
 
     res.json(result.rows);
@@ -38,13 +67,11 @@ router.get("/week", requireAuth, async (req, res) => {
 
 // ─── Get a single session ─────────────────────────────────────────────────────
 // GET /sessions/:id
-// Returns a session with its planned exercises and logged sets.
 
 router.get("/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
 
   try {
-    // Get session
     const sessionResult = await pool.query(
       `SELECT * FROM sessions WHERE id = $1 AND user_id = $2`,
       [id, req.userId],
@@ -56,7 +83,6 @@ router.get("/:id", requireAuth, async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    // Get planned exercises
     const plannedResult = await pool.query(
       `SELECT * FROM planned_exercises
        WHERE session_id = $1
@@ -64,7 +90,6 @@ router.get("/:id", requireAuth, async (req, res) => {
       [id],
     );
 
-    // Get logged sets
     const loggedResult = await pool.query(
       `SELECT * FROM logged_sets
        WHERE session_id = $1
@@ -86,14 +111,30 @@ router.get("/:id", requireAuth, async (req, res) => {
 // ─── Create a session ─────────────────────────────────────────────────────────
 // POST /sessions
 // Creates a new planned session with its exercises.
+// Called by the AI block generation route — not directly by the app.
 
 router.post("/", requireAuth, async (req, res) => {
-  const { date, gym, day_focus, programme_id, exercises } = req.body;
+  const {
+    programme_id,
+    session_type,
+    occurrence,
+    week_number,
+    gym,
+    exercises,
+  } = req.body;
 
-  if (!date || !gym || !day_focus || !exercises || exercises.length === 0) {
-    return res
-      .status(400)
-      .json({ error: "date, gym, day_focus and exercises are required" });
+  if (
+    !session_type ||
+    !occurrence ||
+    !week_number ||
+    !gym ||
+    !exercises ||
+    exercises.length === 0
+  ) {
+    return res.status(400).json({
+      error:
+        "session_type, occurrence, week_number, gym and exercises are required",
+    });
   }
 
   const client = await pool.connect();
@@ -103,10 +144,18 @@ router.post("/", requireAuth, async (req, res) => {
 
     // Create the session
     const sessionResult = await client.query(
-      `INSERT INTO sessions (user_id, programme_id, date, gym, day_focus)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO sessions
+         (user_id, programme_id, session_type, occurrence, week_number, gym)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
-      [req.userId, programme_id || null, date, gym, day_focus],
+      [
+        req.userId,
+        programme_id || null,
+        session_type,
+        occurrence,
+        week_number,
+        gym,
+      ],
     );
 
     const session = sessionResult.rows[0];
@@ -116,14 +165,15 @@ router.post("/", requireAuth, async (req, res) => {
       const ex = exercises[i];
       await client.query(
         `INSERT INTO planned_exercises
-           (session_id, exercise_name, order_index, warmup_sets,
-            target_sets, target_reps, target_weight)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+           (session_id, exercise_name, muscles_primary, sub_component,
+            order_index, target_sets, target_reps, target_weight)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           session.id,
           ex.exercise_name,
-          i,
-          JSON.stringify(ex.warmup_sets || []),
+          ex.muscles_primary || null,
+          ex.sub_component || null,
+          ex.order_index !== undefined ? ex.order_index : i,
           ex.target_sets,
           ex.target_reps,
           ex.target_weight,
@@ -145,7 +195,6 @@ router.post("/", requireAuth, async (req, res) => {
 
 // ─── Start a session ──────────────────────────────────────────────────────────
 // PATCH /sessions/:id/start
-// Marks a session as in progress and records the start time.
 
 router.patch("/:id/start", requireAuth, async (req, res) => {
   const { id } = req.params;
@@ -172,19 +221,16 @@ router.patch("/:id/start", requireAuth, async (req, res) => {
 
 // ─── Log a set ────────────────────────────────────────────────────────────────
 // POST /sessions/:id/sets
-// Logs a completed set during a session.
-// Also updates the 1RM estimate if reps are in the 3-10 range.
+// Logs a completed set. Auto-calculates 1RM if reps are in the 3-10 range.
 
 router.post("/:id/sets", requireAuth, async (req, res) => {
   const { id } = req.params;
   const { exercise_name, set_number, weight, reps, notes } = req.body;
 
   if (!exercise_name || !set_number || !weight || !reps) {
-    return res
-      .status(400)
-      .json({
-        error: "exercise_name, set_number, weight and reps are required",
-      });
+    return res.status(400).json({
+      error: "exercise_name, set_number, weight and reps are required",
+    });
   }
 
   const client = await pool.connect();
@@ -201,11 +247,9 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
       [id, exercise_name, set_number, weight, reps, notes || null],
     );
 
-    // Update 1RM estimate if reps are in the 3-10 range
-    // Uses the Epley formula: 1RM = weight x (1 + reps / 30)
+    // Auto-calculate 1RM using Epley formula for reps in 3-10 range
     if (reps >= 3 && reps <= 10) {
       const estimated1RM = weight * (1 + reps / 30);
-
       await client.query(
         `INSERT INTO one_rep_max_history
            (user_id, exercise_name, estimated_1rm, weight_used, reps_performed)
@@ -228,7 +272,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
 
 // ─── Complete a session ───────────────────────────────────────────────────────
 // PATCH /sessions/:id/complete
-// Marks a session as complete and records the end time.
 
 router.patch("/:id/complete", requireAuth, async (req, res) => {
   const { id } = req.params;
