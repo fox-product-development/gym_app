@@ -28,7 +28,8 @@ TRAINING STRUCTURE
 - The Isolation session plan is performed ONCE per week
 - Sessions are not mapped to specific days. The user trains when their schedule allows.
 - Compound session contains 6 exercises: 1 from each of Back, Chest, Lower Back, Quads, Shoulders, plus 1 Wildcard
-- Isolation session contains 6 exercises: 1 from each of Biceps, Triceps, Shoulders, Forearms, plus 2 Core exercises (one at position 1, one at position 6)
+- Isolation session contains 6 exercises: Biceps, Triceps, Shoulders, Forearms, Core, and a Wildcard. The Core exercise is always placed first. The Wildcard is drawn from {Core, Calves, Hamstrings} isolation exercises only
+— if Core is drawn, it is placed last to avoid two consecutive core exercises.
 - Exercise order within sessions follows best practice: largest compound movements first, isolation last, core always last
 
 EXERCISE SELECTION RULES
