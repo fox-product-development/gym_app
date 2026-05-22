@@ -345,7 +345,9 @@ function StartSessionButton({ sessions }: { sessions: Session[] }) {
           justifyContent: "center",
         }}
       >
-        <Text style={{ color: Colors.accent, fontSize: 16 }}>▶</Text>
+        <Text style={{ color: Colors.text, fontSize: 14, marginLeft: 3 }}>
+          ▶
+        </Text>
       </View>
     </Pressable>
   );

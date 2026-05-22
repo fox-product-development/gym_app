@@ -17,7 +17,7 @@ import { login, register } from "../services/api";
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function LoginScreen() {
-  const [mode, setMode] = useState<"login" | "register">("login");
+  const [mode] = useState<"login">("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -205,24 +205,6 @@ export default function LoginScreen() {
               {mode === "login" ? "Log In" : "Create Account"}
             </Text>
           )}
-        </Pressable>
-
-        {/* toggle login/register */}
-        <Pressable
-          onPress={() => {
-            setMode(mode === "login" ? "register" : "login");
-            setError("");
-          }}
-          style={{ alignItems: "center", paddingTop: 12 }}
-        >
-          <Text style={{ fontSize: 13, color: Colors.sec }}>
-            {mode === "login"
-              ? "Don't have an account? "
-              : "Already have an account? "}
-            <Text style={{ color: Colors.accent, fontWeight: "600" }}>
-              {mode === "login" ? "Register" : "Log In"}
-            </Text>
-          </Text>
         </Pressable>
       </View>
     </View>
