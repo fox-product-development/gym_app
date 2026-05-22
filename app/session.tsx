@@ -70,20 +70,30 @@ function RepEntryModal({
   onClose: () => void;
 }) {
   const [value, setValue] = useState("");
+  const [isFresh, setIsFresh] = useState(true);
 
   useEffect(() => {
-    if (visible) setValue(String(targetReps));
+    if (visible) {
+      setValue(String(targetReps));
+      setIsFresh(true);
+    }
   }, [visible, targetReps]);
 
   const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"];
 
   function handleKey(key: string) {
     if (key === "⌫") {
+      setIsFresh(false);
       setValue((v) => v.slice(0, -1));
     } else if (key === "") {
       return;
     } else {
-      setValue((v) => (v.length < 3 ? v + key : v));
+      if (isFresh) {
+        setValue(key);
+        setIsFresh(false);
+      } else {
+        setValue((v) => (v.length < 3 ? v + key : v));
+      }
     }
   }
 
@@ -135,7 +145,6 @@ function RepEntryModal({
             Target: {targetReps} reps @ {weight} kg
           </Text>
 
-          {/* display */}
           <View style={{ alignItems: "center", marginBottom: 20 }}>
             <Text
               style={{
@@ -150,7 +159,6 @@ function RepEntryModal({
             </Text>
           </View>
 
-          {/* numpad */}
           <View
             style={{
               flexDirection: "row",
@@ -185,7 +193,6 @@ function RepEntryModal({
             ))}
           </View>
 
-          {/* confirm */}
           <Pressable
             onPress={() => {
               const reps = parseInt(value);

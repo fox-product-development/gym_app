@@ -3,10 +3,16 @@
 // Phase progression is automatic. Gym selection happens at session start time.
 
 import { useState, useCallback } from "react";
-import { View, Text, ScrollView, ActivityIndicator } from "react-native";
-import { useFocusEffect } from "expo-router";
+import {
+  View,
+  Text,
+  ScrollView,
+  ActivityIndicator,
+  Pressable,
+} from "react-native";
+import { useFocusEffect, router } from "expo-router";
 import { Colors } from "../../constants/theme";
-import { getProfile } from "../../services/api";
+import { getProfile, clearToken } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -363,7 +369,22 @@ export default function SettingsScreen() {
 
         <MiscSettings />
 
-        <View style={{ alignItems: "center", paddingVertical: 24 }}>
+        <View style={{ alignItems: "center", paddingVertical: 24, gap: 16 }}>
+          <Pressable
+            onPress={() => {
+              clearToken();
+              router.replace("/login");
+            }}
+            style={{
+              borderWidth: 0.5,
+              borderColor: Colors.line2,
+              borderRadius: 12,
+              paddingVertical: 12,
+              paddingHorizontal: 32,
+            }}
+          >
+            <Text style={{ fontSize: 14, color: Colors.sec }}>Log Out</Text>
+          </Pressable>
           <Text
             style={{
               fontFamily: "Courier",
