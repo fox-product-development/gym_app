@@ -1,15 +1,53 @@
 // app/(tabs)/index.tsx
-// Home / Dashboard screen
-// Sections: greeting, current goal badge, start session CTA,
-//           body comp mini-charts, AI weekly report, recent sessions
+// Home / Dashboard screen — fully wired to real data.
 
-import { useEffect } from "react";
-import { View, Text, ScrollView, Pressable } from "react-native";
-import { router } from "expo-router";
+import { useState, useCallback } from "react";
+import {
+  View,
+  Text,
+  ScrollView,
+  Pressable,
+  ActivityIndicator,
+} from "react-native";
+import { router, useFocusEffect } from "expo-router";
 import { Colors } from "../../constants/theme";
-import { getToken } from "../../services/api";
+import {
+  getProfile,
+  getBodyComp,
+  getWeekSessions,
+  getWeeklyFeedback,
+} from "../../services/api";
 
-// ─── Reusable primitives ────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Profile {
+  current_phase: string;
+  current_block: number;
+  phase_week: number;
+  phase_start_date: string;
+}
+
+interface BodyCompEntry {
+  weight_kg: string | null;
+  muscle_mass_kg: string | null;
+  logged_at: string;
+}
+
+interface Session {
+  id: number;
+  session_type: string;
+  occurrence: number;
+  status: string;
+  gym: string;
+  planned_exercises: any[];
+}
+
+interface WeeklyFeedback {
+  ai_summary: string;
+  week_start_date: string;
+}
+
+// ─── Reusable primitives ─────────────────────────────────────────────────────
 
 function Tag({
   children,
@@ -75,18 +113,12 @@ function Card({
 function Divider({ inset = 0 }: { inset?: number }) {
   return (
     <View
-      style={{
-        height: 0.5,
-        backgroundColor: Colors.line,
-        marginLeft: inset,
-      }}
+      style={{ height: 0.5, backgroundColor: Colors.line, marginLeft: inset }}
     />
   );
 }
 
-// ─── Sparkline chart (SVG-free, using View bars as approximation) ────────────
-// React Native web doesn't need SVG — we use a simple bar approximation
-// that will be replaced with a real chart library later.
+// ─── Mini bar chart ───────────────────────────────────────────────────────────
 
 function MiniChart({
   points,
@@ -97,6 +129,23 @@ function MiniChart({
   color: string;
   height?: number;
 }) {
+  if (points.length === 0) {
+    return (
+      <View
+        style={{
+          height,
+          alignItems: "center",
+          justifyContent: "center",
+          marginTop: 8,
+        }}
+      >
+        <Text style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}>
+          No data
+        </Text>
+      </View>
+    );
+  }
+
   const min = Math.min(...points);
   const max = Math.max(...points);
   const range = max - min || 1;
@@ -130,18 +179,20 @@ function MiniChart({
   );
 }
 
-// ─── Goal badge ─────────────────────────────────────────────────────────────
+// ─── Phase badge ──────────────────────────────────────────────────────────────
 
-function GoalBadge({
-  goalType,
-  goalWeek,
-  totalWeeks = 8,
-}: {
-  goalType: string;
-  goalWeek: number;
-  totalWeeks?: number;
-}) {
-  const pct = Math.round((goalWeek / totalWeeks) * 100);
+const PHASE_LABELS: Record<string, string> = {
+  anatomical_adaptation: "Anatomical Adaptation",
+  hypertrophy: "Hypertrophy",
+  maximum_strength: "Maximum Strength",
+  muscle_definition: "Muscle Definition",
+  rest: "Rest Week",
+};
+
+function PhaseBadge({ profile }: { profile: Profile }) {
+  const pct = Math.round((profile.phase_week / 6) * 100);
+  const label = PHASE_LABELS[profile.current_phase] || profile.current_phase;
+
   return (
     <View
       style={{
@@ -157,7 +208,6 @@ function GoalBadge({
         marginTop: 16,
       }}
     >
-      {/* icon */}
       <View
         style={{
           width: 38,
@@ -171,7 +221,6 @@ function GoalBadge({
         <Text style={{ fontSize: 18 }}>★</Text>
       </View>
 
-      {/* label */}
       <View style={{ flex: 1 }}>
         <Text
           style={{
@@ -182,24 +231,23 @@ function GoalBadge({
             textTransform: "uppercase",
           }}
         >
-          Current Goal
+          Current Phase
         </Text>
         <Text
           style={{
-            fontSize: 18,
+            fontSize: 16,
             fontWeight: "600",
             color: Colors.text,
             marginTop: 2,
           }}
         >
-          {goalType} · Week {goalWeek}{" "}
-          <Text style={{ color: Colors.ter, fontWeight: "400" }}>
-            of {totalWeeks}
+          {label}{" "}
+          <Text style={{ color: Colors.ter, fontWeight: "400", fontSize: 14 }}>
+            · Week {profile.phase_week} of 6
           </Text>
         </Text>
       </View>
 
-      {/* percentage */}
       <Text
         style={{
           fontFamily: "Courier",
@@ -215,11 +263,43 @@ function GoalBadge({
   );
 }
 
-// ─── Start session CTA ───────────────────────────────────────────────────────
+// ─── Start session button ─────────────────────────────────────────────────────
 
-function StartSessionButton() {
+function StartSessionButton({ sessions }: { sessions: Session[] }) {
+  const nextSession =
+    sessions.find((s) => s.status === "in_progress") ||
+    sessions.find((s) => s.status === "planned");
+
+  if (!nextSession) {
+    return (
+      <View
+        style={{
+          marginHorizontal: 20,
+          marginTop: 16,
+          backgroundColor: Colors.card,
+          borderRadius: 16,
+          padding: 18,
+          borderWidth: 0.5,
+          borderColor: Colors.line,
+        }}
+      >
+        <Text style={{ fontSize: 14, color: Colors.sec, textAlign: "center" }}>
+          All sessions complete this week
+        </Text>
+      </View>
+    );
+  }
+
+  const label =
+    nextSession.session_type === "compound"
+      ? `Compound · Session ${nextSession.occurrence}`
+      : "Isolation Session";
+
+  const isInProgress = nextSession.status === "in_progress";
+
   return (
     <Pressable
+      onPress={() => router.push(`/session?id=${nextSession.id}`)}
       style={{
         marginHorizontal: 20,
         marginTop: 16,
@@ -241,7 +321,7 @@ function StartSessionButton() {
             textTransform: "uppercase",
           }}
         >
-          Today · Push Day
+          {isInProgress ? "In Progress" : "Next Up"} · {label}
         </Text>
         <Text
           style={{
@@ -252,11 +332,9 @@ function StartSessionButton() {
             letterSpacing: -0.4,
           }}
         >
-          Start Today's Session →
+          {isInProgress ? "Continue Session →" : "Start Today's Session →"}
         </Text>
       </View>
-
-      {/* play button circle */}
       <View
         style={{
           width: 44,
@@ -273,15 +351,29 @@ function StartSessionButton() {
   );
 }
 
-// ─── Body comp mini cards ────────────────────────────────────────────────────
+// ─── Body comp cards ──────────────────────────────────────────────────────────
 
-function BodyCompCards() {
-  const weightPoints = [
-    77.2, 77.0, 77.4, 77.1, 77.5, 77.6, 77.8, 77.7, 78.0, 78.2, 78.1, 78.4,
-  ];
-  const musclePoints = [
-    36.0, 36.1, 36.0, 36.2, 36.3, 36.3, 36.4, 36.5, 36.5, 36.6, 36.7, 36.8,
-  ];
+function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
+  const weightPoints = entries
+    .filter((e) => e.weight_kg !== null)
+    .map((e) => parseFloat(e.weight_kg!));
+  const musclePoints = entries
+    .filter((e) => e.muscle_mass_kg !== null)
+    .map((e) => parseFloat(e.muscle_mass_kg!));
+
+  const latestWeight =
+    weightPoints.length > 0 ? weightPoints[weightPoints.length - 1] : null;
+  const latestMuscle =
+    musclePoints.length > 0 ? musclePoints[musclePoints.length - 1] : null;
+
+  const weightChange =
+    weightPoints.length >= 2
+      ? (weightPoints[weightPoints.length - 1] - weightPoints[0]).toFixed(1)
+      : null;
+  const muscleChange =
+    musclePoints.length >= 2
+      ? (musclePoints[musclePoints.length - 1] - musclePoints[0]).toFixed(1)
+      : null;
 
   return (
     <View
@@ -292,7 +384,6 @@ function BodyCompCards() {
         marginTop: 20,
       }}
     >
-      {/* Bodyweight */}
       <Card style={{ flex: 1 }} pad={14}>
         <View
           style={{
@@ -334,27 +425,30 @@ function BodyCompCards() {
               letterSpacing: -0.5,
             }}
           >
-            78.4
+            {latestWeight !== null ? latestWeight.toFixed(1) : "—"}
           </Text>
           <Text style={{ fontSize: 11, color: Colors.sec, marginBottom: 2 }}>
             kg
           </Text>
-          <Text
-            style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              color: Colors.accent,
-              fontFamily: "Courier",
-              marginBottom: 2,
-            }}
-          >
-            +1.2
-          </Text>
+          {weightChange !== null && (
+            <Text
+              style={{
+                marginLeft: "auto",
+                fontSize: 11,
+                color:
+                  parseFloat(weightChange) >= 0 ? Colors.accent : Colors.warn,
+                fontFamily: "Courier",
+                marginBottom: 2,
+              }}
+            >
+              {parseFloat(weightChange) >= 0 ? "+" : ""}
+              {weightChange}
+            </Text>
+          )}
         </View>
         <MiniChart points={weightPoints} color={Colors.text} height={68} />
       </Card>
 
-      {/* Muscle mass */}
       <Card style={{ flex: 1 }} pad={14}>
         <View
           style={{
@@ -396,22 +490,26 @@ function BodyCompCards() {
               letterSpacing: -0.5,
             }}
           >
-            36.8
+            {latestMuscle !== null ? latestMuscle.toFixed(1) : "—"}
           </Text>
           <Text style={{ fontSize: 11, color: Colors.sec, marginBottom: 2 }}>
             kg
           </Text>
-          <Text
-            style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              color: Colors.accent,
-              fontFamily: "Courier",
-              marginBottom: 2,
-            }}
-          >
-            +0.6
-          </Text>
+          {muscleChange !== null && (
+            <Text
+              style={{
+                marginLeft: "auto",
+                fontSize: 11,
+                color:
+                  parseFloat(muscleChange) >= 0 ? Colors.accent : Colors.warn,
+                fontFamily: "Courier",
+                marginBottom: 2,
+              }}
+            >
+              {parseFloat(muscleChange) >= 0 ? "+" : ""}
+              {muscleChange}
+            </Text>
+          )}
         </View>
         <MiniChart points={musclePoints} color={Colors.accent} height={68} />
       </Card>
@@ -419,12 +517,40 @@ function BodyCompCards() {
   );
 }
 
-// ─── AI weekly report card ───────────────────────────────────────────────────
+// ─── AI report card ───────────────────────────────────────────────────────────
 
-function AIReportCard() {
+function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
+  if (!feedback) {
+    return (
+      <Card pad={14} style={{ marginHorizontal: 20, marginTop: 14 }}>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 10,
+            color: Colors.ter,
+            letterSpacing: 0.6,
+            textTransform: "uppercase",
+            marginBottom: 6,
+          }}
+        >
+          Weekly AI Report
+        </Text>
+        <Text style={{ fontSize: 13, color: Colors.ter }}>
+          Your first report will be generated this Sunday evening.
+        </Text>
+      </Card>
+    );
+  }
+
+  // Show first 200 chars as preview
+  const preview = feedback.ai_summary?.slice(0, 200).trim();
+  const weekDate = new Date(feedback.week_start_date).toLocaleDateString(
+    "en-GB",
+    { day: "numeric", month: "short" },
+  );
+
   return (
     <Card pad={0} style={{ marginHorizontal: 20, marginTop: 14 }}>
-      {/* header row */}
       <View
         style={{
           flexDirection: "row",
@@ -457,7 +583,7 @@ function AIReportCard() {
               textTransform: "uppercase",
             }}
           >
-            Weekly AI Report
+            Weekly AI Report · {weekDate}
           </Text>
           <Text
             style={{
@@ -467,7 +593,7 @@ function AIReportCard() {
               marginTop: 1,
             }}
           >
-            Strong week — keep pushing chest volume
+            Week in review
           </Text>
         </View>
         <Text style={{ color: Colors.sec, fontSize: 12 }}>›</Text>
@@ -475,51 +601,41 @@ function AIReportCard() {
 
       <Divider />
 
-      {/* body */}
       <Text
-        style={{
-          fontSize: 13,
-          color: Colors.sec,
-          lineHeight: 20,
-          padding: 14,
-        }}
+        style={{ fontSize: 13, color: Colors.sec, lineHeight: 20, padding: 14 }}
       >
-        Bench press progressed +5 kg this week. Volume on back work dropped 12%
-        — consider adding a row variation Wednesday. Bodyweight trending on
-        target.
+        {preview}
+        {feedback.ai_summary?.length > 200 ? "…" : ""}
       </Text>
-
-      {/* tags */}
-      <View
-        style={{
-          flexDirection: "row",
-          gap: 6,
-          paddingHorizontal: 14,
-          paddingBottom: 14,
-          flexWrap: "wrap",
-        }}
-      >
-        <Tag color={Colors.accent} bg={Colors.accentDim}>
-          ↑ Bench +5kg
-        </Tag>
-        <Tag color={Colors.warn} bg="rgba(242,181,100,0.12)">
-          ↓ Back vol −12%
-        </Tag>
-        <Tag>Weight on track</Tag>
-      </View>
     </Card>
   );
 }
 
-// ─── Recent sessions ─────────────────────────────────────────────────────────
+// ─── Recent sessions ──────────────────────────────────────────────────────────
 
-const RECENT_SESSIONS = [
-  { day: "Fri", name: "Pull Day", meta: "7 ex · 52m", gym: "Work Gym" },
-  { day: "Wed", name: "Legs", meta: "6 ex · 48m", gym: "Home Gym" },
-  { day: "Mon", name: "Push Day", meta: "7 ex · 55m", gym: "Work Gym" },
-];
+function RecentSessions({ sessions }: { sessions: Session[] }) {
+  const completed = sessions.filter((s) => s.status === "complete").slice(0, 3);
 
-function RecentSessions() {
+  if (completed.length === 0) {
+    return (
+      <View style={{ marginHorizontal: 20, marginTop: 20, marginBottom: 24 }}>
+        <Text
+          style={{
+            fontSize: 13,
+            fontWeight: "600",
+            color: Colors.sec,
+            marginBottom: 10,
+          }}
+        >
+          Recent sessions
+        </Text>
+        <Text style={{ fontSize: 13, color: Colors.ter }}>
+          No completed sessions yet.
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View style={{ marginHorizontal: 20, marginTop: 20, marginBottom: 24 }}>
       <View
@@ -533,72 +649,144 @@ function RecentSessions() {
         <Text style={{ fontSize: 13, fontWeight: "600", color: Colors.sec }}>
           Recent sessions
         </Text>
-        <Text
-          style={{ fontFamily: "Courier", fontSize: 10, color: Colors.ter }}
-        >
-          SEE ALL
-        </Text>
       </View>
 
-      {RECENT_SESSIONS.map((s, i) => (
-        <View
-          key={i}
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 12,
-            paddingVertical: 12,
-            borderTopWidth: 0.5,
-            borderTopColor: Colors.line,
-            borderBottomWidth: 0.5,
-            borderBottomColor: Colors.line,
-            marginTop: i === 0 ? 0 : -0.5,
-          }}
-        >
-          <Text
+      {completed.map((s, i) => {
+        const label =
+          s.session_type === "compound"
+            ? `Compound · Session ${s.occurrence}`
+            : "Isolation";
+        const gymLabel = s.gym === "home" ? "Home Gym" : "Work Gym";
+        const exCount = s.planned_exercises?.length || 0;
+
+        return (
+          <View
+            key={s.id}
             style={{
-              width: 36,
-              fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              textTransform: "uppercase",
-              letterSpacing: 0.6,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 12,
+              paddingVertical: 12,
+              borderTopWidth: 0.5,
+              borderTopColor: Colors.line,
+              borderBottomWidth: 0.5,
+              borderBottomColor: Colors.line,
+              marginTop: i === 0 ? 0 : -0.5,
             }}
           >
-            {s.day}
-          </Text>
-          <View style={{ flex: 1 }}>
-            <Text
-              style={{ fontSize: 14, fontWeight: "600", color: Colors.text }}
-            >
-              {s.name}
-            </Text>
-            <Text
+            <View
               style={{
-                fontSize: 11,
-                color: Colors.ter,
-                fontFamily: "Courier",
-                marginTop: 2,
+                width: 36,
+                height: 36,
+                borderRadius: 8,
+                backgroundColor: Colors.card2,
+                alignItems: "center",
+                justifyContent: "center",
               }}
             >
-              {s.meta} · {s.gym}
-            </Text>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 9,
+                  color: Colors.ter,
+                  textTransform: "uppercase",
+                }}
+              >
+                {s.session_type === "isolation" ? "ISO" : "CPD"}
+              </Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text
+                style={{ fontSize: 14, fontWeight: "600", color: Colors.text }}
+              >
+                {label}
+              </Text>
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: Colors.ter,
+                  fontFamily: "Courier",
+                  marginTop: 2,
+                }}
+              >
+                {exCount} exercises · {gymLabel}
+              </Text>
+            </View>
+            <Text style={{ color: Colors.qua, fontSize: 14 }}>›</Text>
           </View>
-          <Text style={{ color: Colors.qua, fontSize: 14 }}>›</Text>
-        </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
 
-// ─── Main screen ─────────────────────────────────────────────────────────────
+// ─── Greeting helpers ─────────────────────────────────────────────────────────
+
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+function getDateLabel(): string {
+  return new Date().toLocaleDateString("en-GB", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+}
+
+// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function DashboardScreen() {
-  useEffect(() => {
-    if (!getToken()) {
-      router.replace("/login");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [bodyComp, setBodyComp] = useState<BodyCompEntry[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [feedback, setFeedback] = useState<WeeklyFeedback | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, []),
+  );
+
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [profileData, bodyCompData, sessionData, feedbackData] =
+        await Promise.all([
+          getProfile(),
+          getBodyComp(12),
+          getWeekSessions(),
+          getWeeklyFeedback(),
+        ]);
+      setProfile(profileData);
+      setBodyComp(bodyCompData);
+      setSessions(sessionData);
+      setFeedback(feedbackData);
+    } catch (err) {
+      console.error("Dashboard load error:", err);
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }
+
+  if (loading) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: Colors.bg,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <ActivityIndicator color={Colors.accent} />
+      </View>
+    );
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
@@ -616,7 +804,7 @@ export default function DashboardScreen() {
               textTransform: "uppercase",
             }}
           >
-            Sunday · May 18
+            {getDateLabel()}
           </Text>
           <Text
             style={{
@@ -627,15 +815,15 @@ export default function DashboardScreen() {
               marginTop: 6,
             }}
           >
-            Good evening
+            {getGreeting()}
           </Text>
         </View>
 
-        <GoalBadge goalType="Size" goalWeek={3} />
-        <StartSessionButton />
-        <BodyCompCards />
-        <AIReportCard />
-        <RecentSessions />
+        {profile && <PhaseBadge profile={profile} />}
+        <StartSessionButton sessions={sessions} />
+        <BodyCompCards entries={bodyComp} />
+        <AIReportCard feedback={feedback} />
+        <RecentSessions sessions={sessions} />
       </ScrollView>
     </View>
   );
