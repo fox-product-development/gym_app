@@ -320,14 +320,7 @@ export default function LogScreen() {
     const base64 = asset.base64!;
 
     // Determine media type from uri extension, default to jpeg
-    const ext = asset.uri.split(".").pop()?.toLowerCase();
-    const mediaType =
-      ext === "png"
-        ? "image/png"
-        : ext === "webp"
-          ? "image/webp"
-          : "image/jpeg";
-
+    const mediaType = asset.mimeType ?? "image/jpeg";
     setExtracting(true);
     setSaveError("");
 
