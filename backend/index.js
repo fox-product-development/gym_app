@@ -16,7 +16,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 
 // Parse incoming JSON request bodies
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 // A simple endpoint to confirm the server is running.
