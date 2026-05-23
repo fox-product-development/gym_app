@@ -137,9 +137,10 @@ async function createTables() {
         user_id         INTEGER REFERENCES users(id),
         weight_kg       NUMERIC(5,2),
         muscle_mass_kg  NUMERIC(5,2),
+        body_fat_pct    NUMERIC(4,1),
         logged_at       DATE NOT NULL DEFAULT CURRENT_DATE,
         source          TEXT DEFAULT 'manual'
-          CHECK (source IN ('manual', 'apple_health')),
+          CHECK (source IN ('manual', 'apple_health', 'image')),
         created_at      TIMESTAMP DEFAULT NOW()
       );
     `);

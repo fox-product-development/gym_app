@@ -149,6 +149,7 @@ export async function completeSession(id: number, notes?: string) {
 export async function logBodyComp(data: {
   weight_kg?: number;
   muscle_mass_kg?: number;
+  body_fat_pct?: number;
   source?: string;
 }) {
   return request("/bodycomp", "POST", data);
@@ -156,6 +157,16 @@ export async function logBodyComp(data: {
 
 export async function getBodyComp(weeks: number = 12) {
   return request(`/bodycomp?weeks=${weeks}`);
+}
+
+export async function extractBodyCompFromImage(
+  image_base64: string,
+  media_type: string,
+) {
+  return request("/bodycomp/extract-from-image", "POST", {
+    image_base64,
+    media_type,
+  });
 }
 
 // ─── 1RM history ─────────────────────────────────────────────────────────────

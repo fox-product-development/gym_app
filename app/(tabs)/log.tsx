@@ -11,8 +11,13 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
 import { Colors } from "../../constants/theme";
-import { logBodyComp, getBodyComp } from "../../services/api";
+import {
+  logBodyComp,
+  getBodyComp,
+  extractBodyCompFromImage,
+} from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,6 +25,7 @@ interface BodyCompEntry {
   id: number;
   weight_kg: string | null;
   muscle_mass_kg: string | null;
+  body_fat_pct: string | null;
   logged_at: string;
 }
 
@@ -208,10 +214,14 @@ function Numpad({ onPress }: { onPress: (key: string) => void }) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function LogScreen() {
-  const [activeField, setActiveField] = useState<"weight" | "muscle">("weight");
+  const [activeField, setActiveField] = useState<
+    "weight" | "muscle" | "bodyfat"
+  >("weight");
   const [weightInput, setWeightInput] = useState("");
   const [muscleInput, setMuscleInput] = useState("");
+  const [bodyFatInput, setBodyFatInput] = useState("");
   const [saving, setSaving] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [entries, setEntries] = useState<BodyCompEntry[]>([]);
@@ -237,8 +247,18 @@ export default function LogScreen() {
   }
 
   function handleNumpad(key: string) {
-    const current = activeField === "weight" ? weightInput : muscleInput;
-    const setter = activeField === "weight" ? setWeightInput : setMuscleInput;
+    const current =
+      activeField === "weight"
+        ? weightInput
+        : activeField === "muscle"
+          ? muscleInput
+          : bodyFatInput;
+    const setter =
+      activeField === "weight"
+        ? setWeightInput
+        : activeField === "muscle"
+          ? setMuscleInput
+          : setBodyFatInput;
 
     if (key === "⌫") {
       setter(current.slice(0, -1));
@@ -250,7 +270,7 @@ export default function LogScreen() {
   }
 
   async function handleSave() {
-    if (!weightInput && !muscleInput) {
+    if (!weightInput && !muscleInput && !bodyFatInput) {
       setSaveError("Enter at least one value");
       return;
     }
@@ -263,11 +283,13 @@ export default function LogScreen() {
       await logBodyComp({
         weight_kg: weightInput ? parseFloat(weightInput) : undefined,
         muscle_mass_kg: muscleInput ? parseFloat(muscleInput) : undefined,
+        body_fat_pct: bodyFatInput ? parseFloat(bodyFatInput) : undefined,
       });
 
       setSaveSuccess(true);
       setWeightInput("");
       setMuscleInput("");
+      setBodyFatInput("");
       await loadEntries();
 
       setTimeout(() => setSaveSuccess(false), 2000);
@@ -275,6 +297,63 @@ export default function LogScreen() {
       setSaveError(err.message || "Failed to save");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handlePhotoLog() {
+    // Request permission and open camera roll
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setSaveError("Camera roll permission is required to log from photo");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      base64: true,
+      quality: 0.7,
+    });
+
+    if (result.canceled || !result.assets?.[0]?.base64) return;
+
+    const asset = result.assets[0];
+    const base64 = asset.base64!;
+
+    // Determine media type from uri extension, default to jpeg
+    const ext = asset.uri.split(".").pop()?.toLowerCase();
+    const mediaType =
+      ext === "png"
+        ? "image/png"
+        : ext === "webp"
+          ? "image/webp"
+          : "image/jpeg";
+
+    setExtracting(true);
+    setSaveError("");
+
+    try {
+      const extracted = await extractBodyCompFromImage(base64, mediaType);
+
+      // Pre-fill whichever fields were successfully extracted
+      if (extracted.weight_kg !== null && extracted.weight_kg !== undefined) {
+        setWeightInput(String(extracted.weight_kg));
+      }
+      if (
+        extracted.muscle_mass_kg !== null &&
+        extracted.muscle_mass_kg !== undefined
+      ) {
+        setMuscleInput(String(extracted.muscle_mass_kg));
+      }
+      if (
+        extracted.body_fat_pct !== null &&
+        extracted.body_fat_pct !== undefined
+      ) {
+        setBodyFatInput(String(extracted.body_fat_pct));
+      }
+    } catch (err: any) {
+      setSaveError("Could not extract data from image — please enter manually");
+    } finally {
+      setExtracting(false);
     }
   }
 
@@ -286,10 +365,16 @@ export default function LogScreen() {
     .filter((e) => e.muscle_mass_kg !== null)
     .map((e) => parseFloat(e.muscle_mass_kg!));
 
+  const bodyFatPoints = entries
+    .filter((e) => e.body_fat_pct !== null)
+    .map((e) => parseFloat(e.body_fat_pct!));
+
   const latestWeight =
     weightPoints.length > 0 ? weightPoints[weightPoints.length - 1] : null;
   const latestMuscle =
     musclePoints.length > 0 ? musclePoints[musclePoints.length - 1] : null;
+  const latestBodyFat =
+    bodyFatPoints.length > 0 ? bodyFatPoints[bodyFatPoints.length - 1] : null;
 
   const today = new Date().toLocaleDateString("en-GB", {
     weekday: "short",
@@ -331,6 +416,7 @@ export default function LogScreen() {
         {/* entry card */}
         <View style={{ marginHorizontal: 20, marginTop: 14 }}>
           <Card pad={16}>
+            {/* card header row */}
             <View
               style={{
                 flexDirection: "row",
@@ -350,14 +436,50 @@ export default function LogScreen() {
               >
                 Log · {today}
               </Text>
-              {saveSuccess && (
-                <Tag color={Colors.accent} bg={Colors.accentDim}>
-                  ✓ Saved
-                </Tag>
-              )}
+              <View
+                style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
+              >
+                {saveSuccess && (
+                  <Tag color={Colors.accent} bg={Colors.accentDim}>
+                    ✓ Saved
+                  </Tag>
+                )}
+                {/* log from photo button */}
+                <Pressable
+                  onPress={handlePhotoLog}
+                  disabled={extracting}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 4,
+                    backgroundColor: Colors.card2,
+                    borderRadius: 8,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    opacity: extracting ? 0.6 : 1,
+                  }}
+                >
+                  {extracting ? (
+                    <ActivityIndicator color={Colors.accent} size="small" />
+                  ) : (
+                    <Text
+                      style={{
+                        fontFamily: "Courier",
+                        fontSize: 10,
+                        color: Colors.accent,
+                        letterSpacing: 0.6,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      📷 From Photo
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
             </View>
 
-            <View style={{ flexDirection: "row", gap: 10 }}>
+            {/* input fields row — weight and muscle mass */}
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 10 }}>
               {/* weight */}
               <Pressable
                 onPress={() => setActiveField("weight")}
@@ -481,6 +603,66 @@ export default function LogScreen() {
               </Pressable>
             </View>
 
+            {/* body fat % — full width below */}
+            <Pressable
+              onPress={() => setActiveField("bodyfat")}
+              style={{
+                backgroundColor: Colors.bg,
+                borderRadius: 12,
+                padding: 12,
+                borderWidth: 1,
+                borderColor:
+                  activeField === "bodyfat" ? Colors.accent : Colors.line2,
+              }}
+            >
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 9,
+                  color: Colors.ter,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                }}
+              >
+                Body Fat
+              </Text>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "flex-end",
+                  gap: 4,
+                  marginTop: 8,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 30,
+                    fontWeight: "700",
+                    color: bodyFatInput ? Colors.text : Colors.ter,
+                    letterSpacing: -0.6,
+                  }}
+                >
+                  {bodyFatInput || "—"}
+                </Text>
+                <Text
+                  style={{ fontSize: 12, color: Colors.sec, marginBottom: 4 }}
+                >
+                  %
+                </Text>
+                {activeField === "bodyfat" && (
+                  <View
+                    style={{
+                      width: 1.5,
+                      height: 24,
+                      backgroundColor: Colors.accent,
+                      marginLeft: 2,
+                      marginBottom: 4,
+                    }}
+                  />
+                )}
+              </View>
+            </Pressable>
+
             {saveError ? (
               <Text style={{ fontSize: 12, color: Colors.warn, marginTop: 8 }}>
                 {saveError}
@@ -573,7 +755,7 @@ export default function LogScreen() {
         </View>
 
         {/* muscle mass trend chart */}
-        <View style={{ marginHorizontal: 20, marginTop: 10, marginBottom: 24 }}>
+        <View style={{ marginHorizontal: 20, marginTop: 10 }}>
           <Card pad={14}>
             <View
               style={{
@@ -622,6 +804,63 @@ export default function LogScreen() {
               <MiniChart
                 points={musclePoints}
                 color={Colors.accent}
+                height={88}
+                label="12W"
+              />
+            )}
+          </Card>
+        </View>
+
+        {/* body fat trend chart */}
+        <View style={{ marginHorizontal: 20, marginTop: 10, marginBottom: 24 }}>
+          <Card pad={14}>
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "flex-end",
+              }}
+            >
+              <Text
+                style={{ fontSize: 14, fontWeight: "600", color: Colors.text }}
+              >
+                Body Fat
+              </Text>
+              {latestBodyFat !== null && (
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "flex-end",
+                    gap: 4,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontFamily: "Courier",
+                      fontSize: 14,
+                      fontWeight: "700",
+                      color: Colors.text,
+                    }}
+                  >
+                    {latestBodyFat.toFixed(1)}
+                  </Text>
+                  <Text
+                    style={{ fontSize: 10, color: Colors.ter, marginBottom: 2 }}
+                  >
+                    %
+                  </Text>
+                </View>
+              )}
+            </View>
+            {loading ? (
+              <ActivityIndicator
+                color={Colors.accent}
+                style={{ marginTop: 20 }}
+              />
+            ) : (
+              <MiniChart
+                points={bodyFatPoints}
+                color={Colors.warn}
                 height={88}
                 label="12W"
               />

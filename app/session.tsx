@@ -53,6 +53,10 @@ function Divider() {
   return <View style={{ height: 0.5, backgroundColor: Colors.line }} />;
 }
 
+function isDumbbellExercise(exerciseName: string): boolean {
+  return exerciseName.toLowerCase().includes("dumbbell");
+}
+
 // ─── Rep entry modal ──────────────────────────────────────────────────────────
 // Simple numpad for entering actual reps completed
 
@@ -60,12 +64,14 @@ function RepEntryModal({
   visible,
   targetReps,
   weight,
+  exerciseName,
   onConfirm,
   onClose,
 }: {
   visible: boolean;
   targetReps: number;
   weight: number;
+  exerciseName: string;
   onConfirm: (reps: number) => void;
   onClose: () => void;
 }) {
@@ -96,6 +102,10 @@ function RepEntryModal({
       }
     }
   }
+
+  const weightLabel = isDumbbellExercise(exerciseName)
+    ? `${weight} kg per dumbbell`
+    : `${weight} kg`;
 
   return (
     <Modal
@@ -142,7 +152,7 @@ function RepEntryModal({
               marginBottom: 16,
             }}
           >
-            Target: {targetReps} reps @ {weight} kg
+            Target: {targetReps} reps @ {weightLabel}
           </Text>
 
           <View style={{ alignItems: "center", marginBottom: 20 }}>
@@ -246,6 +256,7 @@ function ExerciseBlock({
   const totalSets = exercise.target_sets;
   const completedSets = loggedSetsForExercise.length;
   const allDone = completedSets >= totalSets;
+  const isDumbbell = isDumbbellExercise(exercise.exercise_name);
 
   function handleSetPress(setNumber: number) {
     const alreadyLogged = loggedSetsForExercise.find(
@@ -327,7 +338,7 @@ function ExerciseBlock({
             }}
           >
             {exercise.target_sets} × {exercise.target_reps} @{" "}
-            {exercise.target_weight} kg
+            {exercise.target_weight} kg{isDumbbell ? " per dumbbell" : ""}
             {completedSets > 0 && !allDone
               ? `  ·  ${completedSets}/${totalSets} done`
               : ""}
@@ -426,7 +437,9 @@ function ExerciseBlock({
                   >
                     {exercise.target_weight}
                   </Text>
-                  <Text style={{ fontSize: 11, color: Colors.ter }}>kg</Text>
+                  <Text style={{ fontSize: 11, color: Colors.ter }}>
+                    {isDumbbell ? "kg ea" : "kg"}
+                  </Text>
 
                   <View
                     style={{
@@ -507,6 +520,7 @@ function ExerciseBlock({
         visible={repModalOpen}
         targetReps={exercise.target_reps}
         weight={exercise.target_weight}
+        exerciseName={exercise.exercise_name}
         onConfirm={handleRepConfirm}
         onClose={() => {
           setRepModalOpen(false);

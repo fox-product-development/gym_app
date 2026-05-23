@@ -398,6 +398,22 @@ ${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None 
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
 
+HOME GYM EQUIPMENT AND LOADING RULES
+The athlete has the following equipment only. You must not suggest any weight that cannot be physically loaded with the plates available.
+
+EZ curl bar: 5kg bar. Plates must be equal each side.
+Dumbbells: two handles at 1kg each. Both dumbbells must be loaded identically. Plates must be equal each side on each dumbbell. The weight_kg value you return for dumbbell exercises is the weight of ONE dumbbell (handle + plates on that one dumbbell).
+Plate pool (shared across all equipment, reset to empty between exercises):
+  - 4 x 10kg
+  - 4 x 5kg
+  - 6 x 1.25kg
+  - 4 x 0.5kg
+
+To check if a weight is valid:
+- For EZ bar: subtract 5kg (bar), divide remainder by 2 (plates per side), confirm that exact weight can be made from the plate pool.
+- For dumbbells: subtract 1kg (handle), divide remainder by 2 (plates per side), confirm that exact weight can be made from one side of the plate pool. Both dumbbells use the same loading so the pool only needs to cover one dumbbell's plates (mirrored).
+- Only whole numbers and 0.5kg or 1.25kg increments are possible — do not suggest weights requiring plate combinations that don't exist.
+
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
@@ -626,6 +642,15 @@ PHASE SCHEMES
 - Hypertrophy: 4 sets x 12 reps target (min 8)
 - Maximum Strength: 4 sets x 6 reps target (min 3)
 - Muscle Definition: 1 set x 40 reps target (min 30)
+
+WORK GYM WEIGHT CONVENTIONS
+All weights are stored and displayed as follows — you must only suggest weights that conform to these rules:
+
+Barbell exercises (Olympic barbell): bar weighs 20kg. Total weight including bar must be a multiple of 5kg (e.g. 20, 25, 30, 35). Minimum is 20kg (bar only).
+Barbell exercises (bench barbell): bar weighs 10kg. Total weight including bar must be a multiple of 5kg (e.g. 10, 15, 20, 25). Minimum is 10kg (bar only).
+Dumbbell exercises: fixed rubber dumbbells available in 1kg increments. The weight_kg value you return is the weight of ONE dumbbell. Always use a whole number.
+Cable machine exercises (all cable and machine-based movements): any multiple of 2.2kg (e.g. 2.2, 4.4, 6.6, 8.8). Round to nearest valid multiple.
+Medicine ball: 1kg increments, maximum 12kg.
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 
