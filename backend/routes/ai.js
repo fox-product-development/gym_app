@@ -514,6 +514,8 @@ No extra fields. No explanation. No markdown.`;
 
 // ─── Extra session ────────────────────────────────────────────────────────────
 // POST /ai/extra-session
+// Generates 6 exercises, creates an extra session in the database,
+// starts it immediately, and returns session_id for navigation.
 
 router.post("/extra-session", requireAuth, async (req, res) => {
   const { gym } = req.body;
@@ -524,12 +526,23 @@ router.post("/extra-session", requireAuth, async (req, res) => {
 
   try {
     const userResult = await pool.query(
-      `SELECT current_phase, phase_week FROM users WHERE id = $1`,
+      `SELECT current_phase, current_block, phase_week FROM users WHERE id = $1`,
       [req.userId],
     );
 
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const user = userResult.rows[0];
-    const sessionHistory = await getSessionHistory(req.userId);
+    const { current_phase, current_block, phase_week } = user;
+
+    const [sessionHistory, oneRepMaxHistory, bodyCompHistory] =
+      await Promise.all([
+        getSessionHistory(req.userId),
+        getOneRepMaxHistory(req.userId),
+        getBodyCompHistory(req.userId),
+      ]);
 
     const lastSession = sessionHistory[0];
     const daysSinceLast = lastSession
@@ -541,28 +554,68 @@ router.post("/extra-session", requireAuth, async (req, res) => {
 
     const gymCSV = buildGymCSV(gym);
 
-    const userPrompt = `The athlete has arrived at the gym and wants to do an extra session today.
+    const homeGymRules =
+      gym === "home"
+        ? `
+HOME GYM EQUIPMENT AND LOADING RULES
+The athlete has the following equipment only. You must not suggest any weight that cannot be physically loaded with the plates available.
+
+EZ curl bar: 5kg bar. Plates must be equal each side.
+Dumbbells: two handles at 1kg each. Both dumbbells must be loaded identically. Plates must be equal each side on each dumbbell. The weight_kg value you return for dumbbell exercises is the weight of ONE dumbbell (handle + plates on that one dumbbell).
+Plate pool (shared across all equipment, reset to empty between exercises):
+  - 4 x 10kg
+  - 4 x 5kg
+  - 6 x 1.25kg
+  - 4 x 0.5kg
+
+To check if a weight is valid:
+- For EZ bar: subtract 5kg (bar), divide remainder by 2 (plates per side), confirm that exact weight can be made from the plate pool.
+- For dumbbells: subtract 1kg (handle), divide remainder by 2 (plates per side), confirm that exact weight can be made from one side of the plate pool.
+- Only whole numbers and 0.5kg or 1.25kg increments are possible.`
+        : "";
+
+    const userPrompt = `The athlete has arrived at the gym for an extra session today. Select the 6 best exercises for them based on what has been undertrained recently, recovery needs, and training history.
 
 CURRENT STATE
-- Phase: ${user.current_phase}
-- Phase week: ${user.phase_week} of 6
+- Phase: ${current_phase}
+- Block: ${current_block}
+- Phase week: ${phase_week} of 6
 - Gym: ${gym}
 - Days since last session: ${daysSinceLast}
 
 EXERCISE LIBRARY
 ${gymCSV}
 
+ESTIMATED 1RM HISTORY
+${JSON.stringify(oneRepMaxHistory, null, 2)}
+
 SESSION HISTORY — LAST 4 WEEKS
 ${JSON.stringify(sessionHistory, null, 2)}
 
-Rank every exercise in the library from most to least recommended for today. For each exercise provide a one-line reason. Consider: what has been undertrained, what needs rest, how many days since last session, and any patterns in the session notes.
+BODY COMPOSITION — LAST 4 WEEKS
+${JSON.stringify(bodyCompHistory, null, 2)}
+${homeGymRules}
 
-Return JSON only, no preamble.`;
+Return ONLY this exact JSON structure, nothing else:
+{
+  "exercises": [
+    {
+      "exercise": "<name>",
+      "muscles_primary": "<primary muscle>",
+      "sub_component": "<sub component>",
+      "sets": <number>,
+      "target_reps": <number>,
+      "weight_kg": <number>
+    }
+  ]
+}
+
+Exactly 6 exercises. Apply the current phase sets and reps scheme. Suggest target weights using 1RM history where available, or conservative starting weights where not. No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 2000,
-      system: EXTRA_SESSION_SYSTEM_PROMPT,
+      max_tokens: 1500,
+      system: BLOCK_GENERATION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     });
 
@@ -572,7 +625,74 @@ Return JSON only, no preamble.`;
       .join("");
 
     const result = JSON.parse(cleanJSON(rawText));
-    res.json(result);
+
+    if (!result.exercises || result.exercises.length === 0) {
+      throw new Error("Invalid session structure from Claude");
+    }
+
+    // Get the current programme_id
+    const progResult = await pool.query(
+      `SELECT p.id FROM programmes p
+       JOIN sessions s ON s.programme_id = p.id
+       WHERE s.user_id = $1
+       ORDER BY p.created_at DESC
+       LIMIT 1`,
+      [req.userId],
+    );
+
+    if (progResult.rows.length === 0) {
+      return res.status(400).json({ error: "No active programme found" });
+    }
+
+    const programmeId = progResult.rows[0].id;
+
+    // Create session, insert exercises, start it — all in one transaction
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const sessionResult = await client.query(
+        `INSERT INTO sessions
+           (user_id, programme_id, session_type, occurrence, week_number, gym, status, started_at)
+         VALUES ($1, $2, 'extra', 1, $3, $4, 'in_progress', NOW())
+         RETURNING id`,
+        [req.userId, programmeId, phase_week, gym],
+      );
+
+      const sessionId = sessionResult.rows[0].id;
+
+      for (let i = 0; i < result.exercises.length; i++) {
+        const ex = result.exercises[i];
+        await client.query(
+          `INSERT INTO planned_exercises
+             (session_id, exercise_name, muscles_primary, sub_component,
+              order_index, target_sets, target_reps, target_weight)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            sessionId,
+            ex.exercise,
+            ex.muscles_primary,
+            ex.sub_component,
+            i,
+            ex.sets,
+            ex.target_reps,
+            ex.weight_kg,
+          ],
+        );
+      }
+
+      await client.query("COMMIT");
+
+      res.status(201).json({
+        message: "Extra session generated and started",
+        session_id: sessionId,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     console.error("Extra session error:", err.message);
     res.status(500).json({ error: "Server error", detail: err.message });

@@ -18,6 +18,7 @@ import {
   getProfile,
   startSession,
   generateHomeSession,
+  generateExtraSession,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -395,6 +396,259 @@ function StartSessionModal({
   );
 }
 
+// ─── Extra session modal ──────────────────────────────────────────────────────
+// Step 1: Choose Work Gym or Home Gym
+// Step 2: Confirm generation
+
+type ExtraModalStep = "choose" | "confirm";
+
+function ExtraSessionModal({
+  visible,
+  onClose,
+  onGenerated,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onGenerated: (sessionId: number) => void;
+}) {
+  const [step, setStep] = useState<ExtraModalStep>("choose");
+  const [selectedGym, setSelectedGym] = useState<"work" | "home">("work");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  function handleOpen() {
+    setStep("choose");
+    setSelectedGym("work");
+    setError("");
+  }
+
+  async function handleConfirm() {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await generateExtraSession(selectedGym);
+      onClose();
+      onGenerated(result.session_id);
+    } catch (err: any) {
+      setError("Failed to generate session — please try again");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onShow={handleOpen}
+      onRequestClose={onClose}
+    >
+      <Pressable
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "flex-end",
+        }}
+        onPress={onClose}
+      >
+        <Pressable
+          style={{
+            backgroundColor: Colors.card,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 24,
+            paddingBottom: 40,
+            borderTopWidth: 0.5,
+            borderColor: Colors.line,
+          }}
+          onPress={() => {}}
+        >
+          {step === "choose" ? (
+            <>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 10,
+                  color: Colors.ter,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  marginBottom: 6,
+                }}
+              >
+                Extra Session
+              </Text>
+              <Text
+                style={{
+                  fontSize: 22,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.4,
+                  marginBottom: 20,
+                }}
+              >
+                Which gym?
+              </Text>
+
+              <Pressable
+                onPress={() => {
+                  setSelectedGym("work");
+                  setStep("confirm");
+                }}
+                style={{
+                  backgroundColor: Colors.text,
+                  borderRadius: 14,
+                  padding: 16,
+                  alignItems: "center",
+                  marginBottom: 10,
+                }}
+              >
+                <Text
+                  style={{ fontSize: 16, fontWeight: "700", color: "#000" }}
+                >
+                  🏋️ Work Gym
+                </Text>
+                <Text
+                  style={{
+                    fontSize: 12,
+                    color: "rgba(0,0,0,0.5)",
+                    marginTop: 2,
+                  }}
+                >
+                  Full barbell and cable equipment
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={() => {
+                  setSelectedGym("home");
+                  setStep("confirm");
+                }}
+                style={{
+                  backgroundColor: "transparent",
+                  borderRadius: 14,
+                  padding: 16,
+                  alignItems: "center",
+                  borderWidth: 0.5,
+                  borderColor: Colors.line2,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 16,
+                    fontWeight: "600",
+                    color: Colors.text,
+                  }}
+                >
+                  🏠 Home Gym
+                </Text>
+                <Text style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}>
+                  EZ bar and dumbbells
+                </Text>
+              </Pressable>
+
+              <Pressable
+                onPress={onClose}
+                style={{ marginTop: 16, alignItems: "center" }}
+              >
+                <Text style={{ fontSize: 14, color: Colors.ter }}>Cancel</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 10,
+                  color: Colors.ter,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  marginBottom: 6,
+                }}
+              >
+                Confirm
+              </Text>
+              <Text
+                style={{
+                  fontSize: 22,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.4,
+                  marginBottom: 10,
+                }}
+              >
+                Generate and start new session?
+              </Text>
+              <Text
+                style={{
+                  fontSize: 14,
+                  color: Colors.sec,
+                  lineHeight: 22,
+                  marginBottom: 24,
+                }}
+              >
+                {selectedGym === "work" ? "🏋️ Work Gym" : "🏠 Home Gym"} · AI
+                will select the 6 best exercises for you based on your training
+                history.
+              </Text>
+
+              <Pressable
+                onPress={handleConfirm}
+                disabled={loading}
+                style={{
+                  backgroundColor: Colors.accent,
+                  borderRadius: 14,
+                  padding: 16,
+                  alignItems: "center",
+                  marginBottom: 10,
+                  opacity: loading ? 0.6 : 1,
+                }}
+              >
+                {loading ? (
+                  <ActivityIndicator color={Colors.accentInk} />
+                ) : (
+                  <Text
+                    style={{
+                      fontSize: 16,
+                      fontWeight: "700",
+                      color: Colors.accentInk,
+                    }}
+                  >
+                    Generate Session →
+                  </Text>
+                )}
+              </Pressable>
+
+              {error ? (
+                <Text
+                  style={{
+                    fontSize: 12,
+                    color: Colors.warn,
+                    marginTop: 4,
+                    textAlign: "center",
+                  }}
+                >
+                  {error}
+                </Text>
+              ) : null}
+
+              <Pressable
+                onPress={() => {
+                  setStep("choose");
+                  setError("");
+                }}
+                style={{ marginTop: 8, alignItems: "center" }}
+              >
+                <Text style={{ fontSize: 14, color: Colors.ter }}>← Back</Text>
+              </Pressable>
+            </>
+          )}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 // ─── Progress dots ────────────────────────────────────────────────────────────
 
 function ProgressDots({
@@ -447,7 +701,16 @@ function SessionCard({
   const sessionLabel =
     session.session_type === "compound"
       ? `Compound · Session ${session.occurrence}`
-      : "Isolation";
+      : session.session_type === "isolation"
+        ? "Isolation"
+        : "Extra Session";
+
+  const badgeLabel =
+    session.session_type === "compound"
+      ? "CPD"
+      : session.session_type === "isolation"
+        ? "ISO"
+        : "XTR";
 
   const statusColor = isDone
     ? Colors.ter
@@ -504,7 +767,7 @@ function SessionCard({
               textTransform: "uppercase",
             }}
           >
-            {session.session_type === "isolation" ? "ISO" : "CPD"}
+            {badgeLabel}
           </Text>
           <Text
             style={{
@@ -659,6 +922,7 @@ export default function WeekScreen() {
   const [error, setError] = useState("");
   const [modalSession, setModalSession] = useState<Session | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [extraModalVisible, setExtraModalVisible] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -705,10 +969,15 @@ export default function WeekScreen() {
     loadData();
   }
 
+  function handleExtraGenerated(sessionId: number) {
+    loadData();
+    router.push(`/session?id=${sessionId}`);
+  }
+
   const completedCount = sessions.filter((s) => s.status === "complete").length;
   const currentWeekSessions = sessions;
 
-  const orderedSessions = [
+  const plannedSessions = [
     currentWeekSessions.find(
       (s) => s.session_type === "compound" && s.occurrence === 1,
     ),
@@ -717,6 +986,9 @@ export default function WeekScreen() {
       (s) => s.session_type === "compound" && s.occurrence === 2,
     ),
   ].filter(Boolean) as Session[];
+
+  const extraSessions = sessions.filter((s) => s.session_type === "extra");
+  const orderedSessions = [...plannedSessions, ...extraSessions];
 
   const phaseLabel = profile
     ? PHASE_LABELS[profile.current_phase] || profile.current_phase
@@ -830,6 +1102,58 @@ export default function WeekScreen() {
           </View>
         )}
 
+        {/* generate extra session button */}
+        {!loading && (
+          <Pressable
+            onPress={() => setExtraModalVisible(true)}
+            style={{
+              marginHorizontal: 20,
+              marginTop: 4,
+              backgroundColor: Colors.card,
+              borderRadius: 16,
+              borderWidth: 0.5,
+              borderColor: Colors.line,
+              padding: 18,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 16,
+                fontWeight: "600",
+                color: Colors.text,
+                letterSpacing: -0.2,
+              }}
+            >
+              Generate Extra Session
+            </Text>
+            <View
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 999,
+                borderWidth: 1.5,
+                borderColor: Colors.accent,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text
+                style={{
+                  color: Colors.accent,
+                  fontSize: 20,
+                  lineHeight: 22,
+                  fontWeight: "300",
+                }}
+              >
+                +
+              </Text>
+            </View>
+          </Pressable>
+        )}
+
         {/* footer */}
         <View style={{ paddingBottom: 24, alignItems: "center" }}>
           <Text
@@ -852,6 +1176,13 @@ export default function WeekScreen() {
         visible={modalVisible}
         onClose={handleModalClose}
         onStarted={handleSessionStarted}
+      />
+
+      {/* Extra session modal */}
+      <ExtraSessionModal
+        visible={extraModalVisible}
+        onClose={() => setExtraModalVisible(false)}
+        onGenerated={handleExtraGenerated}
       />
     </View>
   );

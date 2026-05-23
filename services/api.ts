@@ -189,7 +189,7 @@ export async function generateHomeSession(session_id: number) {
   return request("/ai/generate-home-session", "POST", { session_id });
 }
 
-export async function getExtraSession(gym: string) {
+export async function generateExtraSession(gym: string) {
   return request("/ai/extra-session", "POST", { gym });
 }
 
