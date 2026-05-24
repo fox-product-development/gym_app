@@ -125,7 +125,7 @@ router.post("/generate-block", requireAuth, async (req, res) => {
       getPreviousBlockExercises(req.userId, current_phase, current_block),
     ]);
 
-    const gymCSV = buildGymCSV(gym);
+    const gymCSV = await buildGymCSV(gym, req.userId);
 
     const userPrompt = `Generate a training block for the following athlete.
 
@@ -366,7 +366,7 @@ router.post("/generate-home-session", requireAuth, async (req, res) => {
       getPreviousBlockExercises(req.userId, phase, block_number),
     ]);
 
-    const gymCSV = buildGymCSV("home");
+    const gymCSV = await buildGymCSV("home", req.userId);
 
     // Determine what to generate based on session type
     const sessionTypeLabel =
@@ -552,7 +552,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
         )
       : 7;
 
-    const gymCSV = buildGymCSV(gym);
+    const gymCSV = await buildGymCSV(gym, req.userId);
 
     const homeGymRules =
       gym === "home"
@@ -720,14 +720,43 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
 });
 
 // ─── Gym CSV builder ──────────────────────────────────────────────────────────
+// Reads from the exercises table in the database.
+// Falls back to hardcoded arrays if the table is empty (e.g. before seeding).
 
-function buildGymCSV(gym) {
+async function buildGymCSV(gym, userId) {
+  try {
+    const result = await pool.query(
+      `SELECT exercise, muscles_primary, muscles_secondary, type,
+              sub_component, emg_score, target_weight_kg
+       FROM exercises
+       WHERE user_id = $1 AND gym = $2
+       ORDER BY muscles_primary, emg_score DESC`,
+      [userId, gym],
+    );
+
+    if (result.rows.length > 0) {
+      const header =
+        "exercise,muscles_primary,muscles_secondary,type,sub_component,emg_score,target_weight_kg";
+      const rows = result.rows.map(
+        (e) =>
+          `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"}`,
+      );
+      return [header, ...rows].join("\n");
+    }
+  } catch (err) {
+    console.error(
+      "buildGymCSV DB error, falling back to hardcoded:",
+      err.message,
+    );
+  }
+
+  // Fallback to hardcoded arrays
   const exercises = gym === "work" ? WORK_GYM_EXERCISES : HOME_GYM_EXERCISES;
   const header =
-    "exercise,muscles_primary,muscles_secondary,type,sub_component,emg_score";
+    "exercise,muscles_primary,muscles_secondary,type,sub_component,emg_score,target_weight_kg";
   const rows = exercises.map(
     (e) =>
-      `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.sub_component},${e.emg_score}`,
+      `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.sub_component},${e.emg_score},null`,
   );
   return [header, ...rows].join("\n");
 }
@@ -752,10 +781,14 @@ EXERCISE SELECTION RULES
 BLOCK EXCLUSION — no exercise from Block 1 may appear in Block 2
 
 WEIGHT CALCULATION
-- Compound exercises (Size/Strength phases): percentage of estimated 1RM
-- Isolation exercises: direct working weight, conservative starting point
-- AA phase: no 1RM percentage — suggest conservative starting weights
-- If no history exists, use conservative starting weights
+The exercise library includes a target_weight_kg column. Use it as follows:
+- If target_weight_kg is NOT null: use it directly as the target weight for that exercise. This weight has been maintained by the progressive overload system and is the most accurate starting point.
+- If target_weight_kg IS null (new exercise, no history): estimate a conservative starting weight using the phase percentage of estimated 1RM if available, or a sensible beginner weight if not:
+  - Anatomical Adaptation: 60% of 1RM
+  - Hypertrophy: 67% of 1RM
+  - Maximum Strength: 80% of 1RM
+  - Muscle Definition: 55% of 1RM
+- After setting the weight, write it back by including it in the weight_kg field of your JSON response — the backend will store it in the exercises table for future sessions.
 
 PHASE SCHEMES
 - Anatomical Adaptation: 3 sets x 20 reps target (min 15)

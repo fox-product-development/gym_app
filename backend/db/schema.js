@@ -13,6 +13,7 @@ async function dropTables() {
   await pool.query("DROP TABLE IF EXISTS planned_exercises CASCADE");
   await pool.query("DROP TABLE IF EXISTS sessions CASCADE");
   await pool.query("DROP TABLE IF EXISTS programmes CASCADE");
+  await pool.query("DROP TABLE IF EXISTS exercises CASCADE");
   await pool.query("DROP TABLE IF EXISTS users CASCADE");
   console.log("✓ All tables dropped");
 }
@@ -96,6 +97,7 @@ async function createTables() {
         target_sets     INTEGER NOT NULL,
         target_reps     INTEGER NOT NULL,
         target_weight   NUMERIC(6,2) NOT NULL,
+        range_exceeded  BOOLEAN DEFAULT FALSE,
         created_at      TIMESTAMP DEFAULT NOW()
       );
     `);
@@ -145,6 +147,27 @@ async function createTables() {
       );
     `);
     console.log("✓ body_composition table ready");
+
+    // ─── Exercises ────────────────────────────────────────────────────────────
+    // Exercise library per user. target_weight_kg is NULL until first block
+    // generation sets it, then maintained by the progressive overload logic.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS exercises (
+        id                SERIAL PRIMARY KEY,
+        user_id           INTEGER REFERENCES users(id),
+        gym               TEXT NOT NULL CHECK (gym IN ('work', 'home')),
+        exercise          TEXT NOT NULL,
+        muscles_primary   TEXT NOT NULL,
+        muscles_secondary TEXT,
+        type              TEXT NOT NULL CHECK (type IN ('Compound', 'Isolation')),
+        sub_component     TEXT,
+        emg_score         INTEGER,
+        target_weight_kg  NUMERIC(6,2) DEFAULT NULL,
+        created_at        TIMESTAMP DEFAULT NOW(),
+        UNIQUE (user_id, gym, exercise)
+      );
+    `);
+    console.log("✓ exercises table ready");
 
     // ─── Weekly feedback ──────────────────────────────────────────────────────
     await pool.query(`

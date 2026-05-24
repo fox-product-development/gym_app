@@ -101,6 +101,19 @@ async function generateReportForUser(user) {
     [user.id],
   );
 
+  // Fetch progressive overload flags from this week's sessions
+  const poResult = await pool.query(
+    `SELECT DISTINCT pe.exercise_name, pe.muscles_primary
+     FROM planned_exercises pe
+     JOIN sessions s ON s.id = pe.session_id
+     WHERE s.user_id = $1
+       AND s.completed_at >= NOW() - INTERVAL '1 week'
+       AND pe.range_exceeded = TRUE`,
+    [user.id],
+  );
+
+  const poAchieved = poResult.rows;
+
   // Build the user prompt
   const userPrompt = `Write the weekly coaching report for the following athlete.
 
@@ -118,6 +131,15 @@ ${JSON.stringify(bodyCompResult.rows, null, 2)}
 ESTIMATED 1RM HISTORY
 ${JSON.stringify(oneRepMaxResult.rows, null, 2)}
 
+PROGRESSIVE OVERLOAD ACHIEVED THIS WEEK
+${
+  poAchieved.length > 0
+    ? poAchieved
+        .map((p) => `${p.exercise_name} (${p.muscles_primary})`)
+        .join(", ")
+    : "None this week"
+}
+
 Write the report in the following structure:
 
 1. WEEK SUMMARY
@@ -127,7 +149,7 @@ Write the report in the following structure:
    What patterns are visible across the last 4 weeks? Improvements, stalls, consistency, scheduling. Be specific — name exercises and numbers where relevant.
 
 3. PROGRESSIVE OVERLOAD REVIEW
-   Which exercises are progressing well? Which are flat or declining? Are there any exercises where the PO score suggests a rotation is due?
+   If any exercises hit progressive overload this week (listed above), give a brief well done acknowledgement and confirm that target weights have been increased for the next session. If none, note which exercises are close to hitting their rep targets.
 
 4. PHASE PROGRESS
    How is the athlete tracking against the current phase goals? Are they on course to complete the phase, or is there a case for extending or transitioning early?
