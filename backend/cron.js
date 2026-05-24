@@ -18,19 +18,21 @@ Your tone is direct and encouraging. Like a training partner who knows their stu
 You are writing a weekly report the athlete will read on their dashboard. It should feel like a message from their coach, not a data summary.`;
 
 // ─── Main job ─────────────────────────────────────────────────────────────────
+// Called by node-cron from index.js on a schedule.
+// Also callable directly: node cron.js
 
-async function runSundayReport() {
+async function runSundayReport(exitWhenDone = false) {
   console.log("Sunday report job started:", new Date().toISOString());
 
   try {
-    // Get all users — single user app but written to support multiple
     const usersResult = await pool.query(
       `SELECT id, current_phase, current_block, phase_week FROM users`,
     );
 
     if (usersResult.rows.length === 0) {
       console.log("No users found — skipping");
-      process.exit(0);
+      if (exitWhenDone) process.exit(0);
+      return;
     }
 
     for (const user of usersResult.rows) {
@@ -38,10 +40,10 @@ async function runSundayReport() {
     }
 
     console.log("Sunday report job completed successfully");
-    process.exit(0);
+    if (exitWhenDone) process.exit(0);
   } catch (err) {
     console.error("Sunday report job failed:", err.message);
-    process.exit(1);
+    if (exitWhenDone) process.exit(1);
   }
 }
 
@@ -190,4 +192,9 @@ Write the report in the following structure:
   );
 }
 
-runSundayReport();
+// Run directly if called via node cron.js
+if (require.main === module) {
+  runSundayReport(true);
+}
+
+module.exports = { runSundayReport };
