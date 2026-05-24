@@ -36,12 +36,12 @@ async function createTables() {
             'anatomical_adaptation',
             'hypertrophy',
             'maximum_strength',
-            'muscle_definition',
-            'rest'
+            'muscle_definition'
           )),
         current_block    INTEGER NOT NULL DEFAULT 1
           CHECK (current_block IN (1, 2)),
-        phase_week       INTEGER NOT NULL DEFAULT 1,
+        phase_week       INTEGER NOT NULL DEFAULT 1
+          CHECK (phase_week BETWEEN 1 AND 7),
         phase_start_date DATE NOT NULL DEFAULT CURRENT_DATE,
         created_at       TIMESTAMP DEFAULT NOW()
       );

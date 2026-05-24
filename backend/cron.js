@@ -17,6 +17,214 @@ Your tone is direct and encouraging. Like a training partner who knows their stu
 
 You are writing a weekly report the athlete will read on their dashboard. It should feel like a message from their coach, not a data summary.`;
 
+// ─── Phase cycle ──────────────────────────────────────────────────────────────
+
+const PHASE_CYCLE = [
+  "anatomical_adaptation",
+  "hypertrophy",
+  "maximum_strength",
+  "muscle_definition",
+];
+
+function nextPhase(currentPhase) {
+  const idx = PHASE_CYCLE.indexOf(currentPhase);
+  return PHASE_CYCLE[(idx + 1) % PHASE_CYCLE.length];
+}
+
+// ─── Phase advancement ────────────────────────────────────────────────────────
+// Runs at the start of every Sunday cron job.
+// Increments phase_week and triggers block generation or phase advancement
+// as needed.
+
+async function advancePhaseWeek(user) {
+  const { id, current_phase, current_block, phase_week } = user;
+  console.log(
+    `Advancing phase week for user ${id}: phase=${current_phase} block=${current_block} week=${phase_week}`,
+  );
+
+  // ── Week 7 (rest week just ended) → advance to next phase ─────────────────
+  if (phase_week === 7) {
+    const newPhase = nextPhase(current_phase);
+    await pool.query(
+      `UPDATE users
+       SET current_phase = $1, current_block = 1, phase_week = 1,
+           phase_start_date = CURRENT_DATE
+       WHERE id = $2`,
+      [newPhase, id],
+    );
+    console.log(`✓ Advanced to new phase: ${newPhase}`);
+
+    // Generate Block 1 for new phase
+    await triggerBlockGeneration({
+      ...user,
+      current_phase: newPhase,
+      current_block: 1,
+      phase_week: 1,
+    });
+    return;
+  }
+
+  // ── All other weeks → increment phase_week ────────────────────────────────
+  const newWeek = phase_week + 1;
+  await pool.query(`UPDATE users SET phase_week = $1 WHERE id = $2`, [
+    newWeek,
+    id,
+  ]);
+  console.log(`✓ Phase week advanced to ${newWeek}`);
+
+  // ── New week 4 → generate Block 2 ─────────────────────────────────────────
+  if (newWeek === 4) {
+    await pool.query(`UPDATE users SET current_block = 2 WHERE id = $1`, [id]);
+    await triggerBlockGeneration({ ...user, current_block: 2, phase_week: 4 });
+    return;
+  }
+
+  // ── New week 7 → create rest week sessions ────────────────────────────────
+  if (newWeek === 7) {
+    await createRestWeekSessions(user);
+  }
+}
+
+// ─── Block generation trigger ─────────────────────────────────────────────────
+// Calls the generate-block endpoint internally using the CRON_SECRET.
+
+async function triggerBlockGeneration(user) {
+  console.log(
+    `Triggering block generation for user ${user.id} phase=${user.current_phase} block=${user.current_block}`,
+  );
+
+  try {
+    const port = process.env.PORT || 3000;
+    const response = await fetch(`http://localhost:${port}/ai/generate-block`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-cron-secret": process.env.CRON_SECRET,
+      },
+      body: JSON.stringify({ user_id: user.id }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error || "Block generation failed");
+    }
+
+    console.log(`✓ Block generation complete for user ${user.id}`);
+  } catch (err) {
+    console.error("Block generation failed:", err.message);
+  }
+}
+
+// ─── Rest week session creation ───────────────────────────────────────────────
+// Copies Week 6 exercises, sets 3 sets × 12 reps @ 45% of target_weight_kg,
+// and creates 3 sessions (compound occ1, compound occ2, isolation) for week 7.
+
+async function createRestWeekSessions(user) {
+  console.log(`Creating rest week sessions for user ${user.id}`);
+
+  try {
+    // Get the current programme
+    const progResult = await pool.query(
+      `SELECT id FROM programmes
+       WHERE user_id = $1
+         AND phase = $2
+         AND block_number = 2
+       ORDER BY created_at DESC LIMIT 1`,
+      [user.id, user.current_phase],
+    );
+
+    if (progResult.rows.length === 0) {
+      console.error("No Block 2 programme found for rest week creation");
+      return;
+    }
+
+    const programmeId = progResult.rows[0].id;
+
+    // Get Week 6 sessions and their exercises
+    const week6Sessions = await pool.query(
+      `SELECT s.id, s.session_type, s.occurrence,
+              json_agg(pe.* ORDER BY pe.order_index) AS exercises
+       FROM sessions s
+       JOIN planned_exercises pe ON pe.session_id = s.id
+       WHERE s.programme_id = $1
+         AND s.week_number = 6
+       GROUP BY s.id`,
+      [programmeId],
+    );
+
+    if (week6Sessions.rows.length === 0) {
+      console.error("No Week 6 sessions found for rest week creation");
+      return;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      for (const week6Session of week6Sessions.rows) {
+        // Create the rest week session
+        const sessionResult = await client.query(
+          `INSERT INTO sessions
+             (user_id, programme_id, session_type, occurrence, week_number, gym)
+           VALUES ($1, $2, $3, $4, 7, 'work')
+           RETURNING id`,
+          [
+            user.id,
+            programmeId,
+            week6Session.session_type,
+            week6Session.occurrence,
+          ],
+        );
+
+        const sessionId = sessionResult.rows[0].id;
+
+        // Insert exercises at 3 sets × 12 reps @ 45% of target_weight_kg
+        for (const ex of week6Session.exercises) {
+          // Look up current target_weight_kg from exercises table
+          const exResult = await client.query(
+            `SELECT target_weight_kg FROM exercises
+             WHERE user_id = $1 AND exercise = $2
+             LIMIT 1`,
+            [user.id, ex.exercise_name],
+          );
+
+          const targetWeight =
+            exResult.rows.length > 0 && exResult.rows[0].target_weight_kg
+              ? Math.round(
+                  parseFloat(exResult.rows[0].target_weight_kg) * 0.45 * 2,
+                ) / 2
+              : Math.round(parseFloat(ex.target_weight) * 0.45 * 2) / 2;
+
+          await client.query(
+            `INSERT INTO planned_exercises
+               (session_id, exercise_name, muscles_primary, sub_component,
+                order_index, target_sets, target_reps, target_weight)
+             VALUES ($1, $2, $3, $4, $5, 3, 12, $6)`,
+            [
+              sessionId,
+              ex.exercise_name,
+              ex.muscles_primary,
+              ex.sub_component,
+              ex.order_index,
+              targetWeight,
+            ],
+          );
+        }
+      }
+
+      await client.query("COMMIT");
+      console.log(`✓ Rest week sessions created for user ${user.id}`);
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error("Rest week session creation failed:", err.message);
+  }
+}
+
 // ─── Main job ─────────────────────────────────────────────────────────────────
 // Called by node-cron from index.js on a schedule.
 // Also callable directly: node cron.js
@@ -36,6 +244,7 @@ async function runSundayReport(exitWhenDone = false) {
     }
 
     for (const user of usersResult.rows) {
+      await advancePhaseWeek(user);
       await generateReportForUser(user);
     }
 

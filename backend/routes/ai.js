@@ -96,8 +96,32 @@ async function getPreviousBlockExercises(userId, phase, blockNumber) {
 // POST /ai/generate-block
 // Always generates for Work Gym (the default).
 // Called on Week 1 and Week 4 of every phase by the Sunday cron job.
+// Accepts either a valid JWT (frontend) or x-cron-secret header (cron job).
 
-router.post("/generate-block", requireAuth, async (req, res) => {
+router.post("/generate-block", async (req, res) => {
+  // Allow cron job to call this route using a shared secret
+  const cronSecret = req.headers["x-cron-secret"];
+  if (cronSecret) {
+    if (cronSecret !== process.env.CRON_SECRET) {
+      return res.status(401).json({ error: "Invalid cron secret" });
+    }
+    // Cron job passes user_id in the body
+    req.userId = req.body.user_id;
+  } else {
+    // Fall back to standard JWT auth
+    const authHeader = req.headers["authorization"];
+    if (!authHeader)
+      return res.status(401).json({ error: "No token provided" });
+    try {
+      const jwt = require("jsonwebtoken");
+      const token = authHeader.split(" ")[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      req.userId = decoded.userId;
+    } catch {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+  }
+
   try {
     const userResult = await pool.query(
       `SELECT current_phase, current_block, phase_week

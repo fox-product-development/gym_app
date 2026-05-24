@@ -5,7 +5,9 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const cron = require("node-cron");
 const db = require("./db");
+const { runSundayReport } = require("./cron");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -45,6 +47,14 @@ app.use("/onerepmax", oneRepMaxRoutes);
 
 const userRoutes = require("./routes/user");
 app.use("/user", userRoutes);
+
+// ─── Scheduled jobs ───────────────────────────────────────────────────────────
+
+// Sunday at 8PM — generate weekly coaching report and advance phase week
+cron.schedule("0 20 * * 0", () => {
+  console.log("Triggering Sunday report via node-cron...");
+  runSundayReport(false);
+});
 
 // ─── Start server ─────────────────────────────────────────────────────────────
 
