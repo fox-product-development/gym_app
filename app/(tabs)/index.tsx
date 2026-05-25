@@ -611,6 +611,11 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
 
   const preview = feedback.ai_summary?.slice(0, 200).trim();
 
+  const weekDate = new Date(feedback.week_start_date).toLocaleDateString(
+    "en-GB",
+    { day: "numeric", month: "short" },
+  );
+
   return (
     <Card pad={0} style={{ marginHorizontal: 20, marginTop: 14 }}>
       {/* Tappable header row */}
