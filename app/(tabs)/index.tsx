@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
+import Markdown from "react-native-markdown-display";
 import { Colors } from "../../constants/theme";
 import {
   getProfile,
@@ -519,9 +520,73 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
   );
 }
 
+// ─── Markdown styles ──────────────────────────────────────────────────────────
+
+const markdownStyles = {
+  body: {
+    color: Colors.sec,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  heading1: {
+    color: Colors.text,
+    fontSize: 15,
+    fontWeight: "700" as const,
+    marginTop: 16,
+    marginBottom: 4,
+  },
+  heading2: {
+    color: Colors.text,
+    fontSize: 13,
+    fontWeight: "700" as const,
+    letterSpacing: 0.4,
+    marginTop: 14,
+    marginBottom: 4,
+  },
+  heading3: {
+    color: Colors.sec,
+    fontSize: 12,
+    fontWeight: "600" as const,
+    letterSpacing: 0.3,
+    marginTop: 10,
+    marginBottom: 2,
+  },
+  strong: {
+    color: Colors.text,
+    fontWeight: "600" as const,
+  },
+  em: {
+    color: Colors.sec,
+  },
+  hr: {
+    backgroundColor: Colors.line,
+    height: 0.5,
+    marginVertical: 10,
+  },
+  bullet_list: {
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  ordered_list: {
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  list_item: {
+    color: Colors.sec,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  paragraph: {
+    marginTop: 0,
+    marginBottom: 8,
+  },
+};
+
 // ─── AI report card ───────────────────────────────────────────────────────────
 
 function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
+  const [expanded, setExpanded] = useState(false);
+
   if (!feedback) {
     return (
       <Card pad={14} style={{ marginHorizontal: 20, marginTop: 14 }}>
@@ -544,7 +609,6 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
     );
   }
 
-  // Show first 200 chars as preview
   const preview = feedback.ai_summary?.slice(0, 200).trim();
   const weekDate = new Date(feedback.week_start_date).toLocaleDateString(
     "en-GB",
@@ -553,7 +617,9 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
 
   return (
     <Card pad={0} style={{ marginHorizontal: 20, marginTop: 14 }}>
-      <View
+      {/* Tappable header row */}
+      <Pressable
+        onPress={() => setExpanded((prev) => !prev)}
         style={{
           flexDirection: "row",
           alignItems: "center",
@@ -598,17 +664,38 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
             Week in review
           </Text>
         </View>
-        <Text style={{ color: Colors.sec, fontSize: 12 }}>›</Text>
-      </View>
+        {/* Arrow rotates to indicate open/closed state */}
+        <Text
+          style={{
+            color: Colors.sec,
+            fontSize: 16,
+            transform: [{ rotate: expanded ? "90deg" : "0deg" }],
+          }}
+        >
+          ›
+        </Text>
+      </Pressable>
 
       <Divider />
 
-      <Text
-        style={{ fontSize: 13, color: Colors.sec, lineHeight: 20, padding: 14 }}
-      >
-        {preview}
-        {feedback.ai_summary?.length > 200 ? "…" : ""}
-      </Text>
+      {/* Preview when collapsed, full markdown when expanded */}
+      {expanded ? (
+        <View style={{ padding: 14 }}>
+          <Markdown style={markdownStyles}>{feedback.ai_summary}</Markdown>
+        </View>
+      ) : (
+        <Text
+          style={{
+            fontSize: 13,
+            color: Colors.sec,
+            lineHeight: 20,
+            padding: 14,
+          }}
+        >
+          {preview}
+          {feedback.ai_summary?.length > 200 ? "…" : ""}
+        </Text>
+      )}
     </Card>
   );
 }
