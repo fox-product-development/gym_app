@@ -609,7 +609,15 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
     );
   }
 
-  const preview = feedback.ai_summary?.slice(0, 200).trim();
+  const preview = feedback.ai_summary
+    ?.replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/^---+$/gm, "")
+    .replace(/\n{2,}/g, " ")
+    .replace(/\n/g, " ")
+    .trim()
+    .slice(0, 200);
   const weekDate = new Date(feedback.week_start_date).toLocaleDateString(
     "en-GB",
     { day: "numeric", month: "short" },
