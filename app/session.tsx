@@ -26,6 +26,7 @@ interface PlannedExercise {
   target_sets: number;
   target_reps: number;
   target_weight: number;
+  range_exceeded: boolean;
 }
 
 interface LoggedSet {
@@ -58,7 +59,6 @@ function isDumbbellExercise(exerciseName: string): boolean {
 }
 
 // ─── Rep entry modal ──────────────────────────────────────────────────────────
-// Simple numpad for entering actual reps completed
 
 function RepEntryModal({
   visible,
@@ -257,12 +257,13 @@ function ExerciseBlock({
   const completedSets = loggedSetsForExercise.length;
   const allDone = completedSets >= totalSets;
   const isDumbbell = isDumbbellExercise(exercise.exercise_name);
+  const rangeExceeded = exercise.range_exceeded === true;
 
   function handleSetPress(setNumber: number) {
     const alreadyLogged = loggedSetsForExercise.find(
       (s) => s.set_number === setNumber,
     );
-    if (alreadyLogged) return; // Don't re-log
+    if (alreadyLogged) return;
     setActiveSetNumber(setNumber);
     setRepModalOpen(true);
   }
@@ -291,6 +292,7 @@ function ExerciseBlock({
           alignItems: "center",
           gap: 12,
           padding: 16,
+          backgroundColor: rangeExceeded ? "#1F5C3A" : "transparent",
         }}
       >
         {/* index circle */}
@@ -342,6 +344,7 @@ function ExerciseBlock({
             {completedSets > 0 && !allDone
               ? `  ·  ${completedSets}/${totalSets} done`
               : ""}
+            {rangeExceeded ? "  ·  ↑ weight next session" : ""}
           </Text>
         </View>
 
@@ -555,7 +558,6 @@ export default function ActiveSessionScreen() {
       const data = await getSession(sessionId);
       setSession(data);
       setLoggedSets(data.logged_sets || []);
-      // Auto-expand first exercise
       if (data.planned_exercises?.length > 0) {
         setOpenExerciseId(data.planned_exercises[0].id);
       }
@@ -579,7 +581,6 @@ export default function ActiveSessionScreen() {
         reps,
       });
 
-      // Update local state immediately so UI reflects the logged set
       setLoggedSets((prev) => [
         ...prev.filter(
           (s) =>
