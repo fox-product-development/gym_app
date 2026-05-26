@@ -151,6 +151,8 @@ async function createTables() {
     // ─── Exercises ────────────────────────────────────────────────────────────
     // Exercise library per user. target_weight_kg is NULL until first block
     // generation sets it, then maintained by the progressive overload logic.
+    // equipment_type drives valid weight selection for AI and PO rounding.
+    // one_rep_max is updated on each logged set (first set, Epley formula).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS exercises (
         id                SERIAL PRIMARY KEY,
@@ -160,9 +162,11 @@ async function createTables() {
         muscles_primary   TEXT NOT NULL,
         muscles_secondary TEXT,
         type              TEXT NOT NULL CHECK (type IN ('Compound', 'Isolation')),
+        equipment_type    TEXT,
         sub_component     TEXT,
         emg_score         INTEGER,
         target_weight_kg  NUMERIC(6,2) DEFAULT NULL,
+        one_rep_max       NUMERIC(6,2) DEFAULT NULL,
         created_at        TIMESTAMP DEFAULT NOW(),
         UNIQUE (user_id, gym, exercise)
       );

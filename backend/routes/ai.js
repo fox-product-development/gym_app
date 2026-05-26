@@ -5,6 +5,7 @@ const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("../db");
 const requireAuth = require("../middleware");
+const { validWeights } = require("../validWeights");
 
 const router = express.Router();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -92,6 +93,38 @@ async function getPreviousBlockExercises(userId, phase, blockNumber) {
   return result.rows.map((r) => r.exercise_name);
 }
 
+// ─── Valid weight reference string ───────────────────────────────────────────
+// Builds a compact summary of valid weights per equipment type for the AI prompt.
+
+function buildValidWeightsSummary() {
+  return `VALID WEIGHTS PER EQUIPMENT TYPE
+You must only suggest weights that appear in these lists. Do not round or interpolate — the weight must be an exact value from the relevant list.
+
+home gym — dumbbells and single dumbbell (weight shown is per dumbbell):
+${validWeights.home_dumbbell.join(", ")}
+
+home gym — EZ bar / barbell (total weight including 5kg bar):
+${validWeights.home_barbell.join(", ")}
+
+work gym — dumbbells and single dumbbell (weight shown is per dumbbell, fixed rubber dumbbells in 1kg increments):
+${validWeights.work_dumbbell.join(", ")}
+
+work gym — barbell (bench bar, 10kg bar, total weight including bar, 5kg increments):
+${validWeights.work_barbell.join(", ")}
+
+work gym — olympic barbell (20kg bar, total weight including bar, 5kg increments):
+${validWeights.work_olympic_barbell.join(", ")}
+
+work gym — machine / cable (2.2kg increments):
+${validWeights.work_machine.join(", ")}
+
+DUMBBELL CONVENTION
+All dumbbell weights (equipment_type = "dumbbells" or "single dumbbell") are stored and displayed as the weight of ONE dumbbell. For example, weight_kg: 10 means 10kg in each hand for a pair exercise, or 10kg in one hand for a single dumbbell exercise. Never double the weight for pair exercises.
+
+BODYWEIGHT EXERCISES
+Exercises with equipment_type = "none" always have weight_kg: 0.`;
+}
+
 // ─── Generate block ───────────────────────────────────────────────────────────
 // POST /ai/generate-block
 // Always generates for Work Gym (the default).
@@ -105,10 +138,8 @@ router.post("/generate-block", async (req, res) => {
     if (cronSecret !== process.env.CRON_SECRET) {
       return res.status(401).json({ error: "Invalid cron secret" });
     }
-    // Cron job passes user_id in the body
     req.userId = req.body.user_id;
   } else {
-    // Fall back to standard JWT auth
     const authHeader = req.headers["authorization"];
     if (!authHeader)
       return res.status(401).json({ error: "No token provided" });
@@ -135,7 +166,7 @@ router.post("/generate-block", async (req, res) => {
 
     const user = userResult.rows[0];
     const { current_phase, current_block, phase_week } = user;
-    const gym = "work"; // Always generate for Work Gym
+    const gym = "work";
 
     const [
       sessionHistory,
@@ -161,6 +192,8 @@ CURRENT STATE
 
 EXERCISE LIBRARY
 ${gymCSV}
+
+${buildValidWeightsSummary()}
 
 ESTIMATED 1RM HISTORY
 ${JSON.stringify(oneRepMaxHistory, null, 2)}
@@ -349,7 +382,6 @@ Return ONLY this exact JSON structure, nothing else:
 // ─── Generate home gym session ────────────────────────────────────────────────
 // POST /ai/generate-home-session
 // Called when the user confirms they want to switch to Home Gym for a session.
-// Uses the same full block-generation logic but for Home Gym only.
 // Replaces the planned exercises for the given session in the database.
 // The session is then started immediately.
 
@@ -361,7 +393,6 @@ router.post("/generate-home-session", requireAuth, async (req, res) => {
   }
 
   try {
-    // Get the session to confirm it belongs to this user and get its type
     const sessionResult = await pool.query(
       `SELECT s.*, p.phase, p.block_number
        FROM sessions s
@@ -377,7 +408,6 @@ router.post("/generate-home-session", requireAuth, async (req, res) => {
     const session = sessionResult.rows[0];
     const { session_type, phase, block_number, phase_week } = session;
 
-    // Gather full context — same as block generation
     const [
       sessionHistory,
       oneRepMaxHistory,
@@ -391,8 +421,6 @@ router.post("/generate-home-session", requireAuth, async (req, res) => {
     ]);
 
     const gymCSV = await buildGymCSV("home", req.userId);
-
-    // Determine what to generate based on session type
     const sessionTypeLabel =
       session_type === "compound" ? "compound" : "isolation";
 
@@ -410,6 +438,8 @@ CURRENT STATE
 EXERCISE LIBRARY (Home Gym only)
 ${gymCSV}
 
+${buildValidWeightsSummary()}
+
 ESTIMATED 1RM HISTORY
 ${JSON.stringify(oneRepMaxHistory, null, 2)}
 
@@ -421,22 +451,6 @@ ${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None 
 
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
-
-HOME GYM EQUIPMENT AND LOADING RULES
-The athlete has the following equipment only. You must not suggest any weight that cannot be physically loaded with the plates available.
-
-EZ curl bar: 5kg bar. Plates must be equal each side.
-Dumbbells: two handles at 1kg each. Both dumbbells must be loaded identically. Plates must be equal each side on each dumbbell. The weight_kg value you return for dumbbell exercises is the weight of ONE dumbbell (handle + plates on that one dumbbell).
-Plate pool (shared across all equipment, reset to empty between exercises):
-  - 4 x 10kg
-  - 4 x 5kg
-  - 6 x 1.25kg
-  - 4 x 0.5kg
-
-To check if a weight is valid:
-- For EZ bar: subtract 5kg (bar), divide remainder by 2 (plates per side), confirm that exact weight can be made from the plate pool.
-- For dumbbells: subtract 1kg (handle), divide remainder by 2 (plates per side), confirm that exact weight can be made from one side of the plate pool. Both dumbbells use the same loading so the pool only needs to cover one dumbbell's plates (mirrored).
-- Only whole numbers and 0.5kg or 1.25kg increments are possible — do not suggest weights requiring plate combinations that don't exist.
 
 Return ONLY this exact JSON structure, nothing else:
 {
@@ -477,18 +491,15 @@ No extra fields. No explanation. No markdown.`;
       throw new Error("Invalid session structure from Claude");
     }
 
-    // Replace planned exercises and update gym + start the session
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
 
-      // Delete existing planned exercises for this session
       await client.query(
         `DELETE FROM planned_exercises WHERE session_id = $1`,
         [session_id],
       );
 
-      // Insert new Home Gym exercises
       for (let i = 0; i < result.exercises.length; i++) {
         const ex = result.exercises[i];
         await client.query(
@@ -509,7 +520,6 @@ No extra fields. No explanation. No markdown.`;
         );
       }
 
-      // Update session gym to home and start it
       await client.query(
         `UPDATE sessions
          SET gym = 'home', status = 'in_progress', started_at = NOW()
@@ -578,26 +588,6 @@ router.post("/extra-session", requireAuth, async (req, res) => {
 
     const gymCSV = await buildGymCSV(gym, req.userId);
 
-    const homeGymRules =
-      gym === "home"
-        ? `
-HOME GYM EQUIPMENT AND LOADING RULES
-The athlete has the following equipment only. You must not suggest any weight that cannot be physically loaded with the plates available.
-
-EZ curl bar: 5kg bar. Plates must be equal each side.
-Dumbbells: two handles at 1kg each. Both dumbbells must be loaded identically. Plates must be equal each side on each dumbbell. The weight_kg value you return for dumbbell exercises is the weight of ONE dumbbell (handle + plates on that one dumbbell).
-Plate pool (shared across all equipment, reset to empty between exercises):
-  - 4 x 10kg
-  - 4 x 5kg
-  - 6 x 1.25kg
-  - 4 x 0.5kg
-
-To check if a weight is valid:
-- For EZ bar: subtract 5kg (bar), divide remainder by 2 (plates per side), confirm that exact weight can be made from the plate pool.
-- For dumbbells: subtract 1kg (handle), divide remainder by 2 (plates per side), confirm that exact weight can be made from one side of the plate pool.
-- Only whole numbers and 0.5kg or 1.25kg increments are possible.`
-        : "";
-
     const userPrompt = `The athlete has arrived at the gym for an extra session today. Select the 6 best exercises for them based on what has been undertrained recently, recovery needs, and training history.
 
 CURRENT STATE
@@ -610,6 +600,8 @@ CURRENT STATE
 EXERCISE LIBRARY
 ${gymCSV}
 
+${buildValidWeightsSummary()}
+
 ESTIMATED 1RM HISTORY
 ${JSON.stringify(oneRepMaxHistory, null, 2)}
 
@@ -618,7 +610,6 @@ ${JSON.stringify(sessionHistory, null, 2)}
 
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
-${homeGymRules}
 
 Return ONLY this exact JSON structure, nothing else:
 {
@@ -634,7 +625,7 @@ Return ONLY this exact JSON structure, nothing else:
   ]
 }
 
-Exactly 6 exercises. Apply the current phase sets and reps scheme. Suggest target weights using 1RM history where available, or conservative starting weights where not. No extra fields. No explanation. No markdown.`;
+Exactly 6 exercises. Apply the current phase sets and reps scheme. Use target_weight_kg from the exercise library where available. Only suggest weights from the valid weights lists above. No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -654,7 +645,6 @@ Exactly 6 exercises. Apply the current phase sets and reps scheme. Suggest targe
       throw new Error("Invalid session structure from Claude");
     }
 
-    // Get the current programme_id
     const progResult = await pool.query(
       `SELECT p.id FROM programmes p
        JOIN sessions s ON s.programme_id = p.id
@@ -670,7 +660,6 @@ Exactly 6 exercises. Apply the current phase sets and reps scheme. Suggest targe
 
     const programmeId = progResult.rows[0].id;
 
-    // Create session, insert exercises, start it — all in one transaction
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -751,7 +740,7 @@ async function buildGymCSV(gym, userId) {
   try {
     const result = await pool.query(
       `SELECT exercise, muscles_primary, muscles_secondary, type,
-              sub_component, emg_score, target_weight_kg
+              equipment_type, sub_component, emg_score, target_weight_kg
        FROM exercises
        WHERE user_id = $1 AND gym = $2
        ORDER BY muscles_primary, emg_score DESC`,
@@ -760,10 +749,10 @@ async function buildGymCSV(gym, userId) {
 
     if (result.rows.length > 0) {
       const header =
-        "exercise,muscles_primary,muscles_secondary,type,sub_component,emg_score,target_weight_kg";
+        "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg";
       const rows = result.rows.map(
         (e) =>
-          `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"}`,
+          `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"}`,
       );
       return [header, ...rows].join("\n");
     }
@@ -777,10 +766,10 @@ async function buildGymCSV(gym, userId) {
   // Fallback to hardcoded arrays
   const exercises = gym === "work" ? WORK_GYM_EXERCISES : HOME_GYM_EXERCISES;
   const header =
-    "exercise,muscles_primary,muscles_secondary,type,sub_component,emg_score,target_weight_kg";
+    "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg";
   const rows = exercises.map(
     (e) =>
-      `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.sub_component},${e.emg_score},null`,
+      `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},null`,
   );
   return [header, ...rows].join("\n");
 }
@@ -804,15 +793,20 @@ EXERCISE SELECTION RULES
 
 BLOCK EXCLUSION — no exercise from Block 1 may appear in Block 2
 
-WEIGHT CALCULATION
-The exercise library includes a target_weight_kg column. Use it as follows:
-- If target_weight_kg is NOT null: use it directly as the target weight for that exercise. This weight has been maintained by the progressive overload system and is the most accurate starting point.
-- If target_weight_kg IS null (new exercise, no history): estimate a conservative starting weight using the phase percentage of estimated 1RM if available, or a sensible beginner weight if not:
+WEIGHT RULES
+The exercise library includes target_weight_kg and equipment_type columns.
+
+- If target_weight_kg is NOT null: use it directly. This is the progressive overload system's source of truth.
+- If target_weight_kg IS null (new exercise): estimate using phase percentage of 1RM if available, or a conservative starting weight:
   - Anatomical Adaptation: 60% of 1RM
   - Hypertrophy: 67% of 1RM
   - Maximum Strength: 80% of 1RM
   - Muscle Definition: 55% of 1RM
-- After setting the weight, write it back by including it in the weight_kg field of your JSON response — the backend will store it in the exercises table for future sessions.
+
+You must only suggest weights that are valid for the exercise's equipment_type. The user prompt will include the full valid weight list per equipment type — pick the closest valid value that does not exceed the calculated target. Never suggest a weight that is not in the valid list for that equipment type.
+
+DUMBBELL CONVENTION
+weight_kg for any dumbbell exercise (equipment_type = "dumbbells" or "single dumbbell") is the weight of ONE dumbbell. Do not double it for pair exercises.
 
 PHASE SCHEMES
 - Anatomical Adaptation: 3 sets x 20 reps target (min 15)
@@ -820,20 +814,9 @@ PHASE SCHEMES
 - Maximum Strength: 4 sets x 6 reps target (min 3)
 - Muscle Definition: 1 set x 40 reps target (min 30)
 
-WORK GYM WEIGHT CONVENTIONS
-All weights are stored and displayed as follows — you must only suggest weights that conform to these rules:
-
-Barbell exercises (Olympic barbell): bar weighs 20kg. Total weight including bar must be a multiple of 5kg (e.g. 20, 25, 30, 35). Minimum is 20kg (bar only).
-Barbell exercises (bench barbell): bar weighs 10kg. Total weight including bar must be a multiple of 5kg (e.g. 10, 15, 20, 25). Minimum is 10kg (bar only).
-Dumbbell exercises: fixed rubber dumbbells available in 1kg increments. The weight_kg value you return is the weight of ONE dumbbell. Always use a whole number.
-Cable machine exercises (all cable and machine-based movements): any multiple of 2.2kg (e.g. 2.2, 4.4, 6.6, 8.8). Round to nearest valid multiple.
-Medicine ball: 1kg increments, maximum 12kg.
-
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 
-const EXTRA_SESSION_SYSTEM_PROMPT = `You are a personal gym coach. The athlete has shown up for an extra session. Rank every exercise in the provided library from most to least recommended. One line reason per exercise. Be direct. No fluff.`;
-
-// ─── Exercise data ────────────────────────────────────────────────────────────
+// ─── Exercise data (fallback only) ───────────────────────────────────────────
 
 const HOME_GYM_EXERCISES = [
   {
@@ -841,6 +824,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Back",
     muscles_secondary: "Biceps/Rear Delts",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Lat/Mid-trap",
     emg_score: 4,
   },
@@ -849,6 +833,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Back",
     muscles_secondary: "Biceps/Rear Delts",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Lat/Mid-trap",
     emg_score: 3,
   },
@@ -857,6 +842,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Back",
     muscles_secondary: "Biceps",
     type: "Compound",
+    equipment_type: "single dumbbell",
     sub_component: "Lower lat",
     emg_score: 3,
   },
@@ -865,6 +851,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Biceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Short head",
     emg_score: 3,
   },
@@ -873,6 +860,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Biceps",
     muscles_secondary: "Brachialis",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Brachialis/Long head",
     emg_score: 2,
   },
@@ -881,6 +869,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Biceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "barbell",
     sub_component: "Long head",
     emg_score: 4,
   },
@@ -889,6 +878,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Chest",
     muscles_secondary: "Shoulders/Triceps",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Sternal head",
     emg_score: 4,
   },
@@ -897,6 +887,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Chest",
     muscles_secondary: "Shoulders/Triceps",
     type: "Compound",
+    equipment_type: "none",
     sub_component: "Sternal/Clavicular head",
     emg_score: 2,
   },
@@ -905,6 +896,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Deep stabilisers",
     emg_score: 3,
   },
@@ -913,6 +905,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Lower abs",
     emg_score: 4,
   },
@@ -921,6 +914,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Lower abs",
     emg_score: 1,
   },
@@ -929,6 +923,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Deep stabilisers",
     emg_score: 3,
   },
@@ -937,6 +932,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Obliques",
     emg_score: 3,
   },
@@ -945,6 +941,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Forearms",
     muscles_secondary: "Brachialis",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Extensors",
     emg_score: 2,
   },
@@ -953,15 +950,8 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Forearms",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Flexors",
-    emg_score: 2,
-  },
-  {
-    exercise: "Glute Bridge",
-    muscles_primary: "Glutes",
-    muscles_secondary: "Hamstrings",
-    type: "Isolation",
-    sub_component: "Glutes",
     emg_score: 2,
   },
   {
@@ -969,6 +959,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Lower Back",
     muscles_secondary: "Hamstrings/Glutes",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Hamstring/Glute",
     emg_score: 3,
   },
@@ -977,6 +968,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Lower Back",
     muscles_secondary: "Hamstrings/Glutes",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Hip hinge/Hamstring emphasis",
     emg_score: 4,
   },
@@ -985,6 +977,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Quads",
     muscles_secondary: "Glutes",
     type: "Compound",
+    equipment_type: "single dumbbell",
     sub_component: "Quads/Glutes",
     emg_score: 4,
   },
@@ -993,6 +986,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Quads",
     muscles_secondary: "Glutes/Hamstrings",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Quads/Glutes",
     emg_score: 3,
   },
@@ -1001,6 +995,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Quads",
     muscles_secondary: "Glutes/Hamstrings",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Glutes/Hamstrings",
     emg_score: 2,
   },
@@ -1009,6 +1004,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "dumbbells",
     sub_component: "Lateral delt",
     emg_score: 2,
   },
@@ -1017,6 +1013,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "dumbbells",
     sub_component: "Rear delt",
     emg_score: 2,
   },
@@ -1025,6 +1022,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "Triceps",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Anterior/Lateral delt",
     emg_score: 4,
   },
@@ -1033,6 +1031,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "Triceps",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Anterior/Lateral delt",
     emg_score: 4,
   },
@@ -1041,6 +1040,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Triceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Long head",
     emg_score: 3,
   },
@@ -1049,6 +1049,7 @@ const HOME_GYM_EXERCISES = [
     muscles_primary: "Triceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "barbell",
     sub_component: "Long head",
     emg_score: 3,
   },
@@ -1060,6 +1061,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Back",
     muscles_secondary: "Biceps/Rear Delts",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Lat/Mid-trap",
     emg_score: 5,
   },
@@ -1068,6 +1070,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Back",
     muscles_secondary: "Biceps/Rear Delts",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Lat/Mid-trap",
     emg_score: 4,
   },
@@ -1076,6 +1079,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Back",
     muscles_secondary: "Biceps",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Different pull angle",
     emg_score: 3,
   },
@@ -1084,6 +1088,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Back",
     muscles_secondary: "Biceps",
     type: "Compound",
+    equipment_type: "single dumbbell",
     sub_component: "Lower lat",
     emg_score: 3,
   },
@@ -1092,6 +1097,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Biceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "barbell",
     sub_component: "Long head",
     emg_score: 4,
   },
@@ -1100,6 +1106,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Biceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "machine",
     sub_component: "Short head",
     emg_score: 3,
   },
@@ -1108,6 +1115,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Biceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Short head",
     emg_score: 3,
   },
@@ -1116,6 +1124,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Biceps",
     muscles_secondary: "Brachialis",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Brachialis/Long head",
     emg_score: 2,
   },
@@ -1124,6 +1133,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Calves",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "barbell",
     sub_component: "Gastrocnemius",
     emg_score: 2,
   },
@@ -1132,6 +1142,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Chest",
     muscles_secondary: "Shoulders/Triceps",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Sternal head",
     emg_score: 5,
   },
@@ -1140,6 +1151,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Chest",
     muscles_secondary: "Triceps",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Lower/Sternal head",
     emg_score: 3,
   },
@@ -1148,6 +1160,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Chest",
     muscles_secondary: "Shoulders/Triceps",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Sternal/Clavicular head",
     emg_score: 4,
   },
@@ -1156,6 +1169,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Chest",
     muscles_secondary: "Shoulders/Triceps",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Upper/Clavicular head",
     emg_score: 4,
   },
@@ -1164,6 +1178,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Chest",
     muscles_secondary: "Shoulders/Triceps",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Upper/Clavicular head",
     emg_score: 3,
   },
@@ -1172,6 +1187,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Upper abs",
     emg_score: 1,
   },
@@ -1180,30 +1196,16 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "machine",
     sub_component: "Upper abs",
     emg_score: 4,
-  },
-  {
-    exercise: "Cable Woodchop",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    sub_component: "Obliques/Core",
-    emg_score: 3,
-  },
-  {
-    exercise: "Dead Bug",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    sub_component: "Deep stabilisers",
-    emg_score: 3,
   },
   {
     exercise: "Incline Russian Twist",
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Obliques",
     emg_score: 3,
   },
@@ -1212,6 +1214,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Upper abs",
     emg_score: 2,
   },
@@ -1220,6 +1223,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Lower abs",
     emg_score: 4,
   },
@@ -1228,6 +1232,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Lower abs",
     emg_score: 1,
   },
@@ -1236,6 +1241,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Deep stabilisers",
     emg_score: 3,
   },
@@ -1244,6 +1250,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Obliques",
     emg_score: 3,
   },
@@ -1252,6 +1259,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "Hip Flexors",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Lower abs",
     emg_score: 4,
   },
@@ -1260,6 +1268,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "Core",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Lower abs/Core",
     emg_score: 4,
   },
@@ -1268,6 +1277,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Core",
     muscles_secondary: "Abs",
     type: "Isolation",
+    equipment_type: "none",
     sub_component: "Obliques/Lower abs",
     emg_score: 3,
   },
@@ -1276,6 +1286,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Forearms",
     muscles_secondary: "Brachialis",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Extensors",
     emg_score: 2,
   },
@@ -1284,6 +1295,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Forearms",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "barbell",
     sub_component: "Flexors",
     emg_score: 2,
   },
@@ -1292,6 +1304,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Hamstrings",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "machine",
     sub_component: "Hamstrings",
     emg_score: 3,
   },
@@ -1300,6 +1313,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Lower Back",
     muscles_secondary: "Glutes/Hamstrings",
     type: "Compound",
+    equipment_type: "olympic barbell",
     sub_component: "Full posterior chain",
     emg_score: 5,
   },
@@ -1308,6 +1322,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Lower Back",
     muscles_secondary: "Hamstrings/Glutes",
     type: "Compound",
+    equipment_type: "olympic barbell",
     sub_component: "Hip hinge/Hamstring emphasis",
     emg_score: 4,
   },
@@ -1316,6 +1331,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Quads",
     muscles_secondary: "Glutes/Hamstrings",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Quads/Glutes",
     emg_score: 5,
   },
@@ -1324,6 +1340,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Quads",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "machine",
     sub_component: "Quads",
     emg_score: 3,
   },
@@ -1332,22 +1349,16 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Quads",
     muscles_secondary: "Glutes/Hamstrings",
     type: "Compound",
+    equipment_type: "machine",
     sub_component: "Quads/Glutes — different loading angle",
     emg_score: 4,
-  },
-  {
-    exercise: "Cable Lateral Raise",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "None",
-    type: "Isolation",
-    sub_component: "Lateral delt",
-    emg_score: 2,
   },
   {
     exercise: "Dumbbell Lateral Raise",
     muscles_primary: "Shoulders",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "dumbbells",
     sub_component: "Lateral delt",
     emg_score: 2,
   },
@@ -1356,6 +1367,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "dumbbells",
     sub_component: "Rear delt/Rhomboids",
     emg_score: 2,
   },
@@ -1364,6 +1376,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "Triceps",
     type: "Compound",
+    equipment_type: "dumbbells",
     sub_component: "Anterior delt/Stabilisers",
     emg_score: 4,
   },
@@ -1372,6 +1385,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "Upper Back/Rotator Cuff",
     type: "Isolation",
+    equipment_type: "machine",
     sub_component: "Rear delt/Rotator cuff",
     emg_score: 3,
   },
@@ -1380,6 +1394,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Shoulders",
     muscles_secondary: "Triceps/Upper Chest",
     type: "Compound",
+    equipment_type: "barbell",
     sub_component: "Anterior/Lateral delt",
     emg_score: 5,
   },
@@ -1388,6 +1403,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Triceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "single dumbbell",
     sub_component: "Long head",
     emg_score: 4,
   },
@@ -1396,6 +1412,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Triceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "barbell",
     sub_component: "Long head/Medial head",
     emg_score: 4,
   },
@@ -1404,6 +1421,7 @@ const WORK_GYM_EXERCISES = [
     muscles_primary: "Triceps",
     muscles_secondary: "None",
     type: "Isolation",
+    equipment_type: "machine",
     sub_component: "Lateral head",
     emg_score: 4,
   },
