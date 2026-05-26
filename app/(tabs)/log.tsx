@@ -1,6 +1,7 @@
 // app/(tabs)/log.tsx
 // Body Composition Log screen
 // Saves real entries to the database and displays real trend data.
+// Tapping any field opens a modal with a numpad to enter/update that field only.
 
 import { useState, useEffect, useCallback } from "react";
 import {
@@ -9,6 +10,7 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
+  Modal,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
@@ -28,6 +30,8 @@ interface BodyCompEntry {
   body_fat_pct: string | null;
   logged_at: string;
 }
+
+type ActiveField = "weight" | "muscle" | "bodyfat";
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
 
@@ -180,7 +184,7 @@ function MiniChart({
 function Numpad({ onPress }: { onPress: (key: string) => void }) {
   const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"];
   return (
-    <Card pad={10} style={{ marginHorizontal: 20, marginTop: 10 }}>
+    <View style={{ marginTop: 16 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
         {keys.map((k, i) => (
           <Pressable
@@ -188,7 +192,7 @@ function Numpad({ onPress }: { onPress: (key: string) => void }) {
             onPress={() => onPress(k)}
             style={{
               width: "30%",
-              paddingVertical: 12,
+              paddingVertical: 14,
               alignItems: "center",
               backgroundColor: Colors.card2,
               borderRadius: 8,
@@ -197,7 +201,7 @@ function Numpad({ onPress }: { onPress: (key: string) => void }) {
             <Text
               style={{
                 fontFamily: "Courier",
-                fontSize: 18,
+                fontSize: 20,
                 fontWeight: "600",
                 color: k === "⌫" ? Colors.sec : Colors.text,
               }}
@@ -207,23 +211,29 @@ function Numpad({ onPress }: { onPress: (key: string) => void }) {
           </Pressable>
         ))}
       </View>
-    </Card>
+    </View>
   );
 }
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function LogScreen() {
-  const [activeField, setActiveField] = useState<
-    "weight" | "muscle" | "bodyfat"
-  >("weight");
-  const [weightInput, setWeightInput] = useState("");
-  const [muscleInput, setMuscleInput] = useState("");
-  const [bodyFatInput, setBodyFatInput] = useState("");
+  // Displayed values (from today's DB entry if it exists)
+  const [weightValue, setWeightValue] = useState<string>("");
+  const [muscleValue, setMuscleValue] = useState<string>("");
+  const [bodyFatValue, setBodyFatValue] = useState<string>("");
+
+  // Modal state
+  const [modalField, setModalField] = useState<ActiveField | null>(null);
+  const [modalInput, setModalInput] = useState<string>("");
   const [saving, setSaving] = useState(false);
-  const [extracting, setExtracting] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Photo extraction
+  const [extracting, setExtracting] = useState(false);
+
+  // Chart data
   const [entries, setEntries] = useState<BodyCompEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -237,8 +247,9 @@ export default function LogScreen() {
   async function loadEntries() {
     setLoading(true);
     try {
-      const data = await getBodyComp(12);
+      const data: BodyCompEntry[] = await getBodyComp(12);
       setEntries(data);
+      prepopulateToday(data);
     } catch (err) {
       console.error("Failed to load body comp:", err);
     } finally {
@@ -246,52 +257,76 @@ export default function LogScreen() {
     }
   }
 
-  function handleNumpad(key: string) {
-    const current =
-      activeField === "weight"
-        ? weightInput
-        : activeField === "muscle"
-          ? muscleInput
-          : bodyFatInput;
-    const setter =
-      activeField === "weight"
-        ? setWeightInput
-        : activeField === "muscle"
-          ? setMuscleInput
-          : setBodyFatInput;
+  // Check if the most recent entry is from today and prepopulate fields
+  function prepopulateToday(data: BodyCompEntry[]) {
+    const todayStr = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+    const todayEntry = data.find((e) => e.logged_at.slice(0, 10) === todayStr);
 
-    if (key === "⌫") {
-      setter(current.slice(0, -1));
-    } else if (key === "." && current.includes(".")) {
-      return;
+    if (todayEntry) {
+      setWeightValue(
+        todayEntry.weight_kg ? String(parseFloat(todayEntry.weight_kg)) : "",
+      );
+      setMuscleValue(
+        todayEntry.muscle_mass_kg
+          ? String(parseFloat(todayEntry.muscle_mass_kg))
+          : "",
+      );
+      setBodyFatValue(
+        todayEntry.body_fat_pct
+          ? String(parseFloat(todayEntry.body_fat_pct))
+          : "",
+      );
     } else {
-      setter(current + key);
+      setWeightValue("");
+      setMuscleValue("");
+      setBodyFatValue("");
     }
   }
 
-  async function handleSave() {
-    if (!weightInput && !muscleInput && !bodyFatInput) {
-      setSaveError("Enter at least one value");
+  // Open modal for a given field
+  function openModal(field: ActiveField) {
+    setModalField(field);
+    setModalInput("");
+    setSaveError("");
+  }
+
+  function closeModal() {
+    setModalField(null);
+    setModalInput("");
+    setSaveError("");
+  }
+
+  function handleNumpad(key: string) {
+    if (key === "⌫") {
+      setModalInput((prev) => prev.slice(0, -1));
+    } else if (key === "." && modalInput.includes(".")) {
+      return;
+    } else {
+      setModalInput((prev) => prev + key);
+    }
+  }
+
+  async function handleModalSave() {
+    if (!modalInput) {
+      setSaveError("Enter a value");
       return;
     }
 
     setSaveError("");
     setSaving(true);
-    setSaveSuccess(false);
+
+    const value = parseFloat(modalInput);
 
     try {
       await logBodyComp({
-        weight_kg: weightInput ? parseFloat(weightInput) : undefined,
-        muscle_mass_kg: muscleInput ? parseFloat(muscleInput) : undefined,
-        body_fat_pct: bodyFatInput ? parseFloat(bodyFatInput) : undefined,
+        weight_kg: modalField === "weight" ? value : undefined,
+        muscle_mass_kg: modalField === "muscle" ? value : undefined,
+        body_fat_pct: modalField === "bodyfat" ? value : undefined,
       });
 
       setSaveSuccess(true);
-      setWeightInput("");
-      setMuscleInput("");
-      setBodyFatInput("");
+      closeModal();
       await loadEntries();
-
       setTimeout(() => setSaveSuccess(false), 2000);
     } catch (err: any) {
       setSaveError(err.message || "Failed to save");
@@ -301,10 +336,8 @@ export default function LogScreen() {
   }
 
   async function handlePhotoLog() {
-    // Request permission and open camera roll
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      setSaveError("Camera roll permission is required to log from photo");
       return;
     }
 
@@ -318,38 +351,32 @@ export default function LogScreen() {
 
     const asset = result.assets[0];
     const base64 = asset.base64!;
-
-    // Determine media type from uri extension, default to jpeg
     const mediaType = asset.mimeType ?? "image/jpeg";
+
     setExtracting(true);
-    setSaveError("");
 
     try {
       const extracted = await extractBodyCompFromImage(base64, mediaType);
 
-      // Pre-fill whichever fields were successfully extracted
-      if (extracted.weight_kg !== null && extracted.weight_kg !== undefined) {
-        setWeightInput(String(extracted.weight_kg));
-      }
-      if (
-        extracted.muscle_mass_kg !== null &&
-        extracted.muscle_mass_kg !== undefined
-      ) {
-        setMuscleInput(String(extracted.muscle_mass_kg));
-      }
-      if (
-        extracted.body_fat_pct !== null &&
-        extracted.body_fat_pct !== undefined
-      ) {
-        setBodyFatInput(String(extracted.body_fat_pct));
-      }
+      // Save all extracted fields in one call
+      await logBodyComp({
+        weight_kg: extracted.weight_kg ?? undefined,
+        muscle_mass_kg: extracted.muscle_mass_kg ?? undefined,
+        body_fat_pct: extracted.body_fat_pct ?? undefined,
+        source: "image",
+      });
+
+      setSaveSuccess(true);
+      await loadEntries();
+      setTimeout(() => setSaveSuccess(false), 2000);
     } catch (err: any) {
-      setSaveError("Could not extract data from image — please enter manually");
+      console.error("Photo log error:", err);
     } finally {
       setExtracting(false);
     }
   }
 
+  // Chart data derived from entries
   const weightPoints = entries
     .filter((e) => e.weight_kg !== null)
     .map((e) => parseFloat(e.weight_kg!));
@@ -375,10 +402,147 @@ export default function LogScreen() {
     month: "short",
   });
 
+  // Label for the modal header
+  const modalLabel =
+    modalField === "weight"
+      ? "Weight (kg)"
+      : modalField === "muscle"
+        ? "Muscle Mass (kg)"
+        : "Body Fat (%)";
+
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
+      {/* ── Modal ─────────────────────────────────────────────────────────── */}
+      <Modal
+        visible={modalField !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={closeModal}
+      >
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.6)",
+            justifyContent: "flex-end",
+          }}
+          onPress={closeModal}
+        >
+          {/* Stop tap-through on the inner card */}
+          <Pressable onPress={(e) => e.stopPropagation()}>
+            <View
+              style={{
+                backgroundColor: Colors.card,
+                borderTopLeftRadius: 20,
+                borderTopRightRadius: 20,
+                padding: 20,
+                paddingBottom: 36,
+                borderTopWidth: 0.5,
+                borderColor: Colors.line,
+              }}
+            >
+              {/* Modal header */}
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 16,
+                }}
+              >
+                <Text
+                  style={{
+                    fontFamily: "Courier",
+                    fontSize: 11,
+                    color: Colors.ter,
+                    letterSpacing: 0.6,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {modalLabel}
+                </Text>
+                <Pressable onPress={closeModal}>
+                  <Text
+                    style={{
+                      fontFamily: "Courier",
+                      fontSize: 11,
+                      color: Colors.sec,
+                      letterSpacing: 0.6,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Cancel
+                  </Text>
+                </Pressable>
+              </View>
+
+              {/* Value display */}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "flex-end",
+                  gap: 6,
+                  marginBottom: 4,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 48,
+                    fontWeight: "700",
+                    color: modalInput ? Colors.text : Colors.ter,
+                    letterSpacing: -1,
+                  }}
+                >
+                  {modalInput || "—"}
+                </Text>
+                <Text
+                  style={{ fontSize: 16, color: Colors.sec, marginBottom: 10 }}
+                >
+                  {modalField === "bodyfat" ? "%" : "kg"}
+                </Text>
+              </View>
+
+              {saveError ? (
+                <Text
+                  style={{ fontSize: 12, color: Colors.warn, marginBottom: 8 }}
+                >
+                  {saveError}
+                </Text>
+              ) : null}
+
+              {/* Numpad */}
+              <Numpad onPress={handleNumpad} />
+
+              {/* Save button */}
+              <Pressable
+                onPress={handleModalSave}
+                disabled={saving}
+                style={{
+                  marginTop: 16,
+                  backgroundColor: Colors.text,
+                  borderRadius: 10,
+                  padding: 14,
+                  alignItems: "center",
+                  opacity: saving ? 0.7 : 1,
+                }}
+              >
+                {saving ? (
+                  <ActivityIndicator color="#000" />
+                ) : (
+                  <Text
+                    style={{ fontSize: 15, fontWeight: "700", color: "#000" }}
+                  >
+                    Save
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* ── Main scroll content ───────────────────────────────────────────── */}
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* header */}
+        {/* Header */}
         <View
           style={{ paddingHorizontal: 20, paddingTop: 60, paddingBottom: 4 }}
         >
@@ -406,10 +570,10 @@ export default function LogScreen() {
           </Text>
         </View>
 
-        {/* entry card */}
+        {/* Entry card */}
         <View style={{ marginHorizontal: 20, marginTop: 14 }}>
           <Card pad={16}>
-            {/* card header row */}
+            {/* Card header row */}
             <View
               style={{
                 flexDirection: "row",
@@ -437,7 +601,7 @@ export default function LogScreen() {
                     ✓ Saved
                   </Tag>
                 )}
-                {/* log from photo button */}
+                {/* Log from photo button */}
                 <Pressable
                   onPress={handlePhotoLog}
                   disabled={extracting}
@@ -471,19 +635,18 @@ export default function LogScreen() {
               </View>
             </View>
 
-            {/* input fields row — weight and muscle mass */}
+            {/* Input fields row — weight and muscle mass */}
             <View style={{ flexDirection: "row", gap: 10, marginBottom: 10 }}>
-              {/* weight */}
+              {/* Weight */}
               <Pressable
-                onPress={() => setActiveField("weight")}
+                onPress={() => openModal("weight")}
                 style={{
                   flex: 1,
                   backgroundColor: Colors.bg,
                   borderRadius: 12,
                   padding: 12,
                   borderWidth: 1,
-                  borderColor:
-                    activeField === "weight" ? Colors.accent : Colors.line2,
+                  borderColor: Colors.line2,
                 }}
               >
                 <Text
@@ -509,42 +672,30 @@ export default function LogScreen() {
                     style={{
                       fontSize: 30,
                       fontWeight: "700",
-                      color: weightInput ? Colors.text : Colors.ter,
+                      color: weightValue ? Colors.text : Colors.ter,
                       letterSpacing: -0.6,
                     }}
                   >
-                    {weightInput || "—"}
+                    {weightValue || "—"}
                   </Text>
                   <Text
                     style={{ fontSize: 12, color: Colors.sec, marginBottom: 4 }}
                   >
                     kg
                   </Text>
-                  {activeField === "weight" && (
-                    <View
-                      style={{
-                        width: 1.5,
-                        height: 24,
-                        backgroundColor: Colors.accent,
-                        marginLeft: 2,
-                        marginBottom: 4,
-                      }}
-                    />
-                  )}
                 </View>
               </Pressable>
 
-              {/* muscle mass */}
+              {/* Muscle mass */}
               <Pressable
-                onPress={() => setActiveField("muscle")}
+                onPress={() => openModal("muscle")}
                 style={{
                   flex: 1,
                   backgroundColor: Colors.bg,
                   borderRadius: 12,
                   padding: 12,
                   borderWidth: 1,
-                  borderColor:
-                    activeField === "muscle" ? Colors.accent : Colors.line2,
+                  borderColor: Colors.line2,
                 }}
               >
                 <Text
@@ -570,42 +721,30 @@ export default function LogScreen() {
                     style={{
                       fontSize: 30,
                       fontWeight: "700",
-                      color: muscleInput ? Colors.text : Colors.ter,
+                      color: muscleValue ? Colors.text : Colors.ter,
                       letterSpacing: -0.6,
                     }}
                   >
-                    {muscleInput || "—"}
+                    {muscleValue || "—"}
                   </Text>
                   <Text
                     style={{ fontSize: 12, color: Colors.sec, marginBottom: 4 }}
                   >
                     kg
                   </Text>
-                  {activeField === "muscle" && (
-                    <View
-                      style={{
-                        width: 1.5,
-                        height: 24,
-                        backgroundColor: Colors.accent,
-                        marginLeft: 2,
-                        marginBottom: 4,
-                      }}
-                    />
-                  )}
                 </View>
               </Pressable>
             </View>
 
-            {/* body fat % — full width below */}
+            {/* Body fat — full width below */}
             <Pressable
-              onPress={() => setActiveField("bodyfat")}
+              onPress={() => openModal("bodyfat")}
               style={{
                 backgroundColor: Colors.bg,
                 borderRadius: 12,
                 padding: 12,
                 borderWidth: 1,
-                borderColor:
-                  activeField === "bodyfat" ? Colors.accent : Colors.line2,
+                borderColor: Colors.line2,
               }}
             >
               <Text
@@ -631,66 +770,23 @@ export default function LogScreen() {
                   style={{
                     fontSize: 30,
                     fontWeight: "700",
-                    color: bodyFatInput ? Colors.text : Colors.ter,
+                    color: bodyFatValue ? Colors.text : Colors.ter,
                     letterSpacing: -0.6,
                   }}
                 >
-                  {bodyFatInput || "—"}
+                  {bodyFatValue || "—"}
                 </Text>
                 <Text
                   style={{ fontSize: 12, color: Colors.sec, marginBottom: 4 }}
                 >
                   %
                 </Text>
-                {activeField === "bodyfat" && (
-                  <View
-                    style={{
-                      width: 1.5,
-                      height: 24,
-                      backgroundColor: Colors.accent,
-                      marginLeft: 2,
-                      marginBottom: 4,
-                    }}
-                  />
-                )}
               </View>
-            </Pressable>
-
-            {saveError ? (
-              <Text style={{ fontSize: 12, color: Colors.warn, marginTop: 8 }}>
-                {saveError}
-              </Text>
-            ) : null}
-
-            <Pressable
-              onPress={handleSave}
-              disabled={saving}
-              style={{
-                marginTop: 12,
-                backgroundColor: Colors.text,
-                borderRadius: 10,
-                padding: 12,
-                alignItems: "center",
-                opacity: saving ? 0.7 : 1,
-              }}
-            >
-              {saving ? (
-                <ActivityIndicator color="#000" />
-              ) : (
-                <Text
-                  style={{ fontSize: 14, fontWeight: "700", color: "#000" }}
-                >
-                  Save Entry
-                </Text>
-              )}
             </Pressable>
           </Card>
         </View>
 
-        {/* numpad */}
-        <Numpad onPress={handleNumpad} />
-
-        {/* weight trend chart */}
+        {/* Weight trend chart */}
         <View style={{ marginHorizontal: 20, marginTop: 14 }}>
           <Card pad={14}>
             <View
@@ -747,7 +843,7 @@ export default function LogScreen() {
           </Card>
         </View>
 
-        {/* muscle mass trend chart */}
+        {/* Muscle mass trend chart */}
         <View style={{ marginHorizontal: 20, marginTop: 10 }}>
           <Card pad={14}>
             <View
@@ -804,7 +900,7 @@ export default function LogScreen() {
           </Card>
         </View>
 
-        {/* body fat trend chart */}
+        {/* Body fat trend chart */}
         <View style={{ marginHorizontal: 20, marginTop: 10, marginBottom: 24 }}>
           <Card pad={14}>
             <View
