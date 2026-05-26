@@ -15,3 +15,6 @@ pool
     console.error(err);
     pool.end();
   });
+
+// run with command
+// node export.js
