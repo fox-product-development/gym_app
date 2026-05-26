@@ -48,6 +48,9 @@ app.use("/onerepmax", oneRepMaxRoutes);
 const userRoutes = require("./routes/user");
 app.use("/user", userRoutes);
 
+const bridgeRoutes = require("./routes/bridge");
+app.use("/bridge", bridgeRoutes);
+
 // ─── Scheduled jobs ───────────────────────────────────────────────────────────
 
 // Sunday at 8PM — generate weekly coaching report and advance phase week

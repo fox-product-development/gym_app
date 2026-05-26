@@ -462,7 +462,45 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    res.json(result.rows[0]);
+    const session = result.rows[0];
+
+    // ─── Push completed session to Activity Coach ─────────────────────────
+    // Non-blocking — failure here does not affect session completion.
+    try {
+      const activityPayload = {
+        type: "gym",
+        date: session.completed_at,
+        duration_minutes: 60,
+        notes: session.notes || null,
+        user_id: process.env.ACTIVITY_COACH_USER_ID,
+      };
+
+      const response = await fetch(
+        "https://www.activitycoach.co.uk/api/activities",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.BRIDGE_SECRET}`,
+          },
+          body: JSON.stringify(activityPayload),
+        },
+      );
+
+      if (!response.ok) {
+        console.error(
+          "Activity Coach push failed:",
+          response.status,
+          await response.text(),
+        );
+      } else {
+        console.log("Activity Coach push successful for session", session.id);
+      }
+    } catch (pushErr) {
+      console.error("Activity Coach push error:", pushErr.message);
+    }
+
+    res.json(session);
   } catch (err) {
     console.error("Complete session error:", err.message);
     res.status(500).json({ error: "Server error" });
