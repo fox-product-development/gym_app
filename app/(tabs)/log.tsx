@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
+import Svg, { Path, Defs, LinearGradient, Stop } from "react-native-svg";
 import { Colors } from "../../constants/theme";
 import {
   logBodyComp,
@@ -96,22 +97,53 @@ function Card({
   );
 }
 
-// ─── Mini bar chart ───────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function MiniChart({
+function formatAxisDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  const day = d.getDate().toString().padStart(2, "0");
+  const month = d.toLocaleDateString("en-GB", { month: "short" });
+  return `${day}-${month}`;
+}
+
+function computeYAxis(points: number[]): {
+  yMin: number;
+  yMax: number;
+  yMid: number;
+} {
+  const dataMin = Math.min(...points);
+  const dataMax = Math.max(...points);
+  const dataRange = dataMax - dataMin || 1;
+  const buffer = dataRange * 0.4;
+  const rawMin = dataMin - buffer;
+  const rawMax = dataMax + buffer;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax - rawMin)) - 1);
+  const yMin = Math.floor(rawMin / magnitude) * magnitude;
+  const yMax = Math.ceil(rawMax / magnitude) * magnitude;
+  const yMid = (yMin + yMax) / 2;
+  return { yMin, yMax, yMid };
+}
+
+// ─── Line chart ───────────────────────────────────────────────────────────────
+
+function LineChart({
   points,
+  dates,
   color,
-  height = 88,
-  label,
-  yLabels,
+  gradientId,
+  height = 110,
 }: {
   points: number[];
+  dates: string[];
   color: string;
+  gradientId: string;
   height?: number;
-  label?: string;
-  yLabels?: [string, string];
 }) {
-  if (points.length === 0) {
+  const Y_LABEL_WIDTH = 36;
+  const X_LABEL_HEIGHT = 18;
+  const CHART_PADDING = 8;
+
+  if (points.length < 2) {
     return (
       <View
         style={{
@@ -124,57 +156,150 @@ function MiniChart({
         <Text
           style={{ fontFamily: "Courier", fontSize: 10, color: Colors.ter }}
         >
-          No data yet
+          Not enough data
         </Text>
       </View>
     );
   }
 
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const range = max - min || 1;
+  const { yMin, yMax, yMid } = computeYAxis(points);
+
+  const chartH = height - X_LABEL_HEIGHT;
+  const W = 300;
+  const H = chartH - CHART_PADDING * 2;
+
+  const toX = (i: number) =>
+    points.length === 1 ? W / 2 : (i / (points.length - 1)) * W;
+  const toY = (v: number) => CHART_PADDING + ((yMax - v) / (yMax - yMin)) * H;
+
+  const linePath = points
+    .map((p, i) => {
+      if (i === 0) return `M ${toX(i)} ${toY(p)}`;
+      const x0 = toX(i - 1);
+      const y0 = toY(points[i - 1]);
+      const x1 = toX(i);
+      const y1 = toY(p);
+      const cpx = (x0 + x1) / 2;
+      return `C ${cpx} ${y0}, ${cpx} ${y1}, ${x1} ${y1}`;
+    })
+    .join(" ");
+
+  const fillPath =
+    linePath +
+    ` L ${toX(points.length - 1)} ${H + CHART_PADDING * 2}` +
+    ` L ${toX(0)} ${H + CHART_PADDING * 2} Z`;
+
+  const startDate = dates[0] ? formatAxisDate(dates[0]) : "";
+  const endDate = dates[dates.length - 1]
+    ? formatAxisDate(dates[dates.length - 1])
+    : "";
+  const midIdx = Math.floor((dates.length - 1) / 2);
+  const midDate = dates[midIdx] ? formatAxisDate(dates[midIdx]) : "";
+
+  const fmtY = (v: number) =>
+    Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1);
 
   return (
-    <View style={{ marginTop: 8 }}>
-      <View
-        style={{ flexDirection: "row", alignItems: "flex-end", height, gap: 2 }}
-      >
-        {points.map((p, i) => {
-          const barHeight = ((p - min) / range) * (height - 8) + 8;
-          const isLast = i === points.length - 1;
-          return (
-            <View
-              key={i}
-              style={{
-                flex: 1,
-                height: barHeight,
-                borderRadius: 2,
-                backgroundColor: isLast ? color : color + "40",
-              }}
-            />
-          );
-        })}
-      </View>
-      {(label || yLabels) && (
+    <View style={{ marginTop: 10 }}>
+      <View style={{ flexDirection: "row" }}>
+        {/* Y axis labels */}
         <View
           style={{
-            flexDirection: "row",
+            width: Y_LABEL_WIDTH,
+            height: chartH,
             justifyContent: "space-between",
-            marginTop: 4,
+            alignItems: "flex-end",
+            paddingRight: 5,
+            paddingVertical: CHART_PADDING,
           }}
         >
           <Text
-            style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+            style={{ fontFamily: "Courier", fontSize: 8, color: Colors.ter }}
           >
-            {yLabels ? yLabels[0] : ""}
+            {fmtY(yMax)}
           </Text>
           <Text
-            style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+            style={{ fontFamily: "Courier", fontSize: 8, color: Colors.ter }}
           >
-            {label || (yLabels ? yLabels[1] : "")}
+            {fmtY(yMid)}
+          </Text>
+          <Text
+            style={{ fontFamily: "Courier", fontSize: 8, color: Colors.ter }}
+          >
+            {fmtY(yMin)}
           </Text>
         </View>
-      )}
+
+        {/* SVG chart area */}
+        <View style={{ flex: 1, height: chartH }}>
+          <Svg
+            width="100%"
+            height={chartH}
+            viewBox={`0 0 ${W} ${chartH}`}
+            preserveAspectRatio="none"
+          >
+            <Defs>
+              <LinearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0%" stopColor={color} stopOpacity="0.25" />
+                <Stop offset="100%" stopColor={color} stopOpacity="0" />
+              </LinearGradient>
+            </Defs>
+            <Path d={fillPath} fill={`url(#${gradientId})`} />
+            <Path
+              d={linePath}
+              stroke={color}
+              strokeWidth="1.5"
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Svg>
+        </View>
+      </View>
+
+      {/* X axis labels */}
+      <View
+        style={{
+          flexDirection: "row",
+          marginLeft: Y_LABEL_WIDTH,
+          height: X_LABEL_HEIGHT,
+          alignItems: "center",
+        }}
+      >
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "left",
+          }}
+        >
+          {startDate}
+        </Text>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "center",
+          }}
+        >
+          {midDate}
+        </Text>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "right",
+          }}
+        >
+          {endDate}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -218,26 +343,21 @@ function Numpad({ onPress }: { onPress: (key: string) => void }) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function LogScreen() {
-  // Displayed values (from today's DB entry if it exists)
   const [weightValue, setWeightValue] = useState<string>("");
   const [muscleValue, setMuscleValue] = useState<string>("");
   const [bodyFatValue, setBodyFatValue] = useState<string>("");
 
-  // Modal state
   const [modalField, setModalField] = useState<ActiveField | null>(null);
   const [modalInput, setModalInput] = useState<string>("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Photo extraction
   const [extracting, setExtracting] = useState(false);
 
-  // Chart data
   const [entries, setEntries] = useState<BodyCompEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Load data whenever screen comes into focus
   useFocusEffect(
     useCallback(() => {
       loadEntries();
@@ -247,7 +367,7 @@ export default function LogScreen() {
   async function loadEntries() {
     setLoading(true);
     try {
-      const data: BodyCompEntry[] = await getBodyComp(12);
+      const data: BodyCompEntry[] = await getBodyComp(28);
       setEntries(data);
       prepopulateToday(data);
     } catch (err) {
@@ -257,9 +377,8 @@ export default function LogScreen() {
     }
   }
 
-  // Check if the most recent entry is from today and prepopulate fields
   function prepopulateToday(data: BodyCompEntry[]) {
-    const todayStr = new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+    const todayStr = new Date().toISOString().slice(0, 10);
     const todayEntry = data.find((e) => e.logged_at.slice(0, 10) === todayStr);
 
     if (todayEntry) {
@@ -283,7 +402,6 @@ export default function LogScreen() {
     }
   }
 
-  // Open modal for a given field
   function openModal(field: ActiveField) {
     setModalField(field);
     setModalInput("");
@@ -358,7 +476,6 @@ export default function LogScreen() {
     try {
       const extracted = await extractBodyCompFromImage(base64, mediaType);
 
-      // Save all extracted fields in one call
       await logBodyComp({
         weight_kg: extracted.weight_kg ?? undefined,
         muscle_mass_kg: extracted.muscle_mass_kg ?? undefined,
@@ -376,18 +493,18 @@ export default function LogScreen() {
     }
   }
 
-  // Chart data derived from entries
-  const weightPoints = entries
-    .filter((e) => e.weight_kg !== null)
-    .map((e) => parseFloat(e.weight_kg!));
+  // Chart data — keep entries paired with their dates
+  const weightEntries = entries.filter((e) => e.weight_kg !== null);
+  const muscleEntries = entries.filter((e) => e.muscle_mass_kg !== null);
+  const bodyFatEntries = entries.filter((e) => e.body_fat_pct !== null);
 
-  const musclePoints = entries
-    .filter((e) => e.muscle_mass_kg !== null)
-    .map((e) => parseFloat(e.muscle_mass_kg!));
+  const weightPoints = weightEntries.map((e) => parseFloat(e.weight_kg!));
+  const musclePoints = muscleEntries.map((e) => parseFloat(e.muscle_mass_kg!));
+  const bodyFatPoints = bodyFatEntries.map((e) => parseFloat(e.body_fat_pct!));
 
-  const bodyFatPoints = entries
-    .filter((e) => e.body_fat_pct !== null)
-    .map((e) => parseFloat(e.body_fat_pct!));
+  const weightDates = weightEntries.map((e) => e.logged_at);
+  const muscleDates = muscleEntries.map((e) => e.logged_at);
+  const bodyFatDates = bodyFatEntries.map((e) => e.logged_at);
 
   const latestWeight =
     weightPoints.length > 0 ? weightPoints[weightPoints.length - 1] : null;
@@ -402,7 +519,6 @@ export default function LogScreen() {
     month: "short",
   });
 
-  // Label for the modal header
   const modalLabel =
     modalField === "weight"
       ? "Weight (kg)"
@@ -427,7 +543,6 @@ export default function LogScreen() {
           }}
           onPress={closeModal}
         >
-          {/* Stop tap-through on the inner card */}
           <Pressable onPress={(e) => e.stopPropagation()}>
             <View
               style={{
@@ -440,7 +555,6 @@ export default function LogScreen() {
                 borderColor: Colors.line,
               }}
             >
-              {/* Modal header */}
               <View
                 style={{
                   flexDirection: "row",
@@ -475,7 +589,6 @@ export default function LogScreen() {
                 </Pressable>
               </View>
 
-              {/* Value display */}
               <View
                 style={{
                   flexDirection: "row",
@@ -509,10 +622,8 @@ export default function LogScreen() {
                 </Text>
               ) : null}
 
-              {/* Numpad */}
               <Numpad onPress={handleNumpad} />
 
-              {/* Save button */}
               <Pressable
                 onPress={handleModalSave}
                 disabled={saving}
@@ -573,7 +684,6 @@ export default function LogScreen() {
         {/* Entry card */}
         <View style={{ marginHorizontal: 20, marginTop: 14 }}>
           <Card pad={16}>
-            {/* Card header row */}
             <View
               style={{
                 flexDirection: "row",
@@ -601,7 +711,6 @@ export default function LogScreen() {
                     ✓ Saved
                   </Tag>
                 )}
-                {/* Log from photo button */}
                 <Pressable
                   onPress={handlePhotoLog}
                   disabled={extracting}
@@ -833,11 +942,12 @@ export default function LogScreen() {
                 style={{ marginTop: 20 }}
               />
             ) : (
-              <MiniChart
+              <LineChart
                 points={weightPoints}
+                dates={weightDates}
                 color={Colors.text}
-                height={88}
-                label="12W"
+                gradientId="logWeightGrad"
+                height={110}
               />
             )}
           </Card>
@@ -890,11 +1000,12 @@ export default function LogScreen() {
                 style={{ marginTop: 20 }}
               />
             ) : (
-              <MiniChart
+              <LineChart
                 points={musclePoints}
+                dates={muscleDates}
                 color={Colors.accent}
-                height={88}
-                label="12W"
+                gradientId="logMuscleGrad"
+                height={110}
               />
             )}
           </Card>
@@ -947,11 +1058,12 @@ export default function LogScreen() {
                 style={{ marginTop: 20 }}
               />
             ) : (
-              <MiniChart
+              <LineChart
                 points={bodyFatPoints}
+                dates={bodyFatDates}
                 color={Colors.warn}
-                height={88}
-                label="12W"
+                gradientId="logBodyFatGrad"
+                height={110}
               />
             )}
           </Card>

@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
+import Svg, { Path, Defs, LinearGradient, Stop } from "react-native-svg";
 import { Colors } from "../../constants/theme";
 import { getAllOneRepMax, getOneRepMaxHistory } from "../../services/api";
 
@@ -94,17 +95,50 @@ function Card({
   );
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatAxisDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  const day = d.getDate().toString().padStart(2, "0");
+  const month = d.toLocaleDateString("en-GB", { month: "short" });
+  return `${day}-${month}`;
+}
+
+function computeYAxis(points: number[]): {
+  yMin: number;
+  yMax: number;
+  yMid: number;
+} {
+  const dataMin = Math.min(...points);
+  const dataMax = Math.max(...points);
+  const dataRange = dataMax - dataMin || 1;
+  const buffer = dataRange * 0.4;
+  const rawMin = dataMin - buffer;
+  const rawMax = dataMax + buffer;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax - rawMin)) - 1);
+  const yMin = Math.floor(rawMin / magnitude) * magnitude;
+  const yMax = Math.ceil(rawMax / magnitude) * magnitude;
+  const yMid = (yMin + yMax) / 2;
+  return { yMin, yMax, yMid };
+}
+
 // ─── Progress chart ───────────────────────────────────────────────────────────
 
 function ProgressChart({
   points,
+  dates,
   color,
   height = 140,
 }: {
   points: number[];
+  dates: string[];
   color: string;
   height?: number;
 }) {
+  const Y_LABEL_WIDTH = 40;
+  const X_LABEL_HEIGHT = 18;
+  const CHART_PADDING = 8;
+
   if (points.length === 0) {
     return (
       <View
@@ -124,43 +158,162 @@ function ProgressChart({
     );
   }
 
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const range = max - min || 1;
+  if (points.length < 2) {
+    return (
+      <View
+        style={{
+          height,
+          alignItems: "center",
+          justifyContent: "center",
+          marginTop: 12,
+        }}
+      >
+        <Text
+          style={{ fontFamily: "Courier", fontSize: 10, color: Colors.ter }}
+        >
+          Log more sessions to see your trend
+        </Text>
+      </View>
+    );
+  }
+
+  const { yMin, yMax, yMid } = computeYAxis(points);
+
+  const chartH = height - X_LABEL_HEIGHT;
+  const W = 300;
+  const H = chartH - CHART_PADDING * 2;
+
+  const toX = (i: number) => (i / (points.length - 1)) * W;
+  const toY = (v: number) => CHART_PADDING + ((yMax - v) / (yMax - yMin)) * H;
+
+  const linePath = points
+    .map((p, i) => {
+      if (i === 0) return `M ${toX(i)} ${toY(p)}`;
+      const x0 = toX(i - 1);
+      const y0 = toY(points[i - 1]);
+      const x1 = toX(i);
+      const y1 = toY(p);
+      const cpx = (x0 + x1) / 2;
+      return `C ${cpx} ${y0}, ${cpx} ${y1}, ${x1} ${y1}`;
+    })
+    .join(" ");
+
+  const fillPath =
+    linePath +
+    ` L ${toX(points.length - 1)} ${H + CHART_PADDING * 2}` +
+    ` L ${toX(0)} ${H + CHART_PADDING * 2} Z`;
+
+  const startDate = dates[0] ? formatAxisDate(dates[0]) : "";
+  const endDate = dates[dates.length - 1]
+    ? formatAxisDate(dates[dates.length - 1])
+    : "";
+  const midIdx = Math.floor((dates.length - 1) / 2);
+  const midDate = dates[midIdx] ? formatAxisDate(dates[midIdx]) : "";
+
+  const fmtY = (v: number) =>
+    Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1);
 
   return (
     <View style={{ marginTop: 12 }}>
-      <View
-        style={{ flexDirection: "row", alignItems: "flex-end", height, gap: 3 }}
-      >
-        {points.map((p, i) => {
-          const barHeight = ((p - min) / range) * (height - 12) + 12;
-          const isLast = i === points.length - 1;
-          return (
-            <View
-              key={i}
-              style={{
-                flex: 1,
-                height: barHeight,
-                borderRadius: 3,
-                backgroundColor: isLast ? color : color + "35",
-              }}
+      <View style={{ flexDirection: "row" }}>
+        {/* Y axis labels */}
+        <View
+          style={{
+            width: Y_LABEL_WIDTH,
+            height: chartH,
+            justifyContent: "space-between",
+            alignItems: "flex-end",
+            paddingRight: 6,
+            paddingVertical: CHART_PADDING,
+          }}
+        >
+          <Text
+            style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+          >
+            {fmtY(yMax)}
+          </Text>
+          <Text
+            style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+          >
+            {fmtY(yMid)}
+          </Text>
+          <Text
+            style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+          >
+            {fmtY(yMin)}
+          </Text>
+        </View>
+
+        {/* SVG chart area */}
+        <View style={{ flex: 1, height: chartH }}>
+          <Svg
+            width="100%"
+            height={chartH}
+            viewBox={`0 0 ${W} ${chartH}`}
+            preserveAspectRatio="none"
+          >
+            <Defs>
+              <LinearGradient id="progressGrad" x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0%" stopColor={color} stopOpacity="0.3" />
+                <Stop offset="100%" stopColor={color} stopOpacity="0" />
+              </LinearGradient>
+            </Defs>
+            <Path d={fillPath} fill="url(#progressGrad)" />
+            <Path
+              d={linePath}
+              stroke={color}
+              strokeWidth="2"
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             />
-          );
-        })}
+          </Svg>
+        </View>
       </View>
-      <Text
+
+      {/* X axis labels */}
+      <View
         style={{
-          fontFamily: "Courier",
-          fontSize: 9,
-          color: Colors.ter,
-          letterSpacing: 0.4,
-          marginTop: 6,
-          textAlign: "right",
+          flexDirection: "row",
+          marginLeft: Y_LABEL_WIDTH,
+          height: X_LABEL_HEIGHT,
+          alignItems: "center",
         }}
       >
-        ESTIMATED 1RM OVER TIME
-      </Text>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "left",
+          }}
+        >
+          {startDate}
+        </Text>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "center",
+          }}
+        >
+          {midDate}
+        </Text>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "right",
+          }}
+        >
+          {endDate}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -337,7 +490,6 @@ function HistoryLog({ history }: { history: OneRepMaxHistory[] }) {
     );
   }
 
-  // Group history entries by date
   const grouped: Record<string, OneRepMaxHistory[]> = {};
   for (const entry of history) {
     const date = new Date(entry.logged_at).toLocaleDateString("en-GB", {
@@ -350,7 +502,6 @@ function HistoryLog({ history }: { history: OneRepMaxHistory[] }) {
 
   const dates = Object.keys(grouped).reverse();
 
-  // Find the best 1RM to mark as PR
   const best1RM = Math.max(...history.map((h) => parseFloat(h.estimated_1rm)));
 
   return (
@@ -502,10 +653,10 @@ export default function ProgressScreen() {
     ? parseFloat(currentLatest.estimated_1rm)
     : null;
 
-  // Chart points — 1RM values over time
+  // Chart points and dates — one entry per logged session
   const chartPoints = history.map((h) => parseFloat(h.estimated_1rm));
+  const chartDates = history.map((h) => h.logged_at);
 
-  // Best set — highest weight used
   const bestEntry = history.reduce<OneRepMaxHistory | null>((best, entry) => {
     if (!best) return entry;
     return parseFloat(entry.weight_used) > parseFloat(best.weight_used)
@@ -513,7 +664,6 @@ export default function ProgressScreen() {
       : best;
   }, null);
 
-  // Weight change
   const weightChange =
     chartPoints.length >= 2
       ? (chartPoints[chartPoints.length - 1] - chartPoints[0]).toFixed(1)
@@ -684,6 +834,7 @@ export default function ProgressScreen() {
 
                 <ProgressChart
                   points={chartPoints}
+                  dates={chartDates}
                   color={Colors.accent}
                   height={140}
                 />

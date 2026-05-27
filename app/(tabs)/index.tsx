@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import Markdown from "react-native-markdown-display";
+import Svg, { Path, Defs, LinearGradient, Stop } from "react-native-svg";
 import { Colors } from "../../constants/theme";
 import {
   getProfile,
@@ -119,18 +120,53 @@ function Divider({ inset = 0 }: { inset?: number }) {
   );
 }
 
-// ─── Mini bar chart ───────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function MiniChart({
+function formatAxisDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  const day = d.getDate().toString().padStart(2, "0");
+  const month = d.toLocaleDateString("en-GB", { month: "short" });
+  return `${day}-${month}`;
+}
+
+function computeYAxis(points: number[]): {
+  yMin: number;
+  yMax: number;
+  yMid: number;
+} {
+  const dataMin = Math.min(...points);
+  const dataMax = Math.max(...points);
+  const dataRange = dataMax - dataMin || 1;
+  const buffer = dataRange * 0.4;
+  const rawMin = dataMin - buffer;
+  const rawMax = dataMax + buffer;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(rawMax - rawMin)) - 1);
+  const yMin = Math.floor(rawMin / magnitude) * magnitude;
+  const yMax = Math.ceil(rawMax / magnitude) * magnitude;
+  const yMid = (yMin + yMax) / 2;
+  return { yMin, yMax, yMid };
+}
+
+// ─── Line chart ───────────────────────────────────────────────────────────────
+
+function LineChart({
   points,
+  dates,
   color,
-  height = 68,
+  gradientId,
+  height = 100,
 }: {
   points: number[];
+  dates: string[];
   color: string;
+  gradientId: string;
   height?: number;
 }) {
-  if (points.length === 0) {
+  const Y_LABEL_WIDTH = 36;
+  const X_LABEL_HEIGHT = 18;
+  const CHART_PADDING = 8;
+
+  if (points.length < 2) {
     return (
       <View
         style={{
@@ -141,41 +177,159 @@ function MiniChart({
         }}
       >
         <Text style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}>
-          No data
+          Not enough data
         </Text>
       </View>
     );
   }
 
-  const min = Math.min(...points);
-  const max = Math.max(...points);
-  const range = max - min || 1;
+  const { yMin, yMax, yMid } = computeYAxis(points);
+
+  const svgWidth = 1; // placeholder — we use onLayout
+  const chartH = height - X_LABEL_HEIGHT;
+
+  // Build path using a fixed internal width; we'll use viewBox to scale
+  const W = 300;
+  const H = chartH - CHART_PADDING * 2;
+
+  const toX = (i: number) =>
+    points.length === 1 ? W / 2 : (i / (points.length - 1)) * W;
+  const toY = (v: number) => CHART_PADDING + ((yMax - v) / (yMax - yMin)) * H;
+
+  // Smooth bezier path
+  const linePath = points
+    .map((p, i) => {
+      if (i === 0) return `M ${toX(i)} ${toY(p)}`;
+      const x0 = toX(i - 1);
+      const y0 = toY(points[i - 1]);
+      const x1 = toX(i);
+      const y1 = toY(p);
+      const cpx = (x0 + x1) / 2;
+      return `C ${cpx} ${y0}, ${cpx} ${y1}, ${x1} ${y1}`;
+    })
+    .join(" ");
+
+  // Closed fill path
+  const fillPath =
+    linePath +
+    ` L ${toX(points.length - 1)} ${H + CHART_PADDING * 2}` +
+    ` L ${toX(0)} ${H + CHART_PADDING * 2} Z`;
+
+  // X axis labels: start, mid, end
+  const startDate = dates[0] ? formatAxisDate(dates[0]) : "";
+  const endDate = dates[dates.length - 1]
+    ? formatAxisDate(dates[dates.length - 1])
+    : "";
+  const midIdx = Math.floor((dates.length - 1) / 2);
+  const midDate = dates[midIdx] ? formatAxisDate(dates[midIdx]) : "";
+
+  // Y axis labels
+  const fmtY = (v: number) =>
+    Number.isInteger(v) ? v.toFixed(0) : v.toFixed(1);
 
   return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "flex-end",
-        height,
-        gap: 2,
-        marginTop: 8,
-      }}
-    >
-      {points.map((p, i) => {
-        const barHeight = ((p - min) / range) * (height - 8) + 8;
-        const isLast = i === points.length - 1;
-        return (
-          <View
-            key={i}
-            style={{
-              flex: 1,
-              height: barHeight,
-              borderRadius: 2,
-              backgroundColor: isLast ? color : color + "40",
-            }}
-          />
-        );
-      })}
+    <View style={{ marginTop: 10 }}>
+      <View style={{ flexDirection: "row" }}>
+        {/* Y axis labels */}
+        <View
+          style={{
+            width: Y_LABEL_WIDTH,
+            height: chartH,
+            justifyContent: "space-between",
+            alignItems: "flex-end",
+            paddingRight: 5,
+            paddingVertical: CHART_PADDING,
+          }}
+        >
+          <Text
+            style={{ fontFamily: "Courier", fontSize: 8, color: Colors.ter }}
+          >
+            {fmtY(yMax)}
+          </Text>
+          <Text
+            style={{ fontFamily: "Courier", fontSize: 8, color: Colors.ter }}
+          >
+            {fmtY(yMid)}
+          </Text>
+          <Text
+            style={{ fontFamily: "Courier", fontSize: 8, color: Colors.ter }}
+          >
+            {fmtY(yMin)}
+          </Text>
+        </View>
+
+        {/* SVG chart area */}
+        <View style={{ flex: 1, height: chartH }}>
+          <Svg
+            width="100%"
+            height={chartH}
+            viewBox={`0 0 ${W} ${chartH}`}
+            preserveAspectRatio="none"
+          >
+            <Defs>
+              <LinearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <Stop offset="0%" stopColor={color} stopOpacity="0.25" />
+                <Stop offset="100%" stopColor={color} stopOpacity="0" />
+              </LinearGradient>
+            </Defs>
+            {/* Fill */}
+            <Path d={fillPath} fill={`url(#${gradientId})`} />
+            {/* Line */}
+            <Path
+              d={linePath}
+              stroke={color}
+              strokeWidth="1.5"
+              fill="none"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Svg>
+        </View>
+      </View>
+
+      {/* X axis labels */}
+      <View
+        style={{
+          flexDirection: "row",
+          marginLeft: Y_LABEL_WIDTH,
+          height: X_LABEL_HEIGHT,
+          alignItems: "center",
+        }}
+      >
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "left",
+          }}
+        >
+          {startDate}
+        </Text>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "center",
+          }}
+        >
+          {midDate}
+        </Text>
+        <Text
+          style={{
+            fontFamily: "Courier",
+            fontSize: 8,
+            color: Colors.ter,
+            flex: 1,
+            textAlign: "right",
+          }}
+        >
+          {endDate}
+        </Text>
+      </View>
     </View>
   );
 }
@@ -357,12 +511,13 @@ function StartSessionButton({ sessions }: { sessions: Session[] }) {
 // ─── Body comp cards ──────────────────────────────────────────────────────────
 
 function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
-  const weightPoints = entries
-    .filter((e) => e.weight_kg !== null)
-    .map((e) => parseFloat(e.weight_kg!));
-  const musclePoints = entries
-    .filter((e) => e.muscle_mass_kg !== null)
-    .map((e) => parseFloat(e.muscle_mass_kg!));
+  const weightEntries = entries.filter((e) => e.weight_kg !== null);
+  const muscleEntries = entries.filter((e) => e.muscle_mass_kg !== null);
+
+  const weightPoints = weightEntries.map((e) => parseFloat(e.weight_kg!));
+  const musclePoints = muscleEntries.map((e) => parseFloat(e.muscle_mass_kg!));
+  const weightDates = weightEntries.map((e) => e.logged_at);
+  const muscleDates = muscleEntries.map((e) => e.logged_at);
 
   const latestWeight =
     weightPoints.length > 0 ? weightPoints[weightPoints.length - 1] : null;
@@ -379,15 +534,9 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
       : null;
 
   return (
-    <View
-      style={{
-        flexDirection: "row",
-        gap: 10,
-        marginHorizontal: 20,
-        marginTop: 20,
-      }}
-    >
-      <Card style={{ flex: 1 }} pad={14}>
+    <View style={{ marginHorizontal: 20, marginTop: 20, gap: 10 }}>
+      {/* Weight — full width */}
+      <Card pad={14}>
         <View
           style={{
             flexDirection: "row",
@@ -395,64 +544,76 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
             alignItems: "flex-end",
           }}
         >
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-            }}
-          >
-            Bodyweight
-          </Text>
-          <Text
-            style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
-          >
-            12w
-          </Text>
-        </View>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "flex-end",
-            gap: 4,
-            marginTop: 4,
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 24,
-              fontWeight: "700",
-              color: Colors.text,
-              letterSpacing: -0.5,
-            }}
-          >
-            {latestWeight !== null ? latestWeight.toFixed(1) : "—"}
-          </Text>
-          <Text style={{ fontSize: 11, color: Colors.sec, marginBottom: 2 }}>
-            kg
-          </Text>
-          {weightChange !== null && (
+          <View>
             <Text
               style={{
-                marginLeft: "auto",
-                fontSize: 11,
-                color:
-                  parseFloat(weightChange) >= 0 ? Colors.accent : Colors.warn,
                 fontFamily: "Courier",
-                marginBottom: 2,
+                fontSize: 10,
+                color: Colors.ter,
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
               }}
             >
-              {parseFloat(weightChange) >= 0 ? "+" : ""}
-              {weightChange}
+              Bodyweight
             </Text>
-          )}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "flex-end",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 24,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.5,
+                }}
+              >
+                {latestWeight !== null ? latestWeight.toFixed(1) : "—"}
+              </Text>
+              <Text
+                style={{ fontSize: 11, color: Colors.sec, marginBottom: 2 }}
+              >
+                kg
+              </Text>
+            </View>
+          </View>
+          <View style={{ alignItems: "flex-end" }}>
+            <Text
+              style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+            >
+              4w
+            </Text>
+            {weightChange !== null && (
+              <Text
+                style={{
+                  fontSize: 11,
+                  color:
+                    parseFloat(weightChange) >= 0 ? Colors.accent : Colors.warn,
+                  fontFamily: "Courier",
+                  marginTop: 2,
+                }}
+              >
+                {parseFloat(weightChange) >= 0 ? "+" : ""}
+                {weightChange} kg
+              </Text>
+            )}
+          </View>
         </View>
-        <MiniChart points={weightPoints} color={Colors.text} height={68} />
+        <LineChart
+          points={weightPoints}
+          dates={weightDates}
+          color={Colors.text}
+          gradientId="weightGrad"
+          height={110}
+        />
       </Card>
 
-      <Card style={{ flex: 1 }} pad={14}>
+      {/* Muscle — full width */}
+      <Card pad={14}>
         <View
           style={{
             flexDirection: "row",
@@ -460,61 +621,72 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
             alignItems: "flex-end",
           }}
         >
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-            }}
-          >
-            Muscle
-          </Text>
-          <Text
-            style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
-          >
-            12w
-          </Text>
-        </View>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "flex-end",
-            gap: 4,
-            marginTop: 4,
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 24,
-              fontWeight: "700",
-              color: Colors.text,
-              letterSpacing: -0.5,
-            }}
-          >
-            {latestMuscle !== null ? latestMuscle.toFixed(1) : "—"}
-          </Text>
-          <Text style={{ fontSize: 11, color: Colors.sec, marginBottom: 2 }}>
-            kg
-          </Text>
-          {muscleChange !== null && (
+          <View>
             <Text
               style={{
-                marginLeft: "auto",
-                fontSize: 11,
-                color:
-                  parseFloat(muscleChange) >= 0 ? Colors.accent : Colors.warn,
                 fontFamily: "Courier",
-                marginBottom: 2,
+                fontSize: 10,
+                color: Colors.ter,
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
               }}
             >
-              {parseFloat(muscleChange) >= 0 ? "+" : ""}
-              {muscleChange}
+              Muscle Mass
             </Text>
-          )}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "flex-end",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 24,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.5,
+                }}
+              >
+                {latestMuscle !== null ? latestMuscle.toFixed(1) : "—"}
+              </Text>
+              <Text
+                style={{ fontSize: 11, color: Colors.sec, marginBottom: 2 }}
+              >
+                kg
+              </Text>
+            </View>
+          </View>
+          <View style={{ alignItems: "flex-end" }}>
+            <Text
+              style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+            >
+              4w
+            </Text>
+            {muscleChange !== null && (
+              <Text
+                style={{
+                  fontSize: 11,
+                  color:
+                    parseFloat(muscleChange) >= 0 ? Colors.accent : Colors.warn,
+                  fontFamily: "Courier",
+                  marginTop: 2,
+                }}
+              >
+                {parseFloat(muscleChange) >= 0 ? "+" : ""}
+                {muscleChange} kg
+              </Text>
+            )}
+          </View>
         </View>
-        <MiniChart points={musclePoints} color={Colors.accent} height={68} />
+        <LineChart
+          points={musclePoints}
+          dates={muscleDates}
+          color={Colors.accent}
+          gradientId="muscleGrad"
+          height={110}
+        />
       </Card>
     </View>
   );
@@ -618,7 +790,6 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
 
   return (
     <Card pad={0} style={{ marginHorizontal: 20, marginTop: 14 }}>
-      {/* Tappable header row */}
       <Pressable
         onPress={() => setExpanded((prev) => !prev)}
         style={{
@@ -665,7 +836,6 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
             Week in review
           </Text>
         </View>
-        {/* Arrow rotates to indicate open/closed state */}
         <Text
           style={{
             color: Colors.sec,
@@ -679,7 +849,6 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
 
       <Divider />
 
-      {/* Preview when collapsed, full markdown when expanded */}
       {expanded ? (
         <View style={{ padding: 14 }}>
           <Markdown style={markdownStyles}>{feedback.ai_summary}</Markdown>
@@ -842,7 +1011,7 @@ export default function DashboardScreen() {
       const [profileData, bodyCompData, sessionData, feedbackData] =
         await Promise.all([
           getProfile(),
-          getBodyComp(12),
+          getBodyComp(4),
           getWeekSessions(),
           getWeeklyFeedback(),
         ]);
