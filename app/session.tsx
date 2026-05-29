@@ -754,7 +754,7 @@ export default function ActiveSessionScreen() {
       {/* exercise list */}
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: 120 }}
+        contentContainerStyle={{ paddingBottom: 40 }}
       >
         {exercises.map((ex) => (
           <ExerciseBlock
@@ -813,47 +813,37 @@ export default function ActiveSessionScreen() {
             />
           </View>
         </View>
-      </ScrollView>
 
-      {/* sticky complete button */}
-      <View
-        style={{
-          position: "absolute",
-          bottom: 0,
-          left: 0,
-          right: 0,
-          padding: 20,
-          paddingBottom: 36,
-          backgroundColor: Colors.bg,
-        }}
-      >
-        <Pressable
-          onPress={handleComplete}
-          disabled={completing}
-          style={{
-            backgroundColor: Colors.accent,
-            borderRadius: 14,
-            padding: 16,
-            alignItems: "center",
-            opacity: completing ? 0.7 : 1,
-          }}
-        >
-          {completing ? (
-            <ActivityIndicator color={Colors.accentInk} />
-          ) : (
-            <Text
-              style={{
-                fontSize: 16,
-                fontWeight: "700",
-                color: Colors.accentInk,
-                letterSpacing: -0.2,
-              }}
-            >
-              Complete Session
-            </Text>
-          )}
-        </Pressable>
-      </View>
+        {/* complete button */}
+        <View style={{ marginHorizontal: 16, marginBottom: 16 }}>
+          <Pressable
+            onPress={handleComplete}
+            disabled={completing}
+            style={{
+              backgroundColor: Colors.accent,
+              borderRadius: 14,
+              padding: 16,
+              alignItems: "center",
+              opacity: completing ? 0.7 : 1,
+            }}
+          >
+            {completing ? (
+              <ActivityIndicator color={Colors.accentInk} />
+            ) : (
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "700",
+                  color: Colors.accentInk,
+                  letterSpacing: -0.2,
+                }}
+              >
+                Complete Session
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      </ScrollView>
     </View>
   );
 }
