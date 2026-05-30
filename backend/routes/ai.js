@@ -237,7 +237,7 @@ Return ONLY this exact JSON structure, nothing else:
   }
 }
 
-6 exercises in compound_session, 6 exercises in isolation_session. No extra fields. No explanation. No markdown.`;
+6 exercises in compound_session, 6 exercises in isolation_session.${current_phase === "muscle_definition" ? " IMPORTANT: This is Muscle Definition phase at the work gym — every exercise in both sessions must have equipment_type = 'machine'. No barbells, dumbbells, or bodyweight exercises." : ""} No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -285,8 +285,8 @@ Return ONLY this exact JSON structure, nothing else:
           await client.query(
             `INSERT INTO planned_exercises
                (session_id, exercise_name, muscles_primary, sub_component,
-                order_index, target_sets, target_reps, target_weight)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                order_index, target_sets, target_reps, target_weight, set_style)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
               comp1Result.rows[0].id,
               ex.exercise,
@@ -296,6 +296,7 @@ Return ONLY this exact JSON structure, nothing else:
               ex.sets,
               ex.target_reps,
               ex.weight_kg,
+              current_phase === "muscle_definition" ? "drop" : "standard",
             ],
           );
         }
@@ -314,8 +315,8 @@ Return ONLY this exact JSON structure, nothing else:
           await client.query(
             `INSERT INTO planned_exercises
                (session_id, exercise_name, muscles_primary, sub_component,
-                order_index, target_sets, target_reps, target_weight)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                order_index, target_sets, target_reps, target_weight, set_style)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
               comp2Result.rows[0].id,
               ex.exercise,
@@ -325,6 +326,7 @@ Return ONLY this exact JSON structure, nothing else:
               ex.sets,
               ex.target_reps,
               ex.weight_kg,
+              current_phase === "muscle_definition" ? "drop" : "standard",
             ],
           );
         }
@@ -343,8 +345,8 @@ Return ONLY this exact JSON structure, nothing else:
           await client.query(
             `INSERT INTO planned_exercises
                (session_id, exercise_name, muscles_primary, sub_component,
-                order_index, target_sets, target_reps, target_weight)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                order_index, target_sets, target_reps, target_weight, set_style)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
               isoResult.rows[0].id,
               ex.exercise,
@@ -354,6 +356,7 @@ Return ONLY this exact JSON structure, nothing else:
               ex.sets,
               ex.target_reps,
               ex.weight_kg,
+              current_phase === "muscle_definition" ? "drop" : "standard",
             ],
           );
         }
@@ -812,7 +815,10 @@ PHASE SCHEMES
 - Anatomical Adaptation: 3 sets x 20 reps target (min 15)
 - Hypertrophy: 4 sets x 12 reps target (min 8)
 - Maximum Strength: 4 sets x 6 reps target (min 3)
-- Muscle Definition: 1 set x 40 reps target (min 30)
+- Muscle Definition: 1 set x 40 reps target (min 30) — DROP SET STYLE (Work Gym only)
+
+MUSCLE DEFINITION — CABLE MACHINE RESTRICTION
+When the gym is 'work' and the phase is 'muscle_definition', you must only select exercises with equipment_type = 'machine'. Do not select barbell, dumbbell, or bodyweight exercises for this phase at the work gym. Cable and machine exercises allow rapid weight adjustment which is required for drop sets. This restriction does not apply to the home gym.
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 

@@ -27,11 +27,13 @@ interface PlannedExercise {
   target_reps: number;
   target_weight: number;
   range_exceeded: boolean;
+  set_style: "standard" | "drop";
 }
 
 interface LoggedSet {
   exercise_name: string;
   set_number: number;
+  drop_number: number;
   weight: number;
   reps: number;
   notes?: string;
@@ -233,6 +235,9 @@ function RepEntryModal({
 
 // ─── Exercise block ───────────────────────────────────────────────────────────
 
+// Drop set weight decrement — cable machines use 2.2kg increments
+const DROP_DECREMENT = 2.2;
+
 function ExerciseBlock({
   exercise,
   isOpen,
@@ -245,35 +250,98 @@ function ExerciseBlock({
   isOpen: boolean;
   onToggle: () => void;
   loggedSetsForExercise: LoggedSet[];
-  onLogSet: (setNumber: number, reps: number) => void;
+  onLogSet: (
+    setNumber: number,
+    dropNumber: number,
+    weight: number,
+    reps: number,
+  ) => void;
   sessionId: number;
 }) {
   const [repModalOpen, setRepModalOpen] = useState(false);
   const [activeSetNumber, setActiveSetNumber] = useState<number | null>(null);
+  const [activeDropNumber, setActiveDropNumber] = useState<number>(0);
+  const [activeWeight, setActiveWeight] = useState<number>(
+    exercise.target_weight,
+  );
   const [note, setNote] = useState("");
   const [showNote, setShowNote] = useState(false);
 
-  const totalSets = exercise.target_sets;
-  const completedSets = loggedSetsForExercise.length;
-  const allDone = completedSets >= totalSets;
+  const isDropSet = exercise.set_style === "drop";
   const isDumbbell = isDumbbellExercise(exercise.exercise_name);
   const rangeExceeded = exercise.range_exceeded === true;
 
+  // For standard sets: done when logged rows >= target_sets
+  // For drop sets: done when total logged reps >= target_reps, or next weight would be <= 0
+  const totalLoggedReps = loggedSetsForExercise.reduce(
+    (sum, s) => sum + s.reps,
+    0,
+  );
+  const allDone = isDropSet
+    ? totalLoggedReps >= exercise.target_reps ||
+      (loggedSetsForExercise.length > 0 &&
+        loggedSetsForExercise[loggedSetsForExercise.length - 1].weight -
+          DROP_DECREMENT <=
+          0)
+    : loggedSetsForExercise.filter((s) => s.drop_number === 0).length >=
+      exercise.target_sets;
+
+  // For header subtitle
+  const completedSets = isDropSet
+    ? loggedSetsForExercise.filter((s) => s.drop_number === 0).length
+    : loggedSetsForExercise.length;
+  const totalSets = exercise.target_sets;
+
+  // Next drop state — what set/drop/weight to log next
+  const nextDropNumber = loggedSetsForExercise.length; // 0 = opening set, 1 = first drop, etc.
+  const nextWeight = exercise.target_weight - nextDropNumber * DROP_DECREMENT;
+  const remainingReps = exercise.target_reps - totalLoggedReps;
+
+  function handleOpenSetPress() {
+    if (allDone) return;
+    if (isDropSet) {
+      // Always opens the next drop in sequence
+      setActiveSetNumber(1);
+      setActiveDropNumber(nextDropNumber);
+      setActiveWeight(Math.max(nextWeight, DROP_DECREMENT));
+      setRepModalOpen(true);
+    } else {
+      // Standard: find which set to open
+      const nextStandardSet =
+        loggedSetsForExercise.filter((s) => s.drop_number === 0).length + 1;
+      if (nextStandardSet <= exercise.target_sets) {
+        setActiveSetNumber(nextStandardSet);
+        setActiveDropNumber(0);
+        setActiveWeight(exercise.target_weight);
+        setRepModalOpen(true);
+      }
+    }
+  }
+
   function handleSetPress(setNumber: number) {
+    if (isDropSet) return; // drop sets use handleOpenSetPress
     const alreadyLogged = loggedSetsForExercise.find(
-      (s) => s.set_number === setNumber,
+      (s) => s.set_number === setNumber && s.drop_number === 0,
     );
     if (alreadyLogged) return;
     setActiveSetNumber(setNumber);
+    setActiveDropNumber(0);
+    setActiveWeight(exercise.target_weight);
     setRepModalOpen(true);
   }
 
   function handleRepConfirm(reps: number) {
     if (activeSetNumber !== null) {
-      onLogSet(activeSetNumber, reps);
+      onLogSet(activeSetNumber, activeDropNumber, activeWeight, reps);
     }
     setRepModalOpen(false);
     setActiveSetNumber(null);
+  }
+
+  // Label for each drop row shown in the UI
+  function dropLabel(dropNumber: number): string {
+    if (dropNumber === 0) return "SET 1";
+    return `DROP ${dropNumber}`;
   }
 
   return (
@@ -339,11 +407,9 @@ function ExerciseBlock({
               marginTop: 2,
             }}
           >
-            {exercise.target_sets} × {exercise.target_reps} @{" "}
-            {exercise.target_weight} kg{isDumbbell ? " per dumbbell" : ""}
-            {completedSets > 0 && !allDone
-              ? `  ·  ${completedSets}/${totalSets} done`
-              : ""}
+            {isDropSet
+              ? `Drop set · ${exercise.target_reps} reps @ ${exercise.target_weight} kg${allDone ? "" : `  ·  ${totalLoggedReps}/${exercise.target_reps} reps`}`
+              : `${exercise.target_sets} × ${exercise.target_reps} @ ${exercise.target_weight} kg${isDumbbell ? " per dumbbell" : ""}${completedSets > 0 && !allDone ? `  ·  ${completedSets}/${totalSets} done` : ""}`}
             {rangeExceeded ? "  ·  ↑ weight next session" : ""}
           </Text>
         </View>
@@ -356,57 +422,65 @@ function ExerciseBlock({
       {/* expanded content */}
       {isOpen && (
         <View style={{ paddingHorizontal: 16, paddingBottom: 16 }}>
-          {/* working sets */}
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 9,
-              color: Colors.sec,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-              marginBottom: 8,
-            }}
-          >
-            Working Sets
-          </Text>
-          <View style={{ gap: 6 }}>
-            {Array.from({ length: totalSets }).map((_, i) => {
-              const setNumber = i + 1;
-              const logged = loggedSetsForExercise.find(
-                (s) => s.set_number === setNumber,
-              );
-              const isDone = !!logged;
-              const isNext = !isDone && loggedSetsForExercise.length === i;
-
-              return (
-                <Pressable
-                  key={i}
-                  onPress={() => handleSetPress(setNumber)}
+          {isDropSet ? (
+            // ── Drop set layout ──────────────────────────────────────────────
+            <View>
+              <View
+                style={{
+                  flexDirection: "row",
+                  justifyContent: "space-between",
+                  marginBottom: 8,
+                }}
+              >
+                <Text
                   style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 12,
-                    backgroundColor: isNext ? Colors.card2 : "transparent",
-                    borderWidth: isNext ? 1 : 0.5,
-                    borderColor: isNext ? Colors.accent : Colors.line,
-                    borderRadius: 10,
-                    padding: 10,
+                    fontFamily: "Courier",
+                    fontSize: 9,
+                    color: Colors.sec,
+                    letterSpacing: 0.6,
+                    textTransform: "uppercase",
                   }}
                 >
-                  {/* checkbox */}
+                  Drop Set
+                </Text>
+                <Text
+                  style={{
+                    fontFamily: "Courier",
+                    fontSize: 9,
+                    color: allDone ? Colors.accent : Colors.warn,
+                    letterSpacing: 0.6,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {totalLoggedReps} / {exercise.target_reps} reps
+                </Text>
+              </View>
+
+              {/* logged drops so far */}
+              <View style={{ gap: 6 }}>
+                {loggedSetsForExercise.map((logged, i) => (
                   <View
+                    key={i}
                     style={{
-                      width: 22,
-                      height: 22,
-                      borderRadius: 6,
-                      backgroundColor: isDone ? Colors.accent : "transparent",
-                      borderWidth: isDone ? 0 : 1,
-                      borderColor: Colors.line2,
+                      flexDirection: "row",
                       alignItems: "center",
-                      justifyContent: "center",
+                      gap: 12,
+                      borderWidth: 0.5,
+                      borderColor: Colors.line,
+                      borderRadius: 10,
+                      padding: 10,
                     }}
                   >
-                    {isDone && (
+                    <View
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: 6,
+                        backgroundColor: Colors.accent,
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
                       <Text
                         style={{
                           color: Colors.accentInk,
@@ -416,66 +490,264 @@ function ExerciseBlock({
                       >
                         ✓
                       </Text>
-                    )}
-                  </View>
-
-                  <Text
-                    style={{
-                      fontFamily: "Courier",
-                      fontSize: 11,
-                      color: Colors.ter,
-                      width: 40,
-                    }}
-                  >
-                    SET {setNumber}
-                  </Text>
-
-                  <Text
-                    style={{
-                      fontFamily: "Courier",
-                      fontSize: 18,
-                      fontWeight: "700",
-                      color: isNext ? Colors.accent : Colors.text,
-                    }}
-                  >
-                    {exercise.target_weight}
-                  </Text>
-                  <Text style={{ fontSize: 11, color: Colors.ter }}>
-                    {isDumbbell ? "kg ea" : "kg"}
-                  </Text>
-
-                  <View
-                    style={{
-                      marginLeft: "auto",
-                      flexDirection: "row",
-                      alignItems: "flex-end",
-                      gap: 4,
-                    }}
-                  >
+                    </View>
+                    <Text
+                      style={{
+                        fontFamily: "Courier",
+                        fontSize: 11,
+                        color: Colors.ter,
+                        width: 52,
+                      }}
+                    >
+                      {dropLabel(logged.drop_number)}
+                    </Text>
                     <Text
                       style={{
                         fontFamily: "Courier",
                         fontSize: 18,
                         fontWeight: "700",
-                        color: isDone ? Colors.text : Colors.qua,
+                        color: Colors.text,
                       }}
                     >
-                      {isDone ? logged!.reps : "—"}
+                      {logged.weight}
+                    </Text>
+                    <Text style={{ fontSize: 11, color: Colors.ter }}>kg</Text>
+                    <View
+                      style={{
+                        marginLeft: "auto",
+                        flexDirection: "row",
+                        alignItems: "flex-end",
+                        gap: 4,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontFamily: "Courier",
+                          fontSize: 18,
+                          fontWeight: "700",
+                          color: Colors.text,
+                        }}
+                      >
+                        {logged.reps}
+                      </Text>
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          color: Colors.ter,
+                          marginBottom: 2,
+                        }}
+                      >
+                        reps
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+
+                {/* next drop row — shown when reps remain and weight > 0 */}
+                {!allDone && (
+                  <Pressable
+                    onPress={handleOpenSetPress}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 12,
+                      backgroundColor: Colors.card2,
+                      borderWidth: 1,
+                      borderColor: Colors.accent,
+                      borderRadius: 10,
+                      padding: 10,
+                    }}
+                  >
+                    <View
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: 6,
+                        borderWidth: 1,
+                        borderColor: Colors.line2,
+                      }}
+                    />
+                    <Text
+                      style={{
+                        fontFamily: "Courier",
+                        fontSize: 11,
+                        color: Colors.ter,
+                        width: 52,
+                      }}
+                    >
+                      {dropLabel(nextDropNumber)}
                     </Text>
                     <Text
                       style={{
-                        fontSize: 11,
-                        color: Colors.ter,
-                        marginBottom: 2,
+                        fontFamily: "Courier",
+                        fontSize: 18,
+                        fontWeight: "700",
+                        color: Colors.accent,
                       }}
                     >
-                      reps
+                      {Math.max(nextWeight, DROP_DECREMENT).toFixed(1)}
                     </Text>
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
+                    <Text style={{ fontSize: 11, color: Colors.ter }}>kg</Text>
+                    <View
+                      style={{
+                        marginLeft: "auto",
+                        flexDirection: "row",
+                        alignItems: "flex-end",
+                        gap: 4,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontFamily: "Courier",
+                          fontSize: 18,
+                          fontWeight: "700",
+                          color: Colors.ter,
+                        }}
+                      >
+                        {remainingReps}
+                      </Text>
+                      <Text
+                        style={{
+                          fontSize: 11,
+                          color: Colors.ter,
+                          marginBottom: 2,
+                        }}
+                      >
+                        rem
+                      </Text>
+                    </View>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          ) : (
+            // ── Standard set layout ──────────────────────────────────────────
+            <View>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 9,
+                  color: Colors.sec,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  marginBottom: 8,
+                }}
+              >
+                Working Sets
+              </Text>
+              <View style={{ gap: 6 }}>
+                {Array.from({ length: totalSets }).map((_, i) => {
+                  const setNumber = i + 1;
+                  const logged = loggedSetsForExercise.find(
+                    (s) => s.set_number === setNumber && s.drop_number === 0,
+                  );
+                  const isDone = !!logged;
+                  const isNext =
+                    !isDone &&
+                    loggedSetsForExercise.filter((s) => s.drop_number === 0)
+                      .length === i;
+
+                  return (
+                    <Pressable
+                      key={i}
+                      onPress={() => handleSetPress(setNumber)}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 12,
+                        backgroundColor: isNext ? Colors.card2 : "transparent",
+                        borderWidth: isNext ? 1 : 0.5,
+                        borderColor: isNext ? Colors.accent : Colors.line,
+                        borderRadius: 10,
+                        padding: 10,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: 6,
+                          backgroundColor: isDone
+                            ? Colors.accent
+                            : "transparent",
+                          borderWidth: isDone ? 0 : 1,
+                          borderColor: Colors.line2,
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        {isDone && (
+                          <Text
+                            style={{
+                              color: Colors.accentInk,
+                              fontSize: 12,
+                              fontWeight: "700",
+                            }}
+                          >
+                            ✓
+                          </Text>
+                        )}
+                      </View>
+
+                      <Text
+                        style={{
+                          fontFamily: "Courier",
+                          fontSize: 11,
+                          color: Colors.ter,
+                          width: 40,
+                        }}
+                      >
+                        SET {setNumber}
+                      </Text>
+
+                      <Text
+                        style={{
+                          fontFamily: "Courier",
+                          fontSize: 18,
+                          fontWeight: "700",
+                          color: isNext ? Colors.accent : Colors.text,
+                        }}
+                      >
+                        {exercise.target_weight}
+                      </Text>
+                      <Text style={{ fontSize: 11, color: Colors.ter }}>
+                        {isDumbbell ? "kg ea" : "kg"}
+                      </Text>
+
+                      <View
+                        style={{
+                          marginLeft: "auto",
+                          flexDirection: "row",
+                          alignItems: "flex-end",
+                          gap: 4,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            fontFamily: "Courier",
+                            fontSize: 18,
+                            fontWeight: "700",
+                            color: isDone ? Colors.text : Colors.qua,
+                          }}
+                        >
+                          {isDone ? logged!.reps : "—"}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            color: Colors.ter,
+                            marginBottom: 2,
+                          }}
+                        >
+                          reps
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          )}
 
           {/* note section */}
           {showNote ? (
@@ -521,8 +793,8 @@ function ExerciseBlock({
       {/* rep entry modal */}
       <RepEntryModal
         visible={repModalOpen}
-        targetReps={exercise.target_reps}
-        weight={exercise.target_weight}
+        targetReps={isDropSet ? remainingReps : exercise.target_reps}
+        weight={activeWeight}
         exerciseName={exercise.exercise_name}
         onConfirm={handleRepConfirm}
         onClose={() => {
@@ -571,37 +843,60 @@ export default function ActiveSessionScreen() {
   async function handleLogSet(
     exercise: PlannedExercise,
     setNumber: number,
+    dropNumber: number,
+    weight: number,
     reps: number,
   ) {
     try {
       await logSet(sessionId, {
         exercise_name: exercise.exercise_name,
         set_number: setNumber,
-        weight: exercise.target_weight,
+        drop_number: dropNumber,
+        weight,
         reps,
       });
+
+      const newEntry: LoggedSet = {
+        exercise_name: exercise.exercise_name,
+        set_number: setNumber,
+        drop_number: dropNumber,
+        weight,
+        reps,
+      };
 
       setLoggedSets((prev) => [
         ...prev.filter(
           (s) =>
             !(
               s.exercise_name === exercise.exercise_name &&
-              s.set_number === setNumber
+              s.set_number === setNumber &&
+              s.drop_number === dropNumber
             ),
         ),
-        {
-          exercise_name: exercise.exercise_name,
-          set_number: setNumber,
-          weight: exercise.target_weight,
-          reps,
-        },
+        newEntry,
       ]);
 
-      // Auto-advance to next exercise if all sets done
-      const newLogged =
-        loggedSets.filter((s) => s.exercise_name === exercise.exercise_name)
-          .length + 1;
-      if (newLogged >= exercise.target_sets && session) {
+      // Auto-advance to next exercise when done
+      // For drop sets: done when total reps hit target or next weight <= 0
+      // For standard sets: done when all sets logged
+      const exerciseLogs = [
+        ...loggedSets.filter((s) => s.exercise_name === exercise.exercise_name),
+        newEntry,
+      ];
+
+      let exerciseDone = false;
+      if (exercise.set_style === "drop") {
+        const totalReps = exerciseLogs.reduce((sum, s) => sum + s.reps, 0);
+        const lastWeight = weight;
+        exerciseDone =
+          totalReps >= exercise.target_reps || lastWeight - 2.2 <= 0;
+      } else {
+        exerciseDone =
+          exerciseLogs.filter((s) => s.drop_number === 0).length >=
+          exercise.target_sets;
+      }
+
+      if (exerciseDone && session) {
         const exercises = session.planned_exercises;
         const currentIndex = exercises.findIndex((e) => e.id === exercise.id);
         if (currentIndex < exercises.length - 1) {
@@ -767,7 +1062,9 @@ export default function ActiveSessionScreen() {
             loggedSetsForExercise={loggedSets.filter(
               (s) => s.exercise_name === ex.exercise_name,
             )}
-            onLogSet={(setNumber, reps) => handleLogSet(ex, setNumber, reps)}
+            onLogSet={(setNumber, dropNumber, weight, reps) =>
+              handleLogSet(ex, setNumber, dropNumber, weight, reps)
+            }
             sessionId={sessionId}
           />
         ))}

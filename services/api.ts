@@ -132,6 +132,7 @@ export async function logSet(
   data: {
     exercise_name: string;
     set_number: number;
+    drop_number?: number;
     weight: number;
     reps: number;
     notes?: string;

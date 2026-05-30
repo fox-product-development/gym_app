@@ -287,7 +287,14 @@ const PHASE_MAX_REPS = {
 
 router.post("/:id/sets", requireAuth, async (req, res) => {
   const { id } = req.params;
-  const { exercise_name, set_number, weight, reps, notes } = req.body;
+  const {
+    exercise_name,
+    set_number,
+    drop_number = 0,
+    weight,
+    reps,
+    notes,
+  } = req.body;
 
   if (!exercise_name || !set_number || !weight || !reps) {
     return res.status(400).json({
@@ -303,14 +310,15 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     // 1. Log the set
     const setResult = await client.query(
       `INSERT INTO logged_sets
-         (session_id, exercise_name, set_number, weight, reps, notes)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (session_id, exercise_name, set_number, drop_number, weight, reps, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [id, exercise_name, set_number, weight, reps, notes || null],
+      [id, exercise_name, set_number, drop_number, weight, reps, notes || null],
     );
 
-    // 2. Calculate 1RM on first set only
-    if (set_number === 1) {
+    // 2. Calculate 1RM on the first set only (not drops, not high-rep sets)
+    // Only fires when set_number = 1, drop_number = 0, and reps <= 12
+    if (set_number === 1 && drop_number === 0 && reps <= 12) {
       const estimated1RM = weight * (1 + reps / 30);
       await client.query(
         `INSERT INTO one_rep_max_history
@@ -321,10 +329,10 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     }
 
     // 3. Check for progressive overload
-    // Get the planned exercise row for this session
+    // Get the planned exercise row for this session, including set_style
     const plannedResult = await client.query(
       `SELECT pe.id, pe.target_sets, pe.target_reps, pe.range_exceeded,
-              s.gym
+              pe.set_style, s.gym
        FROM planned_exercises pe
        JOIN sessions s ON s.id = pe.session_id
        WHERE pe.session_id = $1
@@ -337,92 +345,102 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
 
       // Only check PO if range_exceeded not already set
       if (!planned.range_exceeded) {
-        // Get all logged sets for this exercise in this session so far
-        const loggedResult = await client.query(
-          `SELECT reps FROM logged_sets
-           WHERE session_id = $1 AND exercise_name = $2
-           ORDER BY set_number ASC`,
-          [id, exercise_name],
-        );
+        let rangeExceeded = false;
 
-        const loggedSets = loggedResult.rows;
-
-        // Check if all planned sets are now logged
-        if (loggedSets.length >= planned.target_sets) {
-          // Get current phase to determine max reps
-          const userResult = await client.query(
-            `SELECT current_phase FROM users WHERE id = $1`,
-            [req.userId],
+        if (planned.set_style === "drop") {
+          // Drop set PO: fire only on the opening set (set 1, drop 0) hitting full target reps
+          // If the user completed all 40 reps without needing a drop, weight goes up
+          if (
+            set_number === 1 &&
+            drop_number === 0 &&
+            reps >= planned.target_reps
+          ) {
+            rangeExceeded = true;
+          }
+        } else {
+          // Standard set PO: all planned sets logged and every set hit max reps
+          const loggedResult = await client.query(
+            `SELECT reps FROM logged_sets
+             WHERE session_id = $1 AND exercise_name = $2
+             ORDER BY set_number ASC`,
+            [id, exercise_name],
           );
-          const phase = userResult.rows[0]?.current_phase;
-          const maxReps = PHASE_MAX_REPS[phase] || planned.target_reps;
 
-          // Check if every set hit max reps
-          const allHitMax = loggedSets.every((s) => s.reps >= maxReps);
+          const loggedSets = loggedResult.rows;
 
-          if (allHitMax) {
-            // Set range_exceeded flag
-            await client.query(
-              `UPDATE planned_exercises
-               SET range_exceeded = TRUE
-               WHERE id = $1`,
-              [planned.id],
+          if (loggedSets.length >= planned.target_sets) {
+            const userResult = await client.query(
+              `SELECT current_phase FROM users WHERE id = $1`,
+              [req.userId],
+            );
+            const phase = userResult.rows[0]?.current_phase;
+            const maxReps = PHASE_MAX_REPS[phase] || planned.target_reps;
+            rangeExceeded = loggedSets.every((s) => s.reps >= maxReps);
+          }
+        }
+
+        if (rangeExceeded) {
+          // Set range_exceeded flag
+          await client.query(
+            `UPDATE planned_exercises
+             SET range_exceeded = TRUE
+             WHERE id = $1`,
+            [planned.id],
+          );
+
+          // Get current target weight for this exercise from exercises table
+          const exerciseResult = await client.query(
+            `SELECT id, target_weight_kg, muscles_primary
+             FROM exercises
+             WHERE user_id = $1
+               AND gym = $2
+               AND exercise = $3`,
+            [req.userId, planned.gym, exercise_name],
+          );
+
+          if (
+            exerciseResult.rows.length > 0 &&
+            exerciseResult.rows[0].target_weight_kg !== null
+          ) {
+            const ex = exerciseResult.rows[0];
+            const currentWeight = parseFloat(ex.target_weight_kg);
+            const newWeight = roundUpToValidWeight(
+              currentWeight * 1.05,
+              exercise_name,
+              planned.gym,
             );
 
-            // Get current target weight for this exercise from exercises table
-            const exerciseResult = await client.query(
-              `SELECT id, target_weight_kg, muscles_primary
+            // Update this exercise
+            await client.query(
+              `UPDATE exercises
+               SET target_weight_kg = $1
+               WHERE id = $2`,
+              [newWeight, ex.id],
+            );
+
+            // Cascade +5% to all exercises with same muscles_primary
+            const relatedResult = await client.query(
+              `SELECT id, exercise, target_weight_kg
                FROM exercises
                WHERE user_id = $1
-                 AND gym = $2
-                 AND exercise = $3`,
-              [req.userId, planned.gym, exercise_name],
+                 AND muscles_primary = $2
+                 AND exercise != $3
+                 AND target_weight_kg IS NOT NULL`,
+              [req.userId, ex.muscles_primary, exercise_name],
             );
 
-            if (
-              exerciseResult.rows.length > 0 &&
-              exerciseResult.rows[0].target_weight_kg !== null
-            ) {
-              const ex = exerciseResult.rows[0];
-              const currentWeight = parseFloat(ex.target_weight_kg);
-              const newWeight = roundUpToValidWeight(
-                currentWeight * 1.05,
-                exercise_name,
+            for (const related of relatedResult.rows) {
+              const relatedNew = roundUpToValidWeight(
+                parseFloat(related.target_weight_kg) * 1.05,
+                related.exercise,
                 planned.gym,
               );
-
-              // Update this exercise
               await client.query(
                 `UPDATE exercises
                  SET target_weight_kg = $1
                  WHERE id = $2`,
-                [newWeight, ex.id],
+                [relatedNew, related.id],
               );
-
-              // Cascade +5% to all exercises with same muscles_primary
-              const relatedResult = await client.query(
-                `SELECT id, exercise, target_weight_kg
-                 FROM exercises
-                 WHERE user_id = $1
-                   AND muscles_primary = $2
-                   AND exercise != $3
-                   AND target_weight_kg IS NOT NULL`,
-                [req.userId, ex.muscles_primary, exercise_name],
-              );
-
-              for (const related of relatedResult.rows) {
-                const relatedNew = roundUpToValidWeight(
-                  parseFloat(related.target_weight_kg) * 1.05,
-                  related.exercise,
-                  planned.gym,
-                );
-                await client.query(
-                  `UPDATE exercises
-                   SET target_weight_kg = $1
-                   WHERE id = $2`,
-                  [relatedNew, related.id],
-                );
-              }
             }
           }
         }

@@ -97,6 +97,8 @@ async function createTables() {
         target_sets     INTEGER NOT NULL,
         target_reps     INTEGER NOT NULL,
         target_weight   NUMERIC(6,2) NOT NULL,
+        set_style       TEXT NOT NULL DEFAULT 'standard'
+          CHECK (set_style IN ('standard', 'drop')),
         range_exceeded  BOOLEAN DEFAULT FALSE,
         created_at      TIMESTAMP DEFAULT NOW()
       );
@@ -110,6 +112,7 @@ async function createTables() {
         session_id      INTEGER REFERENCES sessions(id),
         exercise_name   TEXT NOT NULL,
         set_number      INTEGER NOT NULL,
+        drop_number     INTEGER NOT NULL DEFAULT 0,
         weight          NUMERIC(6,2) NOT NULL,
         reps            INTEGER NOT NULL,
         notes           TEXT,
