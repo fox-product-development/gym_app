@@ -494,7 +494,7 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
       };
 
       const response = await fetch(
-        "https://www.activitycoach.co.uk/api/activities",
+        "https://www.activitycoach.co.uk/api/bridge/activities",
         {
           method: "POST",
           headers: {
