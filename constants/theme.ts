@@ -17,6 +17,7 @@ export const Colors = {
   accentInk: "#1A0A06",
   warn: "#F2B564",
   tabBg: "rgba(10,18,38,0.92)",
+  green: "#4CAF82",
 };
 
 export const Fonts = {

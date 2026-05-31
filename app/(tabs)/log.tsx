@@ -1003,7 +1003,7 @@ export default function LogScreen() {
               <LineChart
                 points={musclePoints}
                 dates={muscleDates}
-                color={Colors.accent}
+                color={Colors.green}
                 gradientId="logMuscleGrad"
                 height={110}
               />
@@ -1061,7 +1061,7 @@ export default function LogScreen() {
               <LineChart
                 points={bodyFatPoints}
                 dates={bodyFatDates}
-                color={Colors.warn}
+                color={Colors.accent}
                 gradientId="logBodyFatGrad"
                 height={110}
               />

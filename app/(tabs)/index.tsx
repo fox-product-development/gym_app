@@ -32,6 +32,7 @@ interface Profile {
 interface BodyCompEntry {
   weight_kg: string | null;
   muscle_mass_kg: string | null;
+  body_fat_pct: string | null;
   logged_at: string;
 }
 
@@ -185,7 +186,6 @@ function LineChart({
 
   const { yMin, yMax, yMid } = computeYAxis(points);
 
-  const svgWidth = 1; // placeholder — we use onLayout
   const chartH = height - X_LABEL_HEIGHT;
 
   // Build path using a fixed internal width; we'll use viewBox to scale
@@ -513,16 +513,22 @@ function StartSessionButton({ sessions }: { sessions: Session[] }) {
 function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
   const weightEntries = entries.filter((e) => e.weight_kg !== null);
   const muscleEntries = entries.filter((e) => e.muscle_mass_kg !== null);
+  const fatEntries = entries.filter((e) => e.body_fat_pct !== null);
 
   const weightPoints = weightEntries.map((e) => parseFloat(e.weight_kg!));
   const musclePoints = muscleEntries.map((e) => parseFloat(e.muscle_mass_kg!));
+  const fatPoints = fatEntries.map((e) => parseFloat(e.body_fat_pct!));
+
   const weightDates = weightEntries.map((e) => e.logged_at);
   const muscleDates = muscleEntries.map((e) => e.logged_at);
+  const fatDates = fatEntries.map((e) => e.logged_at);
 
   const latestWeight =
     weightPoints.length > 0 ? weightPoints[weightPoints.length - 1] : null;
   const latestMuscle =
     musclePoints.length > 0 ? musclePoints[musclePoints.length - 1] : null;
+  const latestFat =
+    fatPoints.length > 0 ? fatPoints[fatPoints.length - 1] : null;
 
   const weightChange =
     weightPoints.length >= 2
@@ -531,6 +537,10 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
   const muscleChange =
     musclePoints.length >= 2
       ? (musclePoints[musclePoints.length - 1] - musclePoints[0]).toFixed(1)
+      : null;
+  const fatChange =
+    fatPoints.length >= 2
+      ? (fatPoints[fatPoints.length - 1] - fatPoints[0]).toFixed(1)
       : null;
 
   return (
@@ -612,7 +622,7 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
         />
       </Card>
 
-      {/* Muscle — full width */}
+      {/* Muscle mass — full width */}
       <Card pad={14}>
         <View
           style={{
@@ -669,7 +679,7 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
                 style={{
                   fontSize: 11,
                   color:
-                    parseFloat(muscleChange) >= 0 ? Colors.accent : Colors.warn,
+                    parseFloat(muscleChange) >= 0 ? Colors.green : Colors.warn,
                   fontFamily: "Courier",
                   marginTop: 2,
                 }}
@@ -683,8 +693,86 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
         <LineChart
           points={musclePoints}
           dates={muscleDates}
-          color={Colors.accent}
+          color={Colors.green}
           gradientId="muscleGrad"
+          height={110}
+        />
+      </Card>
+
+      {/* Body fat — full width */}
+      <Card pad={14}>
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "space-between",
+            alignItems: "flex-end",
+          }}
+        >
+          <View>
+            <Text
+              style={{
+                fontFamily: "Courier",
+                fontSize: 10,
+                color: Colors.ter,
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
+              }}
+            >
+              Body Fat
+            </Text>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "flex-end",
+                gap: 4,
+                marginTop: 4,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 24,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.5,
+                }}
+              >
+                {latestFat !== null ? latestFat.toFixed(1) : "—"}
+              </Text>
+              <Text
+                style={{ fontSize: 11, color: Colors.sec, marginBottom: 2 }}
+              >
+                %
+              </Text>
+            </View>
+          </View>
+          <View style={{ alignItems: "flex-end" }}>
+            <Text
+              style={{ fontFamily: "Courier", fontSize: 9, color: Colors.ter }}
+            >
+              4w
+            </Text>
+            {fatChange !== null && (
+              <Text
+                style={{
+                  fontSize: 11,
+                  // Inverted: body fat going down is good (coral), going up is bad (amber)
+                  color:
+                    parseFloat(fatChange) <= 0 ? Colors.accent : Colors.warn,
+                  fontFamily: "Courier",
+                  marginTop: 2,
+                }}
+              >
+                {parseFloat(fatChange) >= 0 ? "+" : ""}
+                {fatChange}%
+              </Text>
+            )}
+          </View>
+        </View>
+        <LineChart
+          points={fatPoints}
+          dates={fatDates}
+          color={Colors.accent}
+          gradientId="fatGrad"
           height={110}
         />
       </Card>
