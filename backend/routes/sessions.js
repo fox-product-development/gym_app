@@ -4,6 +4,7 @@
 const express = require("express");
 const pool = require("../db");
 const requireAuth = require("../middleware");
+const { nextValidWeight } = require("../validWeights");
 
 const router = express.Router();
 
@@ -226,56 +227,9 @@ router.patch("/:id/start", requireAuth, async (req, res) => {
 //   - If all planned sets have been logged AND every logged set hit target_reps:
 //       - Set range_exceeded = true on the planned_exercises row
 //       - Apply +5% to target_weight_kg in exercises table for this exercise
-//       - Round up to nearest valid increment for the equipment type
+//       - Round up to nearest valid weight for the equipment type using validWeights.js
 //       - Cascade the same +5% to all exercises with the same muscles_primary
 //         and user_id (both gyms)
-
-// Valid increment rounding helpers
-function roundUpToIncrement(weight, increment) {
-  return Math.ceil(weight / increment) * increment;
-}
-
-function roundUpToValidWeight(weight, exerciseName, gym) {
-  const name = exerciseName.toLowerCase();
-
-  if (gym === "work") {
-    // Cable and machine movements — 2.2kg increments
-    if (
-      name.includes("cable") ||
-      name.includes("machine") ||
-      name.includes("leg press") ||
-      name.includes("leg curl") ||
-      name.includes("leg extension") ||
-      name.includes("seated row") ||
-      name.includes("chest press") ||
-      name.includes("shoulder press machine")
-    ) {
-      return roundUpToIncrement(weight, 2.2);
-    }
-    // Barbell movements — 5kg increments (bar + plates in 2.5kg steps = 5kg total jumps)
-    if (
-      name.includes("barbell") ||
-      name.includes("deadlift") ||
-      name.includes("squat")
-    ) {
-      return roundUpToIncrement(weight, 5);
-    }
-    // Dumbbells — 1kg increments
-    return roundUpToIncrement(weight, 1);
-  }
-
-  if (gym === "home") {
-    // EZ bar — nearest achievable from plate pool, approximate with 1.25kg increments
-    if (name.includes("ez bar")) {
-      return roundUpToIncrement(weight, 2.5); // 1.25kg per side = 2.5kg total
-    }
-    // Dumbbells — 0.5kg increments (smallest plate is 0.5kg per side = 1kg total, but per-dumbbell)
-    return roundUpToIncrement(weight, 1.25);
-  }
-
-  // Fallback
-  return roundUpToIncrement(weight, 1);
-}
 
 // Phase max reps lookup
 const PHASE_MAX_REPS = {
@@ -349,7 +303,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
 
         if (planned.set_style === "drop") {
           // Drop set PO: fire only on the opening set (set 1, drop 0) hitting full target reps
-          // If the user completed all 40 reps without needing a drop, weight goes up
           if (
             set_number === 1 &&
             drop_number === 0 &&
@@ -388,9 +341,9 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             [planned.id],
           );
 
-          // Get current target weight for this exercise from exercises table
+          // Get current target weight and equipment_type for this exercise
           const exerciseResult = await client.query(
-            `SELECT id, target_weight_kg, muscles_primary
+            `SELECT id, target_weight_kg, muscles_primary, equipment_type
              FROM exercises
              WHERE user_id = $1
                AND gym = $2
@@ -404,9 +357,9 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
           ) {
             const ex = exerciseResult.rows[0];
             const currentWeight = parseFloat(ex.target_weight_kg);
-            const newWeight = roundUpToValidWeight(
+            const newWeight = nextValidWeight(
               currentWeight * 1.05,
-              exercise_name,
+              ex.equipment_type,
               planned.gym,
             );
 
@@ -420,7 +373,7 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
 
             // Cascade +5% to all exercises with same muscles_primary
             const relatedResult = await client.query(
-              `SELECT id, exercise, target_weight_kg
+              `SELECT id, exercise, target_weight_kg, equipment_type
                FROM exercises
                WHERE user_id = $1
                  AND muscles_primary = $2
@@ -430,9 +383,9 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             );
 
             for (const related of relatedResult.rows) {
-              const relatedNew = roundUpToValidWeight(
+              const relatedNew = nextValidWeight(
                 parseFloat(related.target_weight_kg) * 1.05,
-                related.exercise,
+                related.equipment_type,
                 planned.gym,
               );
               await client.query(

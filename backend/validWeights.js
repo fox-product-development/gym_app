@@ -32,7 +32,7 @@ const validWeights = {
 
   // Work gym cable machines — 2.2kg increments from 0
   work_machine: Array.from({ length: 50 }, (_, i) =>
-    parseFloat((i * 2.2).toFixed(1)),
+    parseFloat((i * 2.26).toFixed(1)),
   ),
 };
 
