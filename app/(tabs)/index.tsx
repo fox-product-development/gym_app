@@ -18,6 +18,7 @@ import {
   getBodyComp,
   getWeekSessions,
   getWeeklyFeedback,
+  generateWeeklyReport,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -771,7 +772,7 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
         <LineChart
           points={fatPoints}
           dates={fatDates}
-          color={Colors.accent}
+          color={Colors.warn}
           gradientId="fatGrad"
           height={110}
         />
@@ -844,8 +845,33 @@ const markdownStyles = {
 
 // ─── AI report card ───────────────────────────────────────────────────────────
 
-function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
+function AIReportCard({
+  feedback,
+  onReportGenerated,
+}: {
+  feedback: WeeklyFeedback | null;
+  onReportGenerated: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState("");
+
+  async function handleGenerateReport() {
+    setGenerating(true);
+    setGenerateError("");
+    try {
+      const result = await generateWeeklyReport();
+      if (result.status === "up_to_date") {
+        setGenerateError("Report already up to date");
+      } else {
+        onReportGenerated();
+      }
+    } catch (err: any) {
+      setGenerateError("Failed to generate report — please try again");
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   if (!feedback) {
     return (
@@ -862,9 +888,44 @@ function AIReportCard({ feedback }: { feedback: WeeklyFeedback | null }) {
         >
           Weekly AI Report
         </Text>
-        <Text style={{ fontSize: 13, color: Colors.ter }}>
-          Your first report will be generated this Sunday evening.
+        <Text style={{ fontSize: 13, color: Colors.ter, marginBottom: 14 }}>
+          No report yet for this week.
         </Text>
+        <Pressable
+          onPress={handleGenerateReport}
+          disabled={generating}
+          style={{
+            backgroundColor: Colors.card2,
+            borderRadius: 12,
+            padding: 14,
+            alignItems: "center",
+            borderWidth: 0.5,
+            borderColor: Colors.line2,
+            opacity: generating ? 0.6 : 1,
+          }}
+        >
+          {generating ? (
+            <ActivityIndicator color={Colors.accent} />
+          ) : (
+            <Text
+              style={{ fontSize: 14, fontWeight: "600", color: Colors.accent }}
+            >
+              Generate Report
+            </Text>
+          )}
+        </Pressable>
+        {generateError ? (
+          <Text
+            style={{
+              fontSize: 12,
+              color: Colors.warn,
+              marginTop: 8,
+              textAlign: "center",
+            }}
+          >
+            {generateError}
+          </Text>
+        ) : null}
       </Card>
     );
   }
@@ -1163,7 +1224,7 @@ export default function DashboardScreen() {
         {profile && <PhaseBadge profile={profile} />}
         <StartSessionButton sessions={sessions} />
         <BodyCompCards entries={bodyComp} />
-        <AIReportCard feedback={feedback} />
+        <AIReportCard feedback={feedback} onReportGenerated={loadData} />
         <RecentSessions sessions={sessions} />
       </ScrollView>
     </View>

@@ -197,3 +197,8 @@ export async function generateExtraSession(gym: string) {
 export async function getWeeklyFeedback() {
   return request("/ai/weekly-feedback");
 }
+
+export async function generateWeeklyReport() {
+  return request("/report/generate", "POST");
+}
+}

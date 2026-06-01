@@ -406,4 +406,4 @@ if (require.main === module) {
   runSundayReport(true);
 }
 
-module.exports = { runSundayReport };
+module.exports = { runSundayReport, generateReportForUser };
