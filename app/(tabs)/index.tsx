@@ -937,6 +937,14 @@ function AIReportCard({
     { day: "numeric", month: "short" },
   );
 
+  // Check if the report is from a previous week
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+  const thisWeekMonday = monday.toISOString().split("T")[0];
+  const isStale = feedback.week_start_date < thisWeekMonday;
+
   return (
     <Card pad={0} style={{ marginHorizontal: 20, marginTop: 14 }}>
       <Pressable
@@ -1008,6 +1016,53 @@ function AIReportCard({
             {(preview ?? "") + (feedback.ai_summary?.length > 200 ? "…" : "")}
           </Markdown>
         </View>
+      )}
+
+      {isStale && (
+        <>
+          <Divider />
+          <View style={{ padding: 14 }}>
+            <Pressable
+              onPress={handleGenerateReport}
+              disabled={generating}
+              style={{
+                backgroundColor: Colors.card2,
+                borderRadius: 12,
+                padding: 14,
+                alignItems: "center",
+                borderWidth: 0.5,
+                borderColor: Colors.line2,
+                opacity: generating ? 0.6 : 1,
+              }}
+            >
+              {generating ? (
+                <ActivityIndicator color={Colors.accent} />
+              ) : (
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: "600",
+                    color: Colors.accent,
+                  }}
+                >
+                  Generate This Week's Report
+                </Text>
+              )}
+            </Pressable>
+            {generateError ? (
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: Colors.warn,
+                  marginTop: 8,
+                  textAlign: "center",
+                }}
+              >
+                {generateError}
+              </Text>
+            ) : null}
+          </View>
+        </>
       )}
     </Card>
   );
