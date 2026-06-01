@@ -201,4 +201,3 @@ export async function getWeeklyFeedback() {
 export async function generateWeeklyReport() {
   return request("/report/generate", "POST");
 }
-}
