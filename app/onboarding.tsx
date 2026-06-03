@@ -1,8 +1,9 @@
 // app/onboarding.tsx
-// Onboarding flow — shown once after registration.
-// Collects goal ratings, training level, weekly sessions, and free text.
+// Onboarding flow — shown once after registration, or when redefining goals from settings.
+// Mode: "onboarding" (default) navigates to tabs on finish.
+// Mode: "redefine" navigates back to settings on finish.
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -11,9 +12,9 @@ import {
   ActivityIndicator,
   ScrollView,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { Colors } from "../constants/theme";
-import { updateProfile } from "../services/api";
+import { updateProfile, getProfile } from "../services/api";
 
 const TOTAL_STEPS = 4;
 
@@ -85,8 +86,12 @@ function ProgressBar({ step }: { step: number }) {
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function OnboardingScreen() {
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
+  const isRedefine = mode === "redefine";
+
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
+  const [prefilling, setPrefilling] = useState(isRedefine);
   const [error, setError] = useState("");
 
   const [goalSize, setGoalSize] = useState(3);
@@ -96,6 +101,31 @@ export default function OnboardingScreen() {
   const [trainingLevel, setTrainingLevel] = useState("serious");
   const [weeklySessions, setWeeklySessions] = useState(3);
   const [goalDescription, setGoalDescription] = useState("");
+
+  // Prefill existing values when in redefine mode
+  useEffect(() => {
+    if (isRedefine) {
+      loadExistingProfile();
+    }
+  }, []);
+
+  async function loadExistingProfile() {
+    try {
+      const profile = await getProfile();
+      if (profile.goal_size) setGoalSize(profile.goal_size);
+      if (profile.goal_strength) setGoalStrength(profile.goal_strength);
+      if (profile.goal_definition) setGoalDefinition(profile.goal_definition);
+      if (profile.goal_fitness) setGoalFitness(profile.goal_fitness);
+      if (profile.training_level) setTrainingLevel(profile.training_level);
+      if (profile.weekly_sessions) setWeeklySessions(profile.weekly_sessions);
+      if (profile.goal_description)
+        setGoalDescription(profile.goal_description);
+    } catch (err) {
+      console.error("Failed to prefill profile:", err);
+    } finally {
+      setPrefilling(false);
+    }
+  }
 
   const suggestedSessions: Record<string, number> = {
     new: 3,
@@ -122,7 +152,11 @@ export default function OnboardingScreen() {
         weekly_sessions: weeklySessions,
         goal_description: goalDescription || undefined,
       });
-      router.replace("/(tabs)");
+      if (isRedefine) {
+        router.back();
+      } else {
+        router.replace("/(tabs)");
+      }
     } catch (err: any) {
       setError(err.message || "Something went wrong");
       setLoading(false);
@@ -145,6 +179,21 @@ export default function OnboardingScreen() {
     { key: "professional", label: "Professional", desc: "Competing / coached" },
   ];
 
+  if (prefilling) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: Colors.bg,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <ActivityIndicator color={Colors.accent} />
+      </View>
+    );
+  }
+
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: Colors.bg }}
@@ -153,6 +202,11 @@ export default function OnboardingScreen() {
     >
       {/* Header */}
       <View style={{ paddingHorizontal: 24, paddingTop: 64 }}>
+        {isRedefine && (
+          <Pressable onPress={() => router.back()} style={{ marginBottom: 16 }}>
+            <Text style={{ fontSize: 16, color: Colors.accent }}>‹ Back</Text>
+          </Pressable>
+        )}
         {step === 1 && (
           <>
             <Text
@@ -163,7 +217,7 @@ export default function OnboardingScreen() {
                 letterSpacing: -0.4,
               }}
             >
-              Your goals
+              {isRedefine ? "Update your goals" : "Your goals"}
             </Text>
             <Text style={{ fontSize: 14, color: Colors.sec, marginTop: 4 }}>
               Rate how important each goal is to you
@@ -456,13 +510,13 @@ export default function OnboardingScreen() {
                   color: Colors.accentInk,
                 }}
               >
-                Finish setup
+                {isRedefine ? "Save changes" : "Finish setup"}
               </Text>
             )}
           </Pressable>
         )}
 
-        {step === TOTAL_STEPS && (
+        {step === TOTAL_STEPS && !isRedefine && (
           <Pressable
             onPress={() => router.replace("/(tabs)")}
             style={{ alignItems: "center", paddingTop: 4 }}

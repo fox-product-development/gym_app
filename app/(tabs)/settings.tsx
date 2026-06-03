@@ -1,6 +1,5 @@
 // app/(tabs)/settings.tsx
-// Settings screen — displays current phase info and misc settings.
-// Phase progression is automatic. Gym selection happens at session start time.
+// Settings screen — phase info, agent tone, gym settings link, admin section.
 
 import { useState, useCallback } from "react";
 import {
@@ -9,20 +8,45 @@ import {
   ScrollView,
   ActivityIndicator,
   Pressable,
+  TextInput,
+  Modal,
 } from "react-native";
 import { useFocusEffect, router } from "expo-router";
 import { Colors } from "../../constants/theme";
-import { getProfile, clearToken } from "../../services/api";
+import {
+  getProfile,
+  clearToken,
+  updateAgentTone,
+  getApprovedEmails,
+  addApprovedEmail,
+  deleteApprovedEmail,
+} from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface UserProfile {
   id: number;
   username: string;
+  email: string;
+  is_admin: boolean;
   current_phase: string;
   current_block: number;
   phase_week: number;
   phase_start_date: string;
+  agent_tone: string;
+  goal_size: number;
+  goal_strength: number;
+  goal_definition: number;
+  goal_fitness: number;
+  training_level: string;
+  weekly_sessions: number;
+}
+
+interface ApprovedEmail {
+  id: number;
+  email: string;
+  used: boolean;
+  added_at: string;
 }
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
@@ -114,6 +138,31 @@ function SectionLabel({ children }: { children: string }) {
   );
 }
 
+function SettingRow({
+  label,
+  value,
+  onPress,
+}: {
+  label: string;
+  value?: string;
+  onPress?: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={{ flexDirection: "row", alignItems: "center", padding: 14 }}
+    >
+      <Text style={{ flex: 1, fontSize: 15, color: Colors.text }}>{label}</Text>
+      {value && (
+        <Text style={{ fontSize: 13, color: Colors.sec, marginRight: 8 }}>
+          {value}
+        </Text>
+      )}
+      {onPress && <Text style={{ color: Colors.qua, fontSize: 14 }}>›</Text>}
+    </Pressable>
+  );
+}
+
 // ─── Phase display ────────────────────────────────────────────────────────────
 
 const PHASE_LABELS: Record<string, string> = {
@@ -150,7 +199,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
     <View style={{ marginHorizontal: 20, marginTop: 20 }}>
       <SectionLabel>Current Phase</SectionLabel>
       <Card pad={0}>
-        {/* current phase row */}
         <View
           style={{
             flexDirection: "row",
@@ -180,7 +228,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
               }}
             />
           </View>
-
           <View style={{ flex: 1 }}>
             <Text
               style={{ fontSize: 15, fontWeight: "600", color: Colors.accent }}
@@ -191,7 +238,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
               {PHASE_DESCRIPTIONS[profile.current_phase]}
             </Text>
           </View>
-
           <View style={{ alignItems: "flex-end", gap: 4 }}>
             <Tag color={Colors.accent}>Week {profile.phase_week}</Tag>
             <Tag color={Colors.ter}>Block {profile.current_block}</Tag>
@@ -200,7 +246,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
 
         <Divider />
 
-        {/* phase progress */}
         <View style={{ padding: 14 }}>
           <View
             style={{
@@ -225,7 +270,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
               {profile.phase_week} / 6
             </Text>
           </View>
-
           <View
             style={{
               height: 4,
@@ -243,7 +287,6 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
               }}
             />
           </View>
-
           {nextPhase && (
             <Text
               style={{
@@ -262,40 +305,307 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
   );
 }
 
-// ─── Misc settings ────────────────────────────────────────────────────────────
+// ─── Agent tone selector ──────────────────────────────────────────────────────
 
-const MISC_SETTINGS = [
-  { label: "Units", value: "Metric (kg)" },
-  { label: "Weekly AI Report", value: "Sundays · 8 PM" },
-  { label: "Rest Timer Sound", value: "On" },
-  { label: "Apple Health", value: "Not connected" },
+const TONES = [
+  {
+    key: "motivational",
+    label: "Motivational",
+    desc: "Encouraging, celebratory",
+  },
+  { key: "coaching", label: "Coaching", desc: "Explains the why" },
+  { key: "neutral", label: "Neutral", desc: "Factual, no fluff" },
+  {
+    key: "drill_sergeant",
+    label: "Drill Sergeant",
+    desc: "Direct, high expectations",
+  },
 ];
 
-function MiscSettings() {
+function AgentToneSelector({
+  currentTone,
+  onChange,
+}: {
+  currentTone: string;
+  onChange: (tone: string) => void;
+}) {
   return (
     <View style={{ marginHorizontal: 20, marginTop: 24 }}>
-      <Card pad={0}>
-        {MISC_SETTINGS.map((row, i) => (
-          <View key={i}>
-            <View
+      <SectionLabel>Agent Tone</SectionLabel>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+        {TONES.map((tone) => (
+          <Pressable
+            key={tone.key}
+            onPress={() => onChange(tone.key)}
+            style={{
+              width: "47%",
+              backgroundColor: Colors.card,
+              borderRadius: 12,
+              padding: 14,
+              borderWidth: 1.5,
+              borderColor:
+                currentTone === tone.key ? Colors.accent : "transparent",
+            }}
+          >
+            <Text
+              style={{ fontSize: 14, fontWeight: "500", color: Colors.text }}
+            >
+              {tone.label}
+            </Text>
+            <Text
               style={{
-                flexDirection: "row",
-                alignItems: "center",
-                padding: 14,
+                fontFamily: "Courier",
+                fontSize: 10,
+                color: Colors.ter,
+                marginTop: 4,
               }}
             >
-              <Text style={{ flex: 1, fontSize: 15, color: Colors.text }}>
-                {row.label}
-              </Text>
-              <Text style={{ fontSize: 13, color: Colors.sec, marginRight: 8 }}>
-                {row.value}
-              </Text>
-              <Text style={{ color: Colors.qua, fontSize: 14 }}>›</Text>
-            </View>
-            {i < MISC_SETTINGS.length - 1 && <Divider />}
-          </View>
+              {tone.desc}
+            </Text>
+          </Pressable>
         ))}
+      </View>
+    </View>
+  );
+}
+
+// ─── Admin section ────────────────────────────────────────────────────────────
+
+function AdminSection() {
+  const [emails, setEmails] = useState<ApprovedEmail[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useCallback(() => {
+    loadEmails();
+  }, []);
+
+  useState(() => {
+    loadEmails();
+  });
+
+  async function loadEmails() {
+    try {
+      const data = await getApprovedEmails();
+      setEmails(data);
+    } catch (err) {
+      console.error("Failed to load approved emails:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleAdd() {
+    if (!newEmail.trim()) return;
+    setSaving(true);
+    setError("");
+    try {
+      const result = await addApprovedEmail(newEmail.trim());
+      setEmails((prev) => [result, ...prev]);
+      setNewEmail("");
+      setModalVisible(false);
+    } catch (err: any) {
+      setError(err.message || "Failed to add email");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(id: number) {
+    try {
+      await deleteApprovedEmail(id);
+      setEmails((prev) => prev.filter((e) => e.id !== id));
+    } catch (err) {
+      console.error("Failed to delete email:", err);
+    }
+  }
+
+  return (
+    <View style={{ marginHorizontal: 20, marginTop: 24 }}>
+      <SectionLabel>Admin — Approved Emails</SectionLabel>
+      <Card pad={0}>
+        {loading ? (
+          <ActivityIndicator color={Colors.accent} style={{ margin: 20 }} />
+        ) : emails.length === 0 ? (
+          <View style={{ padding: 14 }}>
+            <Text style={{ fontSize: 13, color: Colors.ter }}>
+              No approved emails yet
+            </Text>
+          </View>
+        ) : (
+          emails.map((email, i) => (
+            <View key={email.id}>
+              {i > 0 && <Divider />}
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  padding: 14,
+                  gap: 10,
+                }}
+              >
+                <Text
+                  style={{
+                    flex: 1,
+                    fontSize: 13,
+                    color: Colors.sec,
+                    fontFamily: "Courier",
+                  }}
+                >
+                  {email.email}
+                </Text>
+                <View
+                  style={{
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 6,
+                    backgroundColor: email.used
+                      ? "rgba(76,175,130,0.15)"
+                      : "rgba(242,181,100,0.15)",
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 10,
+                      fontWeight: "600",
+                      fontFamily: "Courier",
+                      color: email.used ? "#4CAF82" : Colors.warn,
+                    }}
+                  >
+                    {email.used ? "Registered" : "Pending"}
+                  </Text>
+                </View>
+                {!email.used && (
+                  <Pressable onPress={() => handleDelete(email.id)}>
+                    <Text style={{ fontSize: 18, color: Colors.ter }}>×</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          ))
+        )}
       </Card>
+
+      <Pressable
+        onPress={() => setModalVisible(true)}
+        style={{
+          marginTop: 10,
+          backgroundColor: "transparent",
+          borderWidth: 1,
+          borderColor: "rgba(255,119,99,0.3)",
+          borderRadius: 12,
+          padding: 14,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+        }}
+      >
+        <Text style={{ fontSize: 14, fontWeight: "500", color: Colors.accent }}>
+          + Add approved email
+        </Text>
+      </Pressable>
+
+      <Modal visible={modalVisible} transparent animationType="slide">
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.7)",
+            justifyContent: "flex-end",
+          }}
+          onPress={() => setModalVisible(false)}
+        >
+          <Pressable
+            style={{
+              backgroundColor: Colors.card,
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              padding: 24,
+              paddingBottom: 40,
+            }}
+            onPress={() => {}}
+          >
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "700",
+                color: Colors.text,
+                marginBottom: 16,
+              }}
+            >
+              Add approved email
+            </Text>
+            <TextInput
+              value={newEmail}
+              onChangeText={setNewEmail}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              placeholder="email@example.com"
+              placeholderTextColor={Colors.ter}
+              style={{
+                backgroundColor: Colors.bg,
+                borderRadius: 10,
+                padding: 14,
+                fontSize: 15,
+                color: Colors.text,
+                borderWidth: 0.5,
+                borderColor: Colors.line,
+                marginBottom: 12,
+              }}
+            />
+            {error ? (
+              <Text
+                style={{ fontSize: 13, color: Colors.warn, marginBottom: 12 }}
+              >
+                {error}
+              </Text>
+            ) : null}
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable
+                onPress={() => setModalVisible(false)}
+                style={{
+                  flex: 1,
+                  backgroundColor: Colors.card2,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleAdd}
+                disabled={saving}
+                style={{
+                  flex: 2,
+                  backgroundColor: Colors.accent,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                  opacity: saving ? 0.7 : 1,
+                }}
+              >
+                {saving ? (
+                  <ActivityIndicator color={Colors.accentInk} />
+                ) : (
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: "700",
+                      color: Colors.accentInk,
+                    }}
+                  >
+                    Add
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -325,10 +635,21 @@ export default function SettingsScreen() {
     }
   }
 
+  const [redefineWarningVisible, setRedefineWarningVisible] = useState(false);
+
+  async function handleToneChange(tone: string) {
+    if (!profile) return;
+    setProfile((prev) => (prev ? { ...prev, agent_tone: tone } : prev));
+    try {
+      await updateAgentTone(tone);
+    } catch (err) {
+      console.error("Failed to update tone:", err);
+    }
+  }
+
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* header */}
         <View
           style={{ paddingHorizontal: 20, paddingTop: 60, paddingBottom: 4 }}
         >
@@ -364,12 +685,44 @@ export default function SettingsScreen() {
         {loading ? (
           <ActivityIndicator color={Colors.accent} style={{ marginTop: 60 }} />
         ) : profile ? (
-          <PhaseDisplay profile={profile} />
+          <>
+            <PhaseDisplay profile={profile} />
+
+            {/* Training section */}
+            <View style={{ marginHorizontal: 20, marginTop: 24 }}>
+              <SectionLabel>Training</SectionLabel>
+              <Card pad={0}>
+                <SettingRow
+                  label="Goals"
+                  value={`Size ${profile.goal_size}★ · Def ${profile.goal_definition}★`}
+                  onPress={() => setRedefineWarningVisible(true)}
+                />
+                <Divider />
+                <SettingRow
+                  label="Gym settings"
+                  value="Equipment · Exercises"
+                  onPress={() => router.push("/gym-settings")}
+                />
+              </Card>
+            </View>
+
+            <AgentToneSelector
+              currentTone={profile.agent_tone || "neutral"}
+              onChange={handleToneChange}
+            />
+
+            {profile.is_admin && <AdminSection />}
+          </>
         ) : null}
 
-        <MiscSettings />
-
-        <View style={{ alignItems: "center", paddingVertical: 24, gap: 16 }}>
+        <View
+          style={{
+            alignItems: "center",
+            paddingVertical: 24,
+            gap: 16,
+            marginTop: 8,
+          }}
+        >
           <Pressable
             onPress={() => {
               clearToken();
@@ -394,10 +747,106 @@ export default function SettingsScreen() {
               textTransform: "uppercase",
             }}
           >
-            GymApp · V0.1
+            GymApp · V0.2
           </Text>
         </View>
       </ScrollView>
+
+      <Modal visible={redefineWarningVisible} transparent animationType="fade">
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.7)",
+            justifyContent: "flex-end",
+          }}
+        >
+          <View
+            style={{
+              backgroundColor: Colors.card,
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              padding: 24,
+              paddingBottom: 40,
+            }}
+          >
+            <View
+              style={{
+                width: 44,
+                height: 44,
+                borderRadius: 12,
+                backgroundColor: "rgba(242,181,100,0.15)",
+                alignItems: "center",
+                justifyContent: "center",
+                alignSelf: "center",
+                marginBottom: 14,
+              }}
+            >
+              <Text style={{ fontSize: 22 }}>⚠️</Text>
+            </View>
+            <Text
+              style={{
+                fontSize: 17,
+                fontWeight: "700",
+                color: Colors.text,
+                textAlign: "center",
+                marginBottom: 8,
+              }}
+            >
+              Redefine goals?
+            </Text>
+            <Text
+              style={{
+                fontSize: 14,
+                color: Colors.sec,
+                textAlign: "center",
+                lineHeight: 20,
+                marginBottom: 24,
+              }}
+            >
+              Changing your goals will recalculate your training cycle. Your
+              current block will complete as planned before any changes take
+              effect.
+            </Text>
+            <View style={{ gap: 10 }}>
+              <Pressable
+                onPress={() => {
+                  setRedefineWarningVisible(false);
+                  router.push("/onboarding?mode=redefine");
+                }}
+                style={{
+                  backgroundColor: Colors.accent,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 15,
+                    fontWeight: "700",
+                    color: Colors.accentInk,
+                  }}
+                >
+                  Continue
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={() => setRedefineWarningVisible(false)}
+                style={{
+                  backgroundColor: "transparent",
+                  borderRadius: 12,
+                  padding: 12,
+                  alignItems: "center",
+                  borderWidth: 0.5,
+                  borderColor: Colors.line,
+                }}
+              >
+                <Text style={{ fontSize: 14, color: Colors.sec }}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

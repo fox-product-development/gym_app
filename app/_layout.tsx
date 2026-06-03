@@ -48,6 +48,7 @@ export default function RootLayout() {
         <Stack.Screen name="login" />
         <Stack.Screen name="register" />
         <Stack.Screen name="onboarding" />
+        <Stack.Screen name="gym-settings" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="session" />
       </Stack>

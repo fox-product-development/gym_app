@@ -220,7 +220,22 @@ export async function getWeeklyFeedback() {
 }
 
 export async function generateWeeklyReport() {
-  return request("/report/generate", "POST");
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+
+  let reportDate: string;
+
+  if (dayOfWeek === 0) {
+    // Sunday — generate for today
+    reportDate = today.toISOString().split("T")[0];
+  } else {
+    // Any other day — find last Sunday
+    const lastSunday = new Date(today);
+    lastSunday.setDate(today.getDate() - dayOfWeek);
+    reportDate = lastSunday.toISOString().split("T")[0];
+  }
+
+  return request("/report/generate", "POST", { week_start_date: reportDate });
 }
 
 // ─── Diet ─────────────────────────────────────────────────────────────────────
@@ -285,4 +300,155 @@ export async function getCardio(weeks: number = 4) {
 
 export async function deleteCardio(id: number) {
   return request(`/cardio/${id}`, "DELETE");
+}
+
+// ─── Gyms ─────────────────────────────────────────────────────────────────────
+
+export async function getGyms() {
+  return request("/gyms");
+}
+
+export async function createGym(data: {
+  gym_name: string;
+  is_default?: boolean;
+}) {
+  return request("/gyms", "POST", data);
+}
+
+export async function updateGym(
+  id: number,
+  data: { gym_name?: string; is_default?: boolean },
+) {
+  return request(`/gyms/${id}`, "PATCH", data);
+}
+
+export async function deleteGym(id: number) {
+  return request(`/gyms/${id}`, "DELETE");
+}
+
+// ─── Equipment ────────────────────────────────────────────────────────────────
+
+export async function getEquipment(gymId: number) {
+  return request(`/gyms/${gymId}/equipment`);
+}
+
+export async function createEquipment(
+  gymId: number,
+  data: {
+    equipment_name: string;
+    type: string;
+    unladen_weight_kg?: number;
+    increment_kg?: number;
+  },
+) {
+  return request(`/gyms/${gymId}/equipment`, "POST", data);
+}
+
+export async function updateEquipment(
+  gymId: number,
+  id: number,
+  data: {
+    equipment_name?: string;
+    type?: string;
+    unladen_weight_kg?: number;
+    increment_kg?: number;
+  },
+) {
+  return request(`/gyms/${gymId}/equipment/${id}`, "PATCH", data);
+}
+
+export async function deleteEquipment(gymId: number, id: number) {
+  return request(`/gyms/${gymId}/equipment/${id}`, "DELETE");
+}
+
+// ─── Plates ───────────────────────────────────────────────────────────────────
+
+export async function getPlates(gymId: number) {
+  return request(`/gyms/${gymId}/plates`);
+}
+
+export async function createPlate(
+  gymId: number,
+  data: { weight_kg: number; quantity: number },
+) {
+  return request(`/gyms/${gymId}/plates`, "POST", data);
+}
+
+export async function savePlates(
+  gymId: number,
+  plates: { id: number; quantity: number }[],
+) {
+  return request(`/gyms/${gymId}/plates`, "PATCH", { plates });
+}
+
+export async function deletePlate(gymId: number, id: number) {
+  return request(`/gyms/${gymId}/plates/${id}`, "DELETE");
+}
+
+// ─── Approved emails (admin) ──────────────────────────────────────────────────
+
+export async function getApprovedEmails() {
+  return request("/gyms/admin/approved-emails");
+}
+
+export async function addApprovedEmail(email: string) {
+  return request("/gyms/admin/approved-emails", "POST", { email });
+}
+
+export async function deleteApprovedEmail(id: number) {
+  return request(`/gyms/admin/approved-emails/${id}`, "DELETE");
+}
+
+// ─── User profile update ──────────────────────────────────────────────────────
+
+export async function updateAgentTone(agent_tone: string) {
+  return request("/user/profile", "PATCH", { agent_tone });
+}
+
+// ─── Exercises ────────────────────────────────────────────────────────────────
+
+export async function getExercises(gymId: number) {
+  return request(`/gyms/${gymId}/exercises`);
+}
+
+export async function updateExercise(
+  gymId: number,
+  id: number,
+  data: {
+    active?: boolean;
+    exercise?: string;
+    muscles_primary?: string;
+    sub_component?: string;
+    type?: string;
+    emg_score?: number;
+  },
+) {
+  return request(`/gyms/${gymId}/exercises/${id}`, "PATCH", data);
+}
+
+export async function createExercise(
+  gymId: number,
+  data: {
+    exercise: string;
+    muscles_primary: string;
+    muscles_secondary?: string;
+    type: string;
+    equipment_type?: string;
+    sub_component?: string;
+    emg_score?: number;
+  },
+) {
+  return request(`/gyms/${gymId}/exercises`, "POST", data);
+}
+
+export async function deleteExercise(gymId: number, id: number) {
+  return request(`/gyms/${gymId}/exercises/${id}`, "DELETE");
+}
+
+export async function getExerciseMetadata(exercise_name: string) {
+  return request("/ai/exercise-metadata", "POST", { exercise_name });
+}
+
+export async function suggestExercises(gym_id: number) {
+  return request("/ai/suggest-exercises", "POST", { gym_id });
 }
