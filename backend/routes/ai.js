@@ -715,6 +715,151 @@ Exactly 6 exercises. Apply the current phase sets and reps scheme. Use target_we
   }
 });
 
+// ─── Exercise metadata lookup ─────────────────────────────────────────────────
+// POST /ai/exercise-metadata
+// Takes an exercise name and returns AI-generated metadata.
+// Used by the Add Exercise flow in gym settings.
+
+router.post("/exercise-metadata", requireAuth, async (req, res) => {
+  const { exercise_name } = req.body;
+
+  if (!exercise_name) {
+    return res.status(400).json({ error: "exercise_name is required" });
+  }
+
+  try {
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 256,
+      messages: [
+        {
+          role: "user",
+          content: `Given the gym exercise "${exercise_name}", return metadata in JSON.
+
+Return ONLY this exact JSON structure, nothing else:
+{
+  "muscles_primary": "<primary muscle group, e.g. Chest, Back, Biceps, Triceps, Shoulders, Quads, Hamstrings, Calves, Core, Forearms, Lower Back>",
+  "muscles_secondary": "<secondary muscles or null>",
+  "type": "<Compound or Isolation>",
+  "sub_component": "<specific sub-component, e.g. Sternal head, Lower lat, Long head>",
+  "emg_score": <integer 1-5 based on EMG activation data>
+}
+
+No explanation. No markdown. Valid JSON only.`,
+        },
+      ],
+    });
+
+    const rawText = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+
+    const metadata = JSON.parse(cleanJSON(rawText));
+    res.json(metadata);
+  } catch (err) {
+    console.error("Exercise metadata error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ─── Suggest exercises ────────────────────────────────────────────────────────
+// POST /ai/suggest-exercises
+// Takes a gym_id and returns suggested exercises not already in the user's library.
+// Used by the Suggest Exercises flow in gym settings.
+
+router.post("/suggest-exercises", requireAuth, async (req, res) => {
+  const { gym_id } = req.body;
+
+  if (!gym_id) {
+    return res.status(400).json({ error: "gym_id is required" });
+  }
+
+  try {
+    // Get gym details
+    const gymResult = await pool.query(
+      `SELECT gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
+      [gym_id, req.userId],
+    );
+
+    if (gymResult.rows.length === 0) {
+      return res.status(404).json({ error: "Gym not found" });
+    }
+
+    const gymName = gymResult.rows[0].gym_name;
+
+    // Get equipment for this gym
+    const equipmentResult = await pool.query(
+      `SELECT equipment_name, type, unladen_weight_kg, increment_kg
+       FROM equipment WHERE gym_id = $1 AND user_id = $2
+       ORDER BY type ASC, equipment_name ASC`,
+      [gym_id, req.userId],
+    );
+
+    // Get existing exercises so we can exclude them
+    const existingResult = await pool.query(
+      `SELECT exercise FROM exercises WHERE gym_id = $1 AND user_id = $2`,
+      [gym_id, req.userId],
+    );
+
+    const existingNames = existingResult.rows.map((e) => e.exercise);
+
+    const equipmentList =
+      equipmentResult.rows.length > 0
+        ? equipmentResult.rows
+            .map((e) => `${e.equipment_name} (${e.type})`)
+            .join(", ")
+        : "General gym equipment";
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 2000,
+      messages: [
+        {
+          role: "user",
+          content: `Suggest gym exercises for a user setting up their exercise library for "${gymName}".
+
+AVAILABLE EQUIPMENT
+${equipmentList}
+
+EXERCISES ALREADY IN THEIR LIBRARY (exclude these)
+${existingNames.length > 0 ? existingNames.join(", ") : "None"}
+
+Suggest 20-30 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
+
+Return ONLY this exact JSON structure, nothing else:
+{
+  "exercises": [
+    {
+      "exercise": "<name>",
+      "muscles_primary": "<primary muscle group>",
+      "muscles_secondary": "<secondary muscles or null>",
+      "type": "<Compound or Isolation>",
+      "sub_component": "<specific sub-component>",
+      "emg_score": <integer 1-5>,
+      "equipment_type": "<barbell, dumbbells, single dumbbell, machine, none>"
+    }
+  ]
+}
+
+Group logically but return as a flat array. No explanation. No markdown. Valid JSON only.`,
+        },
+      ],
+    });
+
+    const rawText = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+
+    const result = JSON.parse(cleanJSON(rawText));
+    res.json(result);
+  } catch (err) {
+    console.error("Suggest exercises error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ─── Get latest weekly feedback ───────────────────────────────────────────────
 // GET /ai/weekly-feedback
 
