@@ -10,6 +10,7 @@ import {
   Pressable,
   ActivityIndicator,
   Modal,
+  TextInput,
 } from "react-native";
 import { useFocusEffect, router } from "expo-router";
 import { Colors } from "../../constants/theme";
@@ -19,6 +20,9 @@ import {
   startSession,
   generateHomeSession,
   generateExtraSession,
+  logCardio,
+  getCardio,
+  deleteCardio,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -48,6 +52,15 @@ interface UserProfile {
   current_phase: string;
   current_block: number;
   phase_week: number;
+}
+
+interface CardioEntry {
+  id: number;
+  activity_type: string;
+  duration_minutes: number;
+  distance_km: string | null;
+  notes: string | null;
+  logged_at: string;
 }
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
@@ -903,8 +916,285 @@ function SessionCard({
   );
 }
 
-// ─── Phase label helper ───────────────────────────────────────────────────────
+// ─── Cardio log modal ─────────────────────────────────────────────────────────
 
+const CARDIO_TYPES = [
+  "Running",
+  "Cycling",
+  "Swimming",
+  "Walking",
+  "Rowing",
+  "Skipping",
+  "Other",
+];
+
+function CardioModal({
+  visible,
+  onClose,
+  onSaved,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [activityType, setActivityType] = useState("Running");
+  const [customType, setCustomType] = useState("");
+  const [duration, setDuration] = useState("");
+  const [distance, setDistance] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  function handleClose() {
+    setActivityType("Running");
+    setCustomType("");
+    setDuration("");
+    setDistance("");
+    setNotes("");
+    setError("");
+    onClose();
+  }
+
+  async function handleSave() {
+    const mins = parseInt(duration);
+    if (!mins || mins < 1) {
+      setError("Please enter a duration");
+      return;
+    }
+    const type = activityType === "Other" ? customType.trim() : activityType;
+    if (!type) {
+      setError("Please enter an activity type");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await logCardio({
+        activity_type: type,
+        duration_minutes: mins,
+        distance_km: distance ? parseFloat(distance) : undefined,
+        notes: notes.trim() || undefined,
+      });
+      onSaved();
+      handleClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputStyle = {
+    backgroundColor: Colors.bg,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    color: Colors.text,
+    borderWidth: 0.5,
+    borderColor: Colors.line,
+  };
+
+  const labelStyle = {
+    fontFamily: "Courier",
+    fontSize: 10,
+    color: Colors.ter,
+    letterSpacing: 0.6,
+    textTransform: "uppercase" as const,
+    marginBottom: 6,
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={handleClose}
+    >
+      <Pressable
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "flex-end",
+        }}
+        onPress={handleClose}
+      >
+        <Pressable
+          style={{
+            backgroundColor: Colors.card,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 24,
+            paddingBottom: 40,
+            borderTopWidth: 0.5,
+            borderColor: Colors.line,
+          }}
+          onPress={() => {}}
+        >
+          <Text
+            style={{
+              fontFamily: "Courier",
+              fontSize: 10,
+              color: Colors.ter,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              marginBottom: 6,
+            }}
+          >
+            Log Cardio
+          </Text>
+          <Text
+            style={{
+              fontSize: 22,
+              fontWeight: "700",
+              color: Colors.text,
+              letterSpacing: -0.4,
+              marginBottom: 20,
+            }}
+          >
+            What did you do?
+          </Text>
+
+          {/* Activity type picker */}
+          <Text style={labelStyle}>Activity</Text>
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: 8,
+              marginBottom: 16,
+            }}
+          >
+            {CARDIO_TYPES.map((type) => (
+              <Pressable
+                key={type}
+                onPress={() => setActivityType(type)}
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 8,
+                  backgroundColor:
+                    activityType === type ? Colors.accentDim : Colors.card2,
+                  borderWidth: activityType === type ? 1 : 0,
+                  borderColor: Colors.accent,
+                }}
+              >
+                <Text
+                  style={{
+                    fontSize: 13,
+                    color: activityType === type ? Colors.accent : Colors.sec,
+                    fontWeight: activityType === type ? "600" : "400",
+                  }}
+                >
+                  {type}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+
+          {activityType === "Other" && (
+            <View style={{ marginBottom: 16 }}>
+              <Text style={labelStyle}>Activity name</Text>
+              <TextInput
+                value={customType}
+                onChangeText={setCustomType}
+                placeholder="e.g. Kickboxing"
+                placeholderTextColor={Colors.ter}
+                style={inputStyle}
+              />
+            </View>
+          )}
+
+          <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
+            <View style={{ flex: 1 }}>
+              <Text style={labelStyle}>Duration (mins)</Text>
+              <TextInput
+                value={duration}
+                onChangeText={setDuration}
+                keyboardType="numeric"
+                placeholder="30"
+                placeholderTextColor={Colors.ter}
+                style={inputStyle}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={labelStyle}>Distance (km)</Text>
+              <TextInput
+                value={distance}
+                onChangeText={setDistance}
+                keyboardType="decimal-pad"
+                placeholder="Optional"
+                placeholderTextColor={Colors.ter}
+                style={inputStyle}
+              />
+            </View>
+          </View>
+
+          <View style={{ marginBottom: 16 }}>
+            <Text style={labelStyle}>Notes</Text>
+            <TextInput
+              value={notes}
+              onChangeText={setNotes}
+              placeholder="Optional"
+              placeholderTextColor={Colors.ter}
+              style={inputStyle}
+            />
+          </View>
+
+          {error ? (
+            <Text
+              style={{ fontSize: 13, color: Colors.warn, marginBottom: 12 }}
+            >
+              {error}
+            </Text>
+          ) : null}
+
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              onPress={handleClose}
+              style={{
+                flex: 1,
+                backgroundColor: Colors.card2,
+                borderRadius: 12,
+                padding: 14,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSave}
+              disabled={saving}
+              style={{
+                flex: 2,
+                backgroundColor: Colors.accent,
+                borderRadius: 12,
+                padding: 14,
+                alignItems: "center",
+                opacity: saving ? 0.7 : 1,
+              }}
+            >
+              {saving ? (
+                <ActivityIndicator color={Colors.accentInk} />
+              ) : (
+                <Text
+                  style={{
+                    fontSize: 15,
+                    fontWeight: "700",
+                    color: Colors.accentInk,
+                  }}
+                >
+                  Save
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// ─── Phase label helper ───────────────────────────────────────────────────────
 const PHASE_LABELS: Record<string, string> = {
   anatomical_adaptation: "Anatomical Adaptation",
   hypertrophy: "Hypertrophy",
@@ -923,6 +1213,8 @@ export default function WeekScreen() {
   const [modalSession, setModalSession] = useState<Session | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [extraModalVisible, setExtraModalVisible] = useState(false);
+  const [cardioModalVisible, setCardioModalVisible] = useState(false);
+  const [cardioEntries, setCardioEntries] = useState<CardioEntry[]>([]);
 
   useFocusEffect(
     useCallback(() => {
@@ -934,12 +1226,14 @@ export default function WeekScreen() {
     setLoading(true);
     setError("");
     try {
-      const [sessionData, profileData] = await Promise.all([
+      const [sessionData, profileData, cardioData] = await Promise.all([
         getWeekSessions(),
         getProfile(),
+        getCardio(1),
       ]);
       setSessions(sessionData);
       setProfile(profileData);
+      setCardioEntries(cardioData);
     } catch (err: any) {
       setError("Failed to load sessions");
     } finally {
@@ -1154,6 +1448,167 @@ export default function WeekScreen() {
           </Pressable>
         )}
 
+        {/* cardio section */}
+        {!loading && (
+          <View style={{ marginHorizontal: 20, marginTop: 10 }}>
+            {cardioEntries.length > 0 && (
+              <View
+                style={{
+                  backgroundColor: Colors.card,
+                  borderRadius: 16,
+                  borderWidth: 0.5,
+                  borderColor: Colors.line,
+                  marginBottom: 10,
+                  overflow: "hidden",
+                }}
+              >
+                <View style={{ padding: 14, paddingBottom: 8 }}>
+                  <Text
+                    style={{
+                      fontFamily: "Courier",
+                      fontSize: 10,
+                      color: Colors.ter,
+                      letterSpacing: 0.6,
+                      textTransform: "uppercase",
+                    }}
+                  >
+                    Cardio this week
+                  </Text>
+                </View>
+                {cardioEntries.map((entry, i) => (
+                  <View key={entry.id}>
+                    {i > 0 && (
+                      <View
+                        style={{
+                          height: 0.5,
+                          backgroundColor: Colors.line,
+                          marginLeft: 14,
+                        }}
+                      />
+                    )}
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        padding: 14,
+                        gap: 12,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 10,
+                          backgroundColor: Colors.accentDim,
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Text style={{ fontSize: 16 }}>
+                          {entry.activity_type === "Running"
+                            ? "🏃"
+                            : entry.activity_type === "Cycling"
+                              ? "🚴"
+                              : entry.activity_type === "Swimming"
+                                ? "🏊"
+                                : entry.activity_type === "Walking"
+                                  ? "🚶"
+                                  : entry.activity_type === "Rowing"
+                                    ? "🚣"
+                                    : "❤️"}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={{
+                            fontSize: 14,
+                            color: Colors.text,
+                            fontWeight: "500",
+                          }}
+                        >
+                          {entry.activity_type}
+                        </Text>
+                        <Text
+                          style={{
+                            fontSize: 11,
+                            color: Colors.ter,
+                            marginTop: 2,
+                            fontFamily: "Courier",
+                          }}
+                        >
+                          {entry.duration_minutes} min
+                          {entry.distance_km
+                            ? ` · ${parseFloat(entry.distance_km).toFixed(1)}km`
+                            : ""}
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={async () => {
+                          await deleteCardio(entry.id);
+                          setCardioEntries((prev) =>
+                            prev.filter((e) => e.id !== entry.id),
+                          );
+                        }}
+                      >
+                        <Text style={{ fontSize: 18, color: Colors.ter }}>
+                          ×
+                        </Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            <Pressable
+              onPress={() => setCardioModalVisible(true)}
+              style={{
+                backgroundColor: Colors.card,
+                borderRadius: 16,
+                borderWidth: 0.5,
+                borderColor: Colors.line,
+                padding: 18,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "600",
+                  color: Colors.text,
+                  letterSpacing: -0.2,
+                }}
+              >
+                Log Cardio
+              </Text>
+              <View
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 999,
+                  borderWidth: 1.5,
+                  borderColor: Colors.accent,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Text
+                  style={{
+                    color: Colors.accent,
+                    fontSize: 20,
+                    lineHeight: 22,
+                    fontWeight: "300",
+                  }}
+                >
+                  +
+                </Text>
+              </View>
+            </Pressable>
+          </View>
+        )}
+
         {/* footer */}
         <View style={{ paddingBottom: 24, alignItems: "center" }}>
           <Text
@@ -1183,6 +1638,13 @@ export default function WeekScreen() {
         visible={extraModalVisible}
         onClose={() => setExtraModalVisible(false)}
         onGenerated={handleExtraGenerated}
+      />
+
+      {/* Cardio modal */}
+      <CardioModal
+        visible={cardioModalVisible}
+        onClose={() => setCardioModalVisible(false)}
+        onSaved={loadData}
       />
     </View>
   );
