@@ -12,15 +12,15 @@ const SALT_ROUNDS = 10;
 
 // ─── Register ─────────────────────────────────────────────────────────────────
 // POST /auth/register
-// Creates a new user account.
+// Creates a new user account. Email must be on the approved_emails list.
 
 router.post("/register", async (req, res) => {
-  const { username, password } = req.body;
+  const { username, email, password } = req.body;
 
-  if (!username || !password) {
+  if (!username || !email || !password) {
     return res
       .status(400)
-      .json({ error: "Username and password are required" });
+      .json({ error: "Username, email and password are required" });
   }
 
   if (password.length < 8) {
@@ -30,7 +30,25 @@ router.post("/register", async (req, res) => {
   }
 
   try {
-    // Check if username already exists
+    // Check email is on the approved list and hasn't been used
+    const approved = await pool.query(
+      "SELECT id, used FROM approved_emails WHERE email = $1",
+      [email.toLowerCase()],
+    );
+
+    if (approved.rows.length === 0) {
+      return res
+        .status(403)
+        .json({ error: "This email address is not approved for registration" });
+    }
+
+    if (approved.rows[0].used) {
+      return res
+        .status(409)
+        .json({ error: "An account already exists for this email address" });
+    }
+
+    // Check username is available
     const existing = await pool.query(
       "SELECT id FROM users WHERE username = $1",
       [username],
@@ -43,15 +61,21 @@ router.post("/register", async (req, res) => {
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-    // Create the user — starts at AA week 1 block 1 by default
+    // Create the user
     const result = await pool.query(
-      `INSERT INTO users (username, password)
-       VALUES ($1, $2)
-       RETURNING id, username, current_phase, current_block, phase_week, current_gym, phase_start_date`,
-      [username, hashedPassword],
+      `INSERT INTO users (username, email, password)
+       VALUES ($1, $2, $3)
+       RETURNING id, username, email, is_admin, current_phase, current_block, phase_week, phase_start_date`,
+      [username, email.toLowerCase(), hashedPassword],
     );
 
     const user = result.rows[0];
+
+    // Mark the approved email as used
+    await pool.query(
+      "UPDATE approved_emails SET used = TRUE WHERE email = $1",
+      [email.toLowerCase()],
+    );
 
     // Create a token
     const token = jwt.sign(
@@ -111,10 +135,11 @@ router.post("/login", async (req, res) => {
       user: {
         id: user.id,
         username: user.username,
+        email: user.email,
+        is_admin: user.is_admin,
         current_phase: user.current_phase,
         current_block: user.current_block,
         phase_week: user.phase_week,
-        current_gym: user.current_gym,
         phase_start_date: user.phase_start_date,
       },
     });
