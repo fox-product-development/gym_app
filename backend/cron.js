@@ -1,40 +1,57 @@
 // backend/cron.js
-// Sunday evening cron job — generates the weekly coaching report.
-// Railway runs this every Sunday at 8PM via a cron service.
-// Run manually for testing: node cron.js
+// Sunday evening cron job — advances phase week, generates weekly coaching report,
+// and emails it to the user. Runs every Sunday at 8PM via node-cron in index.js.
 
 require("dotenv").config();
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("./db");
+const { sendWeeklyReport } = require("./email");
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 
-const SUNDAY_REPORT_SYSTEM_PROMPT = `You are a personal gym coach reviewing your athlete's training diary at the end of the week. You have access to 4 weeks of session data, body composition readings, and the athlete's own notes. You think like a coach — you look at the full picture before drawing conclusions, you separate scheduling noise from genuine performance trends, and you make recommendations based on evidence not assumptions.
+const SUNDAY_REPORT_SYSTEM_PROMPT = `You are a personal gym coach writing a weekly review for your athlete. You have access to their full week of data — training sessions, diet logs, mood and energy ratings, cardio activity, and body composition. 
 
-Your tone is direct and encouraging. Like a training partner who knows their stuff. Not sentimental, not motivational-poster. Honest, specific, and constructive.
+Your job is to find the connections between these data points and tell a coherent story about the week. Do not summarise each category separately. Instead, reason across all the data to explain what happened and why — how diet may have influenced energy, how energy influenced session performance, how cardio load affected recovery, and how all of this connects to progressive overload and phase progress.
 
-You are writing a weekly report the athlete will read on their dashboard. It should feel like a message from their coach, not a data summary.`;
+Write like a coach who has reviewed the data carefully and has something specific to say. Not a data report. Not a list of observations. A considered, evidence-based assessment followed by clear actions.
+
+Tone guide is provided per athlete — follow it precisely.`;
+
+// ─── Tone map ─────────────────────────────────────────────────────────────────
+
+const TONE_GUIDE = {
+  motivational:
+    "Be encouraging and celebratory. Acknowledge every win. Frame challenges as opportunities. Keep energy high throughout.",
+  neutral:
+    "Be factual and balanced. No fluff, no cheerleading. State what happened and what to do about it.",
+  coaching:
+    "Explain the why behind every observation. Help the athlete understand the reasoning, not just the conclusion. Be instructional and clear.",
+  drill_sergeant:
+    "Be direct and demanding. High expectations, no excuses. Praise is brief. Criticism is specific. Focus on execution.",
+};
 
 // ─── Phase cycle ──────────────────────────────────────────────────────────────
 
-const PHASE_CYCLE = [
-  "anatomical_adaptation",
-  "hypertrophy",
-  "maximum_strength",
-  "muscle_definition",
-];
+function nextPhase(currentPhase, phaseCycle) {
+  if (!phaseCycle || phaseCycle.length === 0) {
+    const defaultCycle = [
+      "anatomical_adaptation",
+      "hypertrophy",
+      "maximum_strength",
+      "muscle_definition",
+    ];
+    const idx = defaultCycle.indexOf(currentPhase);
+    return defaultCycle[(idx + 1) % defaultCycle.length];
+  }
 
-function nextPhase(currentPhase) {
-  const idx = PHASE_CYCLE.indexOf(currentPhase);
-  return PHASE_CYCLE[(idx + 1) % PHASE_CYCLE.length];
+  const phases = phaseCycle.map((p) => p.phase);
+  const idx = phases.indexOf(currentPhase);
+  return phases[(idx + 1) % phases.length];
 }
 
 // ─── Phase advancement ────────────────────────────────────────────────────────
-// Runs at the start of every Sunday cron job.
-// Increments phase_week and triggers block generation or phase advancement
-// as needed.
 
 async function advancePhaseWeek(user) {
   const { id, current_phase, current_block, phase_week } = user;
@@ -42,9 +59,8 @@ async function advancePhaseWeek(user) {
     `Advancing phase week for user ${id}: phase=${current_phase} block=${current_block} week=${phase_week}`,
   );
 
-  // ── Week 7 (rest week just ended) → advance to next phase ─────────────────
   if (phase_week === 7) {
-    const newPhase = nextPhase(current_phase);
+    const newPhase = nextPhase(current_phase, user.phase_cycle);
     await pool.query(
       `UPDATE users
        SET current_phase = $1, current_block = 1, phase_week = 1,
@@ -53,8 +69,6 @@ async function advancePhaseWeek(user) {
       [newPhase, id],
     );
     console.log(`✓ Advanced to new phase: ${newPhase}`);
-
-    // Generate Block 1 for new phase
     await triggerBlockGeneration({
       ...user,
       current_phase: newPhase,
@@ -64,7 +78,6 @@ async function advancePhaseWeek(user) {
     return;
   }
 
-  // ── All other weeks → increment phase_week ────────────────────────────────
   const newWeek = phase_week + 1;
   await pool.query(`UPDATE users SET phase_week = $1 WHERE id = $2`, [
     newWeek,
@@ -72,27 +85,23 @@ async function advancePhaseWeek(user) {
   ]);
   console.log(`✓ Phase week advanced to ${newWeek}`);
 
-  // ── New week 4 → generate Block 2 ─────────────────────────────────────────
   if (newWeek === 4) {
     await pool.query(`UPDATE users SET current_block = 2 WHERE id = $1`, [id]);
     await triggerBlockGeneration({ ...user, current_block: 2, phase_week: 4 });
     return;
   }
 
-  // ── New week 7 → create rest week sessions ────────────────────────────────
   if (newWeek === 7) {
     await createRestWeekSessions(user);
   }
 }
 
 // ─── Block generation trigger ─────────────────────────────────────────────────
-// Calls the generate-block endpoint internally using the CRON_SECRET.
 
 async function triggerBlockGeneration(user) {
   console.log(
     `Triggering block generation for user ${user.id} phase=${user.current_phase} block=${user.current_block}`,
   );
-
   try {
     const port = process.env.PORT || 3000;
     const response = await fetch(`http://localhost:${port}/ai/generate-block`, {
@@ -103,12 +112,10 @@ async function triggerBlockGeneration(user) {
       },
       body: JSON.stringify({ user_id: user.id }),
     });
-
     if (!response.ok) {
       const err = await response.json();
       throw new Error(err.error || "Block generation failed");
     }
-
     console.log(`✓ Block generation complete for user ${user.id}`);
   } catch (err) {
     console.error("Block generation failed:", err.message);
@@ -116,19 +123,13 @@ async function triggerBlockGeneration(user) {
 }
 
 // ─── Rest week session creation ───────────────────────────────────────────────
-// Copies Week 6 exercises, sets 3 sets × 12 reps @ 45% of target_weight_kg,
-// and creates 3 sessions (compound occ1, compound occ2, isolation) for week 7.
 
 async function createRestWeekSessions(user) {
   console.log(`Creating rest week sessions for user ${user.id}`);
-
   try {
-    // Get the current programme
     const progResult = await pool.query(
       `SELECT id FROM programmes
-       WHERE user_id = $1
-         AND phase = $2
-         AND block_number = 2
+       WHERE user_id = $1 AND phase = $2 AND block_number = 2
        ORDER BY created_at DESC LIMIT 1`,
       [user.id, user.current_phase],
     );
@@ -140,14 +141,12 @@ async function createRestWeekSessions(user) {
 
     const programmeId = progResult.rows[0].id;
 
-    // Get Week 6 sessions and their exercises
     const week6Sessions = await pool.query(
       `SELECT s.id, s.session_type, s.occurrence,
               json_agg(pe.* ORDER BY pe.order_index) AS exercises
        FROM sessions s
        JOIN planned_exercises pe ON pe.session_id = s.id
-       WHERE s.programme_id = $1
-         AND s.week_number = 6
+       WHERE s.programme_id = $1 AND s.week_number = 6
        GROUP BY s.id`,
       [programmeId],
     );
@@ -160,9 +159,7 @@ async function createRestWeekSessions(user) {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-
       for (const week6Session of week6Sessions.rows) {
-        // Create the rest week session
         const sessionResult = await client.query(
           `INSERT INTO sessions
              (user_id, programme_id, session_type, occurrence, week_number, gym)
@@ -175,26 +172,19 @@ async function createRestWeekSessions(user) {
             week6Session.occurrence,
           ],
         );
-
         const sessionId = sessionResult.rows[0].id;
-
-        // Insert exercises at 3 sets × 12 reps @ 45% of target_weight_kg
         for (const ex of week6Session.exercises) {
-          // Look up current target_weight_kg from exercises table
           const exResult = await client.query(
             `SELECT target_weight_kg FROM exercises
-             WHERE user_id = $1 AND exercise = $2
-             LIMIT 1`,
+             WHERE user_id = $1 AND exercise = $2 LIMIT 1`,
             [user.id, ex.exercise_name],
           );
-
           const targetWeight =
             exResult.rows.length > 0 && exResult.rows[0].target_weight_kg
               ? Math.round(
                   parseFloat(exResult.rows[0].target_weight_kg) * 0.45 * 2,
                 ) / 2
               : Math.round(parseFloat(ex.target_weight) * 0.45 * 2) / 2;
-
           await client.query(
             `INSERT INTO planned_exercises
                (session_id, exercise_name, muscles_primary, sub_component,
@@ -211,7 +201,6 @@ async function createRestWeekSessions(user) {
           );
         }
       }
-
       await client.query("COMMIT");
       console.log(`✓ Rest week sessions created for user ${user.id}`);
     } catch (err) {
@@ -226,15 +215,16 @@ async function createRestWeekSessions(user) {
 }
 
 // ─── Main job ─────────────────────────────────────────────────────────────────
-// Called by node-cron from index.js on a schedule.
-// Also callable directly: node cron.js
 
 async function runSundayReport(exitWhenDone = false) {
   console.log("Sunday report job started:", new Date().toISOString());
-
   try {
     const usersResult = await pool.query(
-      `SELECT id, current_phase, current_block, phase_week FROM users`,
+      `SELECT id, username, email, current_phase, current_block,
+              phase_week, phase_cycle, agent_tone,
+              goal_size, goal_strength, goal_definition, goal_fitness,
+              training_level, weekly_sessions, goal_description
+       FROM users`,
     );
 
     if (usersResult.rows.length === 0) {
@@ -256,10 +246,12 @@ async function runSundayReport(exitWhenDone = false) {
   }
 }
 
+// ─── Report generation ────────────────────────────────────────────────────────
+
 async function generateReportForUser(user) {
   console.log(`Generating report for user ${user.id}...`);
 
-  // Fetch session history — last 4 weeks
+  // Sessions — last 4 weeks
   const sessionResult = await pool.query(
     `SELECT
        s.id, s.session_type, s.occurrence, s.week_number, s.gym,
@@ -270,7 +262,8 @@ async function generateReportForUser(user) {
            'muscles_primary', pe.muscles_primary,
            'target_sets', pe.target_sets,
            'target_reps', pe.target_reps,
-           'target_weight', pe.target_weight
+           'target_weight', pe.target_weight,
+           'range_exceeded', pe.range_exceeded
          ) ORDER BY pe.order_index
        ) FILTER (WHERE pe.id IS NOT NULL) AS planned_exercises,
        json_agg(
@@ -292,9 +285,9 @@ async function generateReportForUser(user) {
     [user.id],
   );
 
-  // Fetch body composition — last 4 weeks
+  // Body composition — last 4 weeks
   const bodyCompResult = await pool.query(
-    `SELECT weight_kg, muscle_mass_kg, logged_at
+    `SELECT weight_kg, muscle_mass_kg, body_fat_pct, logged_at
      FROM body_composition
      WHERE user_id = $1
        AND logged_at >= NOW() - INTERVAL '4 weeks'
@@ -302,17 +295,38 @@ async function generateReportForUser(user) {
     [user.id],
   );
 
-  // Fetch 1RM history — latest per exercise
-  const oneRepMaxResult = await pool.query(
-    `SELECT DISTINCT ON (exercise_name)
-       exercise_name, estimated_1rm, logged_at
-     FROM one_rep_max_history
+  // Diet logs — last 2 weeks
+  const dietResult = await pool.query(
+    `SELECT logged_at, calories_kcal, protein_g, carbs_g, fat_g,
+            sugar_g, fibre_g, saturated_fat_g, salt_g
+     FROM diet_logs
      WHERE user_id = $1
-     ORDER BY exercise_name, logged_at DESC`,
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
     [user.id],
   );
 
-  // Fetch progressive overload flags from this week's sessions
+  // Mood and energy — last 2 weeks
+  const moodResult = await pool.query(
+    `SELECT logged_at, mood, energy, notes
+     FROM mood_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [user.id],
+  );
+
+  // Cardio — last 2 weeks
+  const cardioResult = await pool.query(
+    `SELECT logged_at, activity_type, duration_minutes, distance_km, notes
+     FROM cardio_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [user.id],
+  );
+
+  // Progressive overload this week
   const poResult = await pool.query(
     `SELECT DISTINCT pe.exercise_name, pe.muscles_primary
      FROM planned_exercises pe
@@ -323,52 +337,68 @@ async function generateReportForUser(user) {
     [user.id],
   );
 
-  const poAchieved = poResult.rows;
+  // 1RM history
+  const oneRepMaxResult = await pool.query(
+    `SELECT DISTINCT ON (exercise_name)
+       exercise_name, estimated_1rm, logged_at
+     FROM one_rep_max_history
+     WHERE user_id = $1
+     ORDER BY exercise_name, logged_at DESC`,
+    [user.id],
+  );
 
-  // Build the user prompt
+  const tone = user.agent_tone || "neutral";
+  const toneGuide = TONE_GUIDE[tone] || TONE_GUIDE.neutral;
+
   const userPrompt = `Write the weekly coaching report for the following athlete.
 
-CURRENT STATE
-- Phase: ${user.current_phase}
-- Phase week: ${user.phase_week} of 6
-- Block: ${user.current_block}
+ATHLETE PROFILE
+- Training level: ${user.training_level || "not set"}
+- Goals: Size ${user.goal_size || "?"}★ · Strength ${user.goal_strength || "?"}★ · Definition ${user.goal_definition || "?"}★ · Fitness ${user.goal_fitness || "?"}★
+- Preferences: ${user.goal_description || "none specified"}
+- Phase: ${user.current_phase} · Block ${user.current_block} · Week ${user.phase_week} of 6
 
-SESSION HISTORY — LAST 4 WEEKS
+TONE
+${toneGuide}
+
+SESSION DATA — LAST 4 WEEKS
 ${JSON.stringify(sessionResult.rows, null, 2)}
 
-BODY COMPOSITION — LAST 4 WEEKS
-${JSON.stringify(bodyCompResult.rows, null, 2)}
+PROGRESSIVE OVERLOAD ACHIEVED THIS WEEK
+${poResult.rows.length > 0 ? poResult.rows.map((p) => `${p.exercise_name} (${p.muscles_primary})`).join(", ") : "None this week"}
 
 ESTIMATED 1RM HISTORY
 ${JSON.stringify(oneRepMaxResult.rows, null, 2)}
 
-PROGRESSIVE OVERLOAD ACHIEVED THIS WEEK
-${
-  poAchieved.length > 0
-    ? poAchieved
-        .map((p) => `${p.exercise_name} (${p.muscles_primary})`)
-        .join(", ")
-    : "None this week"
-}
+BODY COMPOSITION — LAST 4 WEEKS
+${JSON.stringify(bodyCompResult.rows, null, 2)}
 
-Write the report in the following structure:
+DIET LOGS — LAST 2 WEEKS
+${dietResult.rows.length > 0 ? JSON.stringify(dietResult.rows, null, 2) : "No diet data logged"}
 
-1. WEEK SUMMARY
-   A short paragraph summarising this week's sessions — what was completed, overall performance, anything notable.
+MOOD AND ENERGY — LAST 2 WEEKS
+${moodResult.rows.length > 0 ? JSON.stringify(moodResult.rows, null, 2) : "No mood data logged"}
 
-2. PATTERNS
-   What patterns are visible across the last 4 weeks? Improvements, stalls, consistency, scheduling. Be specific — name exercises and numbers where relevant.
+CARDIO — LAST 2 WEEKS
+${cardioResult.rows.length > 0 ? JSON.stringify(cardioResult.rows, null, 2) : "No cardio logged"}
 
-3. PROGRESSIVE OVERLOAD REVIEW
-   If any exercises hit progressive overload this week (listed above), give a brief well done acknowledgement and confirm that target weights have been increased for the next session. If none, note which exercises are close to hitting their rep targets.
+Write the report in exactly this structure:
 
-4. PHASE PROGRESS
-   How is the athlete tracking against the current phase goals? Are they on course to complete the phase, or is there a case for extending or transitioning early?
+[HEADLINE]
+One sentence capturing the character of this week. Written by you, specific to this athlete, not a template.
 
-5. NEXT WEEK FOCUS
-   Two or three specific things the athlete should focus on in the coming week. Keep it actionable and direct.`;
+[LOOKING BACK]
+Reason across ALL the data to tell the story of this week. Find the connections — how did diet influence energy, how did energy influence session performance, how did cardio load affect recovery? Name specific exercises, weights, and numbers. Do not summarise each category separately. Write one connected narrative that explains what happened and why.
 
-  // Call Claude
+[STOP · START · CONTINUE]
+Three sections, each with 2-3 specific evidence-based actions. Every action must reference the data that supports it. No generic advice.
+
+STOP — things the data suggests are working against their goals
+START — new behaviours the data suggests would help
+CONTINUE — things that are clearly working and should be maintained
+
+Keep the entire report readable and direct. It will be displayed in the app and emailed to the athlete.`;
+
   const message = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 4000,
@@ -381,7 +411,7 @@ Write the report in the following structure:
     .map((block) => block.text)
     .join("");
 
-  // Calculate this week's Monday date
+  // Calculate week start date
   const today = new Date();
   const dayOfWeek = today.getDay();
   const monday = new Date(today);
@@ -396,9 +426,23 @@ Write the report in the following structure:
     [user.id, weekStartDate, reportText],
   );
 
-  console.log(
-    `Report generated for user ${user.id} — week starting ${weekStartDate}`,
-  );
+  console.log(`✓ Report stored for user ${user.id}`);
+
+  // Email the report if the user has an email address
+  if (user.email) {
+    try {
+      await sendWeeklyReport({
+        toEmail: user.email,
+        username: user.username,
+        reportText,
+        weekStartDate,
+      });
+    } catch (err) {
+      console.error(`Failed to email report to ${user.email}:`, err.message);
+    }
+  } else {
+    console.log(`No email address for user ${user.id} — skipping email`);
+  }
 }
 
 // Run directly if called via node cron.js
