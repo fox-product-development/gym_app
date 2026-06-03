@@ -14,6 +14,13 @@ async function dropTables() {
   await pool.query("DROP TABLE IF EXISTS sessions CASCADE");
   await pool.query("DROP TABLE IF EXISTS programmes CASCADE");
   await pool.query("DROP TABLE IF EXISTS exercises CASCADE");
+  await pool.query("DROP TABLE IF EXISTS cardio_logs CASCADE");
+  await pool.query("DROP TABLE IF EXISTS mood_logs CASCADE");
+  await pool.query("DROP TABLE IF EXISTS diet_logs CASCADE");
+  await pool.query("DROP TABLE IF EXISTS plates CASCADE");
+  await pool.query("DROP TABLE IF EXISTS equipment CASCADE");
+  await pool.query("DROP TABLE IF EXISTS gyms CASCADE");
+  await pool.query("DROP TABLE IF EXISTS approved_emails CASCADE");
   await pool.query("DROP TABLE IF EXISTS users CASCADE");
   console.log("✓ All tables dropped");
 }
@@ -25,31 +32,99 @@ async function createTables() {
       await dropTables();
     }
 
-    // ─── User ────────────────────────────────────────────────────────────────
+    // ─── Users ───────────────────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
-        id               SERIAL PRIMARY KEY,
-        username         TEXT NOT NULL UNIQUE,
-        password         TEXT NOT NULL,
-        current_phase    TEXT NOT NULL DEFAULT 'anatomical_adaptation'
+        id                SERIAL PRIMARY KEY,
+        username          TEXT NOT NULL UNIQUE,
+        email             TEXT UNIQUE,
+        password          TEXT NOT NULL,
+        is_admin          BOOLEAN NOT NULL DEFAULT FALSE,
+        current_phase     TEXT NOT NULL DEFAULT 'anatomical_adaptation'
           CHECK (current_phase IN (
             'anatomical_adaptation',
             'hypertrophy',
             'maximum_strength',
             'muscle_definition'
           )),
-        current_block    INTEGER NOT NULL DEFAULT 1
+        current_block     INTEGER NOT NULL DEFAULT 1
           CHECK (current_block IN (1, 2)),
-        phase_week       INTEGER NOT NULL DEFAULT 1
+        phase_week        INTEGER NOT NULL DEFAULT 1
           CHECK (phase_week BETWEEN 1 AND 7),
-        phase_start_date DATE NOT NULL DEFAULT CURRENT_DATE,
-        created_at       TIMESTAMP DEFAULT NOW()
+        phase_start_date  DATE NOT NULL DEFAULT CURRENT_DATE,
+        phase_cycle       JSONB,
+        agent_tone        TEXT NOT NULL DEFAULT 'neutral'
+          CHECK (agent_tone IN ('motivational', 'neutral', 'coaching', 'drill_sergeant')),
+        goal_size         INTEGER CHECK (goal_size BETWEEN 1 AND 5),
+        goal_strength     INTEGER CHECK (goal_strength BETWEEN 1 AND 5),
+        goal_definition   INTEGER CHECK (goal_definition BETWEEN 1 AND 5),
+        goal_fitness      INTEGER CHECK (goal_fitness BETWEEN 1 AND 5),
+        training_level    TEXT CHECK (training_level IN ('new', 'amateur', 'serious', 'professional')),
+        weekly_sessions   INTEGER CHECK (weekly_sessions BETWEEN 1 AND 14),
+        goal_description  TEXT,
+        created_at        TIMESTAMP DEFAULT NOW()
       );
     `);
     console.log("✓ users table ready");
 
+    // ─── Approved emails ─────────────────────────────────────────────────────
+    // Controls who can register. Admin manages this list via settings screen.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS approved_emails (
+        id         SERIAL PRIMARY KEY,
+        email      TEXT NOT NULL UNIQUE,
+        used       BOOLEAN NOT NULL DEFAULT FALSE,
+        added_at   TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("✓ approved_emails table ready");
+
+    // ─── Gyms ────────────────────────────────────────────────────────────────
+    // User-scoped gym definitions. is_default drives block generation.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS gyms (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER REFERENCES users(id),
+        gym_name    TEXT NOT NULL,
+        is_default  BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at  TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("✓ gyms table ready");
+
+    // ─── Equipment ───────────────────────────────────────────────────────────
+    // Equipment per gym. type drives weight calculation logic.
+    // loadable: uses plate pool. fixed/machine: uses increment. apparatus: no weight.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS equipment (
+        id                  SERIAL PRIMARY KEY,
+        user_id             INTEGER REFERENCES users(id),
+        gym_id              INTEGER REFERENCES gyms(id),
+        equipment_name      TEXT NOT NULL,
+        type                TEXT NOT NULL
+          CHECK (type IN ('loadable', 'fixed', 'machine', 'apparatus')),
+        unladen_weight_kg   NUMERIC(5,2),
+        increment_kg        NUMERIC(5,2),
+        created_at          TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("✓ equipment table ready");
+
+    // ─── Plates ──────────────────────────────────────────────────────────────
+    // Plate inventory per gym. Pooled across all loadable equipment in that gym.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS plates (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER REFERENCES users(id),
+        gym_id      INTEGER REFERENCES gyms(id),
+        weight_kg   NUMERIC(5,3) NOT NULL,
+        quantity    INTEGER NOT NULL DEFAULT 0,
+        created_at  TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("✓ plates table ready");
+
     // ─── Programmes ──────────────────────────────────────────────────────────
-    // Each row is one AI-generated 3-week block (or 1-week rest block).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS programmes (
         id           SERIAL PRIMARY KEY,
@@ -63,8 +138,6 @@ async function createTables() {
     console.log("✓ programmes table ready");
 
     // ─── Sessions ────────────────────────────────────────────────────────────
-    // session_type: compound (x2/week), isolation (x1/week), or extra
-    // occurrence: 1 = first compound session, 2 = repeated compound session
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sessions (
         id             SERIAL PRIMARY KEY,
@@ -152,10 +225,6 @@ async function createTables() {
     console.log("✓ body_composition table ready");
 
     // ─── Exercises ────────────────────────────────────────────────────────────
-    // Exercise library per user. target_weight_kg is NULL until first block
-    // generation sets it, then maintained by the progressive overload logic.
-    // equipment_type drives valid weight selection for AI and PO rounding.
-    // one_rep_max is updated on each logged set (first set, Epley formula).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS exercises (
         id                SERIAL PRIMARY KEY,
@@ -168,6 +237,7 @@ async function createTables() {
         equipment_type    TEXT,
         sub_component     TEXT,
         emg_score         INTEGER,
+        active            BOOLEAN NOT NULL DEFAULT TRUE,
         target_weight_kg  NUMERIC(6,2) DEFAULT NULL,
         one_rep_max       NUMERIC(6,2) DEFAULT NULL,
         created_at        TIMESTAMP DEFAULT NOW(),
@@ -175,6 +245,61 @@ async function createTables() {
       );
     `);
     console.log("✓ exercises table ready");
+
+    // ─── Diet logs ───────────────────────────────────────────────────────────
+    // Full macro breakdown per day. Populated via Nutra Check screenshot extraction.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS diet_logs (
+        id                SERIAL PRIMARY KEY,
+        user_id           INTEGER REFERENCES users(id),
+        logged_at         DATE NOT NULL DEFAULT CURRENT_DATE,
+        calories_kcal     NUMERIC(7,2),
+        fat_g             NUMERIC(6,2),
+        saturated_fat_g   NUMERIC(6,2),
+        carbs_g           NUMERIC(6,2),
+        sugar_g           NUMERIC(6,2),
+        fibre_g           NUMERIC(6,2),
+        protein_g         NUMERIC(6,2),
+        salt_g            NUMERIC(6,2),
+        source            TEXT DEFAULT 'manual'
+          CHECK (source IN ('manual', 'image')),
+        created_at        TIMESTAMP DEFAULT NOW(),
+        UNIQUE (user_id, logged_at)
+      );
+    `);
+    console.log("✓ diet_logs table ready");
+
+    // ─── Mood logs ───────────────────────────────────────────────────────────
+    // Daily mood and energy ratings. One entry per user per day.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS mood_logs (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER REFERENCES users(id),
+        logged_at   DATE NOT NULL DEFAULT CURRENT_DATE,
+        mood        INTEGER NOT NULL CHECK (mood BETWEEN 1 AND 5),
+        energy      INTEGER NOT NULL CHECK (energy BETWEEN 1 AND 5),
+        notes       TEXT,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        UNIQUE (user_id, logged_at)
+      );
+    `);
+    console.log("✓ mood_logs table ready");
+
+    // ─── Cardio logs ─────────────────────────────────────────────────────────
+    // Non-gym cardio activity logging from the week screen.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cardio_logs (
+        id               SERIAL PRIMARY KEY,
+        user_id          INTEGER REFERENCES users(id),
+        logged_at        DATE NOT NULL DEFAULT CURRENT_DATE,
+        activity_type    TEXT NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        distance_km      NUMERIC(6,2),
+        notes            TEXT,
+        created_at       TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("✓ cardio_logs table ready");
 
     // ─── Weekly feedback ──────────────────────────────────────────────────────
     await pool.query(`

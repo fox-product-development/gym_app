@@ -437,26 +437,32 @@ The AI applies these rules in priority order when selecting exercises for a bloc
 
 ---
 
-## 11. Current State (May 2026)
+## 11. Current State (June 2026)
 
-- User is on Anatomical Adaptation, Block 1, Week 3
+- User is on Anatomical Adaptation, Block 2, Week 4
 - Phase started: 11th May 2026
+- Programme 5 is the active block 2 programme
 - All 6 screens built and wired to real data
-- Block 1 sessions seeded with real exercise data
 - Domain live at gym.activitycoach.co.uk
 
 ### Remaining backlog
 
 - Progressive overload display — surface range_exceeded flag visually during session logging
 - Push Up and bodyweight exercises — flag as rest week only or exclude from regular blocks
+- Week number mismatch fix (Option A) — update generate-block in ai.js to store absolute phase week numbers (weeks 4–6 for block 2) so the fix is in code not just applied via SQL
+- Block generation JSON failure — investigate why Claude returned plain text instead of JSON on Sunday 1st June cron run; fix before next Sunday
+- Multi-user support — unique workout plans per user (planned for next development session)
 
 ### Completed backlog
 
 - ~~Domain setup (gym.activitycoach.co.uk)~~ — done
-- Weight conventions and loadable weight constraints — AI prompts updated for both gyms with correct bar weights, increment rules, plate inventory, and dumbbell per-dumbbell convention; session display updated to label dumbbell weights clearly
-- Body fat % field — added body_fat_pct column to body_composition table; surfaced on Body Comp screen alongside weight and muscle mass
-- Image-to-body-comp logging — "Log from photo" button on Body Comp screen; sends scale screenshot to Claude API, extracts weight, muscle mass, and body fat %, pre-fills form for confirmation before saving
-- Extra session UI — Generate Extra Session button on week screen; gym picker and confirm modal; AI selects 6 best exercises with target weights; creates and starts session immediately; navigates to session screen
-- Progressive overload system — exercises table created with target_weight_kg per user; range_exceeded flag on planned_exercises; +5% weight increase cascaded to same muscle group on PO; 1RM now informational only; Sunday cron handles replanning
-- Phase advancement — Sunday cron increments phase_week weekly; Block 2 generated at week 4; rest week sessions created at week 7 (3×12@45%); phase advances automatically after rest week
-- Railway cron job — node-cron scheduler running inside Express server; Sunday 8PM; CRON_SECRET used for internal block generation calls
+- ~~Weight conventions and loadable weight constraints~~ — AI prompts updated for both gyms with correct bar weights, increment rules, plate inventory, and dumbbell per-dumbbell convention; session display updated to label dumbbell weights clearly
+- ~~Body fat % field~~ — added body_fat_pct column to body_composition table; surfaced on Body Comp screen alongside weight and muscle mass
+- ~~Image-to-body-comp logging~~ — "Log from photo" button on Body Comp screen; sends scale screenshot to Claude API, extracts weight, muscle mass, and body fat %, pre-fills form for confirmation before saving
+- ~~Extra session UI~~ — Generate Extra Session button on week screen; gym picker and confirm modal; AI selects 6 best exercises with target weights; creates and starts session immediately; navigates to session screen
+- ~~Progressive overload system~~ — exercises table created with target_weight_kg per user; range_exceeded flag on planned_exercises; +5% weight increase cascaded to same muscle group on PO; 1RM now informational only; Sunday cron handles replanning
+- ~~Phase advancement~~ — Sunday cron increments phase_week weekly; Block 2 generated at week 4; rest week sessions created at week 7 (3×12@45%); phase advances automatically after rest week
+- ~~Railway cron job~~ — node-cron scheduler running inside Express server; Sunday 8PM; CRON_SECRET used for internal block generation calls
+- ~~Valid weights and increment rounding~~ — validWeights.js created as single source of truth; cable/machine corrected to 2.26kg (5lb) increments; sessions.js now uses nextValidWeight() from validWeights.js using equipment_type column
+- ~~Body fat chart on dashboard~~ — added below muscle mass graph; colour scheme: bodyweight = white, muscle mass = Colors.green (#4CAF82), body fat = Colors.accent (orange); Colors.green added to theme.ts
+- ~~Manual report generation~~ — backend/routes/report.js added; POST /report/generate checks for existing report before generating; Generate Report button added to dashboard AI report card for missing or stale reports
