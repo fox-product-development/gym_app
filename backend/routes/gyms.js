@@ -376,6 +376,164 @@ router.post("/admin/approved-emails", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Exercises ────────────────────────────────────────────────────────────────
+
+// GET /gyms/:gymId/exercises
+router.get("/:gymId/exercises", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, exercise, muscles_primary, muscles_secondary, type,
+              equipment_type, sub_component, emg_score, target_weight_kg, active
+       FROM exercises
+       WHERE user_id = $1 AND gym_id = $2
+       ORDER BY type ASC, muscles_primary ASC, emg_score DESC`,
+      [req.userId, req.params.gymId],
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Get exercises error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// PATCH /gyms/:gymId/exercises/:id — toggle active or update fields
+router.patch("/:gymId/exercises/:id", requireAuth, async (req, res) => {
+  const { active, exercise, muscles_primary, sub_component, type, emg_score } =
+    req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE exercises
+       SET active          = COALESCE($1, active),
+           exercise        = COALESCE($2, exercise),
+           muscles_primary = COALESCE($3, muscles_primary),
+           sub_component   = COALESCE($4, sub_component),
+           type            = COALESCE($5, type),
+           emg_score       = COALESCE($6, emg_score)
+       WHERE id = $7 AND user_id = $8 AND gym_id = $9
+       RETURNING *`,
+      [
+        active,
+        exercise,
+        muscles_primary,
+        sub_component,
+        type,
+        emg_score,
+        req.params.id,
+        req.userId,
+        req.params.gymId,
+      ],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Exercise not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update exercise error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /gyms/:gymId/exercises — add a new exercise
+router.post("/:gymId/exercises", requireAuth, async (req, res) => {
+  const {
+    exercise,
+    muscles_primary,
+    muscles_secondary,
+    type,
+    equipment_type,
+    sub_component,
+    emg_score,
+  } = req.body;
+
+  if (!exercise || !muscles_primary || !type) {
+    return res.status(400).json({
+      error: "exercise, muscles_primary and type are required",
+    });
+  }
+
+  try {
+    const gymResult = await pool.query(
+      `SELECT gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
+      [req.params.gymId, req.userId],
+    );
+
+    if (gymResult.rows.length === 0) {
+      return res.status(404).json({ error: "Gym not found" });
+    }
+
+    const gymText = gymResult.rows[0].gym_name.toLowerCase().includes("home")
+      ? "home"
+      : "work";
+
+    const result = await pool.query(
+      `INSERT INTO exercises
+         (user_id, gym_id, gym, exercise, muscles_primary, muscles_secondary,
+          type, equipment_type, sub_component, emg_score, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+       RETURNING *`,
+      [
+        req.userId,
+        req.params.gymId,
+        gymText,
+        exercise,
+        muscles_primary,
+        muscles_secondary || null,
+        type,
+        equipment_type || null,
+        sub_component || null,
+        emg_score || 3,
+      ],
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (err) {
+    console.error("Create exercise error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// DELETE /gyms/:gymId/exercises/:id
+// Permanently deletes exercise and all associated logged sets and 1RM history
+router.delete("/:gymId/exercises/:id", requireAuth, async (req, res) => {
+  try {
+    const exResult = await pool.query(
+      `SELECT exercise FROM exercises
+       WHERE id = $1 AND user_id = $2 AND gym_id = $3`,
+      [req.params.id, req.userId, req.params.gymId],
+    );
+
+    if (exResult.rows.length === 0) {
+      return res.status(404).json({ error: "Exercise not found" });
+    }
+
+    const exerciseName = exResult.rows[0].exercise;
+
+    await pool.query(
+      `DELETE FROM one_rep_max_history
+       WHERE user_id = $1 AND exercise_name = $2`,
+      [req.userId, exerciseName],
+    );
+
+    await pool.query(
+      `DELETE FROM logged_sets
+       WHERE session_id IN (
+         SELECT id FROM sessions WHERE user_id = $1
+       ) AND exercise_name = $2`,
+      [req.userId, exerciseName],
+    );
+
+    await pool.query(`DELETE FROM exercises WHERE id = $1`, [req.params.id]);
+
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error("Delete exercise error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // DELETE /gyms/admin/approved-emails/:id
 router.delete("/admin/approved-emails/:id", requireAuth, async (req, res) => {
   try {

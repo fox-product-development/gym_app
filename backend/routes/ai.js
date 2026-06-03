@@ -741,13 +741,20 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
 
 async function buildGymCSV(gym, userId) {
   try {
+    const gymResult = await pool.query(
+      `SELECT id FROM gyms WHERE user_id = $1 AND gym_name ILIKE $2 LIMIT 1`,
+      [userId, gym === "work" ? "%work%" : "%home%"],
+    );
+
+    const gymId = gymResult.rows.length > 0 ? gymResult.rows[0].id : null;
+
     const result = await pool.query(
       `SELECT exercise, muscles_primary, muscles_secondary, type,
               equipment_type, sub_component, emg_score, target_weight_kg
        FROM exercises
-       WHERE user_id = $1 AND gym = $2
+       WHERE user_id = $1 AND (gym_id = $2 OR (gym_id IS NULL AND gym = $3))
        ORDER BY muscles_primary, emg_score DESC`,
-      [userId, gym],
+      [userId, gymId, gym],
     );
 
     if (result.rows.length > 0) {
