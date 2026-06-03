@@ -54,6 +54,12 @@ app.use("/report", reportRoutes);
 const bridgeRoutes = require("./routes/bridge");
 app.use("/bridge", bridgeRoutes);
 
+const dietRoutes = require("./routes/diet");
+app.use("/diet", dietRoutes);
+
+const moodRoutes = require("./routes/mood");
+app.use("/mood", moodRoutes);
+
 // ─── Scheduled jobs ───────────────────────────────────────────────────────────
 
 // Sunday at 8PM — generate weekly coaching report and advance phase week

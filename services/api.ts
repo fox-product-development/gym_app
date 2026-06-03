@@ -102,6 +102,19 @@ export async function getProfile() {
   return request("/user/profile");
 }
 
+export async function updateProfile(data: {
+  agent_tone?: string;
+  goal_size?: number;
+  goal_strength?: number;
+  goal_definition?: number;
+  goal_fitness?: number;
+  training_level?: string;
+  weekly_sessions?: number;
+  goal_description?: string;
+}) {
+  return request("/user/profile", "PATCH", data);
+}
+
 // ─── Sessions ─────────────────────────────────────────────────────────────────
 
 export async function getWeekSessions() {
