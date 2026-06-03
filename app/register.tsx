@@ -1,6 +1,5 @@
-// app/login.tsx
-// Login screen — shown when the user is not authenticated.
-// Handles both login and first-time registration.
+// app/register.tsx
+// Registration screen — invite only, email must be on the approved list.
 
 import { useState } from "react";
 import {
@@ -9,23 +8,33 @@ import {
   TextInput,
   Pressable,
   ActivityIndicator,
+  ScrollView,
 } from "react-native";
 import { router } from "expo-router";
 import { Colors } from "../constants/theme";
-import { login, register } from "../services/api";
+import { register } from "../services/api";
 
-// ─── Main screen ──────────────────────────────────────────────────────────────
-
-export default function LoginScreen() {
-  const [mode] = useState<"login">("login");
+export default function RegisterScreen() {
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleSubmit() {
-    if (!username || !password) {
-      setError("Please enter a username and password");
+  async function handleRegister() {
+    if (!username || !email || !password || !confirmPassword) {
+      setError("All fields are required");
+      return;
+    }
+
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError("Passwords do not match");
       return;
     }
 
@@ -33,9 +42,7 @@ export default function LoginScreen() {
     setLoading(true);
 
     try {
-      await login(username, password);
-
-      // Navigate to the main app on success
+      await register(username, email.toLowerCase().trim(), password);
       router.replace("/(tabs)");
     } catch (err: any) {
       setError(err.message || "Something went wrong");
@@ -44,16 +51,37 @@ export default function LoginScreen() {
     }
   }
 
+  const inputStyle = {
+    backgroundColor: Colors.card,
+    borderRadius: 12,
+    padding: 14,
+    fontSize: 16,
+    color: Colors.text,
+    borderWidth: 0.5,
+    borderColor: Colors.line,
+  };
+
+  const labelStyle = {
+    fontFamily: "Courier",
+    fontSize: 10,
+    color: Colors.ter,
+    letterSpacing: 0.6,
+    textTransform: "uppercase" as const,
+    marginBottom: 6,
+    paddingLeft: 4,
+  };
+
   return (
-    <View
-      style={{
-        flex: 1,
-        backgroundColor: Colors.bg,
+    <ScrollView
+      style={{ flex: 1, backgroundColor: Colors.bg }}
+      contentContainerStyle={{
         paddingHorizontal: 24,
-        justifyContent: "center",
+        paddingTop: 80,
+        paddingBottom: 40,
       }}
+      keyboardShouldPersistTaps="handled"
     >
-      {/* logo / title */}
+      {/* Logo / title */}
       <View style={{ alignItems: "center", marginBottom: 48 }}>
         <View
           style={{
@@ -88,80 +116,64 @@ export default function LoginScreen() {
             marginTop: 4,
           }}
         >
-          {mode === "login" ? "Welcome back" : "Create account"}
+          Create account
         </Text>
       </View>
 
-      {/* form */}
+      {/* Form */}
       <View style={{ gap: 10 }}>
-        {/* username */}
         <View>
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-              marginBottom: 6,
-              paddingLeft: 4,
-            }}
-          >
-            Username
-          </Text>
+          <Text style={labelStyle}>Email</Text>
+          <TextInput
+            value={email}
+            onChangeText={setEmail}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            placeholder="Enter your email"
+            placeholderTextColor={Colors.qua}
+            style={inputStyle}
+          />
+        </View>
+
+        <View>
+          <Text style={labelStyle}>Username</Text>
           <TextInput
             value={username}
             onChangeText={setUsername}
             autoCapitalize="none"
             autoCorrect={false}
-            placeholder="Enter username"
+            placeholder="Choose a username"
             placeholderTextColor={Colors.qua}
-            style={{
-              backgroundColor: Colors.card,
-              borderRadius: 12,
-              padding: 14,
-              fontSize: 16,
-              color: Colors.text,
-              borderWidth: 0.5,
-              borderColor: Colors.line,
-            }}
+            style={inputStyle}
           />
         </View>
 
-        {/* password */}
         <View>
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-              marginBottom: 6,
-              paddingLeft: 4,
-            }}
-          >
-            Password
-          </Text>
+          <Text style={labelStyle}>Password</Text>
           <TextInput
             value={password}
             onChangeText={setPassword}
             secureTextEntry
-            placeholder="Enter password"
+            placeholder="At least 8 characters"
             placeholderTextColor={Colors.qua}
-            style={{
-              backgroundColor: Colors.card,
-              borderRadius: 12,
-              padding: 14,
-              fontSize: 16,
-              color: Colors.text,
-              borderWidth: 0.5,
-              borderColor: Colors.line,
-            }}
+            style={inputStyle}
           />
         </View>
 
-        {/* error message */}
+        <View>
+          <Text style={labelStyle}>Confirm password</Text>
+          <TextInput
+            value={confirmPassword}
+            onChangeText={setConfirmPassword}
+            secureTextEntry
+            placeholder="Repeat your password"
+            placeholderTextColor={Colors.qua}
+            style={inputStyle}
+          />
+        </View>
+
+        {/* Error message */}
         {error ? (
           <Text
             style={{
@@ -175,20 +187,9 @@ export default function LoginScreen() {
           </Text>
         ) : null}
 
-        {/* register link */}
+        {/* Submit */}
         <Pressable
-          onPress={() => router.push("/register")}
-          style={{ alignItems: "center", paddingTop: 4 }}
-        >
-          <Text style={{ fontSize: 13, color: Colors.ter }}>
-            Don't have an account?{" "}
-            <Text style={{ color: Colors.accent }}>Create one</Text>
-          </Text>
-        </Pressable>
-
-        {/* submit button */}
-        <Pressable
-          onPress={handleSubmit}
+          onPress={handleRegister}
           disabled={loading}
           style={{
             backgroundColor: Colors.accent,
@@ -209,11 +210,22 @@ export default function LoginScreen() {
                 color: Colors.accentInk,
               }}
             >
-              {mode === "login" ? "Log In" : "Create Account"}
+              Create account
             </Text>
           )}
         </Pressable>
+
+        {/* Back to login */}
+        <Pressable
+          onPress={() => router.back()}
+          style={{ alignItems: "center", paddingTop: 4 }}
+        >
+          <Text style={{ fontSize: 13, color: Colors.ter }}>
+            Already have an account?{" "}
+            <Text style={{ color: Colors.accent }}>Sign in</Text>
+          </Text>
+        </Pressable>
       </View>
-    </View>
+    </ScrollView>
   );
 }

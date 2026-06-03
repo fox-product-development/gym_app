@@ -82,8 +82,16 @@ export async function login(username: string, password: string) {
   return data;
 }
 
-export async function register(username: string, password: string) {
-  const data = await request("/auth/register", "POST", { username, password });
+export async function register(
+  username: string,
+  email: string,
+  password: string,
+) {
+  const data = await request("/auth/register", "POST", {
+    username,
+    email,
+    password,
+  });
   setToken(data.token);
   return data;
 }
