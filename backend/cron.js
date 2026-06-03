@@ -248,7 +248,7 @@ async function runSundayReport(exitWhenDone = false) {
 
 // ─── Report generation ────────────────────────────────────────────────────────
 
-async function generateReportForUser(user) {
+async function generateReportForUser(user, overrideWeekStartDate = null) {
   console.log(`Generating report for user ${user.id}...`);
 
   // Sessions — last 4 weeks
@@ -411,12 +411,17 @@ Keep the entire report readable and direct. It will be displayed in the app and 
     .map((block) => block.text)
     .join("");
 
-  // Calculate week start date
-  const today = new Date();
-  const dayOfWeek = today.getDay();
-  const monday = new Date(today);
-  monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
-  const weekStartDate = monday.toISOString().split("T")[0];
+  // Calculate week start date — use override if provided, otherwise calculate
+  let weekStartDate;
+  if (overrideWeekStartDate) {
+    weekStartDate = overrideWeekStartDate;
+  } else {
+    const today = new Date();
+    const dayOfWeek = today.getDay();
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+    weekStartDate = monday.toISOString().split("T")[0];
+  }
 
   // Store the report
   await pool.query(

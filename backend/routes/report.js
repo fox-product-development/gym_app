@@ -1,7 +1,8 @@
 // backend/routes/report.js
 // Manual report generation endpoint.
-// Checks if a report already exists for the current week — if not, generates one.
-// Allows the user to trigger a report from the dashboard without running the full cron job.
+// Accepts an optional week_start_date to regenerate a report for a past week.
+// If no date is provided, defaults to the current week's Monday.
+// If a date is provided, always regenerates even if a report already exists.
 
 const express = require("express");
 const pool = require("../db");
@@ -10,35 +11,76 @@ const { generateReportForUser } = require("../cron");
 
 const router = express.Router();
 
-// ─── Generate report if missing ───────────────────────────────────────────────
+// ─── Generate report ──────────────────────────────────────────────────────────
 // POST /report/generate
-// Checks if a report exists for the current week's Monday date.
-// If it exists, returns { status: "up_to_date" }.
-// If not, generates and stores a new report, returns { status: "generated" }.
+// Optional body: { week_start_date: "2026-05-25" }
+//
+// No date provided:
+//   - Calculates current week's Monday
+//   - If report exists → returns { status: "up_to_date" }
+//   - If not → generates and returns { status: "generated" }
+//
+// Date provided:
+//   - Uses the supplied date as the week start
+//   - Always regenerates, overwriting any existing report for that date
+//   - Returns { status: "regenerated", week_start_date }
 
 router.post("/generate", requireAuth, async (req, res) => {
   try {
-    // Calculate this week's Monday date (same logic as cron.js)
-    const today = new Date();
-    const dayOfWeek = today.getDay();
-    const monday = new Date(today);
-    monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
-    const weekStartDate = monday.toISOString().split("T")[0];
+    const { week_start_date } = req.body;
+    const isManualDate = !!week_start_date;
 
-    // Check if a report already exists for this week
-    const existing = await pool.query(
-      `SELECT id FROM weekly_feedback
-       WHERE user_id = $1 AND week_start_date = $2`,
-      [req.userId, weekStartDate],
-    );
+    let weekStartDate;
 
-    if (existing.rows.length > 0) {
-      return res.json({ status: "up_to_date" });
+    if (isManualDate) {
+      // Validate the supplied date
+      const parsed = new Date(week_start_date);
+      if (isNaN(parsed.getTime())) {
+        return res
+          .status(400)
+          .json({ error: "Invalid week_start_date — use YYYY-MM-DD format" });
+      }
+      weekStartDate = week_start_date;
+    } else {
+      // Calculate this week's Monday
+      const today = new Date();
+      const dayOfWeek = today.getDay();
+      const monday = new Date(today);
+      monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+      weekStartDate = monday.toISOString().split("T")[0];
     }
 
-    // Fetch user row for generateReportForUser
+    // If no manual date, check if report already exists
+    if (!isManualDate) {
+      const existing = await pool.query(
+        `SELECT id FROM weekly_feedback
+         WHERE user_id = $1 AND week_start_date = $2`,
+        [req.userId, weekStartDate],
+      );
+
+      if (existing.rows.length > 0) {
+        return res.json({
+          status: "up_to_date",
+          week_start_date: weekStartDate,
+        });
+      }
+    }
+
+    // If manual date, delete any existing report for that week so we can overwrite
+    if (isManualDate) {
+      await pool.query(
+        `DELETE FROM weekly_feedback
+         WHERE user_id = $1 AND week_start_date = $2`,
+        [req.userId, weekStartDate],
+      );
+    }
+
+    // Fetch full user row — cron's generateReportForUser needs all profile fields
     const userResult = await pool.query(
-      `SELECT id, current_phase, current_block, phase_week FROM users WHERE id = $1`,
+      `SELECT id, username, email, current_phase, current_block, phase_week,
+              phase_cycle, agent_tone, goal_size, goal_strength, goal_definition,
+              goal_fitness, training_level, weekly_sessions, goal_description
+       FROM users WHERE id = $1`,
       [req.userId],
     );
 
@@ -46,9 +88,12 @@ router.post("/generate", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    await generateReportForUser(userResult.rows[0]);
+    await generateReportForUser(userResult.rows[0], weekStartDate);
 
-    res.json({ status: "generated" });
+    res.json({
+      status: isManualDate ? "regenerated" : "generated",
+      week_start_date: weekStartDate,
+    });
   } catch (err) {
     console.error("Manual report generation error:", err.message);
     res.status(500).json({ error: "Server error", detail: err.message });
