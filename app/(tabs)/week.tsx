@@ -23,6 +23,7 @@ import {
   logCardio,
   getCardio,
   deleteCardio,
+  getGyms,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -52,6 +53,12 @@ interface UserProfile {
   current_phase: string;
   current_block: number;
   phase_week: number;
+}
+
+interface Gym {
+  id: number;
+  gym_name: string;
+  is_default: boolean;
 }
 
 interface CardioEntry {
@@ -110,33 +117,39 @@ function Divider({ inset = 0 }: { inset?: number }) {
 }
 
 // ─── Start session modal ──────────────────────────────────────────────────────
-// Step 1: Choose Work Gym or Home Gym
-// Step 2 (Home Gym only): Confirm exercise regeneration
+// Step 1: Choose gym from user's gym list
+// Step 2 (non-default gym): Confirm exercise regeneration
 
-type ModalStep = "choose" | "confirm_home";
+type ModalStep = "choose" | "confirm_swap";
 
 function StartSessionModal({
   session,
   visible,
   onClose,
   onStarted,
+  gyms,
 }: {
   session: Session | null;
   visible: boolean;
   onClose: () => void;
   onStarted: () => void;
+  gyms: Gym[];
 }) {
   const [step, setStep] = useState<ModalStep>("choose");
+  const [selectedGym, setSelectedGym] = useState<Gym | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Reset step when modal opens
   const handleOpen = () => {
     setStep("choose");
+    setSelectedGym(null);
     setError("");
   };
 
-  async function handleStartWorkGym() {
+  const defaultGym = gyms.find((g) => g.is_default) || gyms[0];
+  const otherGyms = gyms.filter((g) => !g.is_default);
+
+  async function handleStartDefault() {
     if (!session) return;
     setLoading(true);
     setError("");
@@ -151,8 +164,8 @@ function StartSessionModal({
     }
   }
 
-  async function handleConfirmHomeGym() {
-    if (!session) return;
+  async function handleConfirmSwap() {
+    if (!session || !selectedGym) return;
     setLoading(true);
     setError("");
     try {
@@ -160,7 +173,7 @@ function StartSessionModal({
       onClose();
       onStarted();
     } catch (err: any) {
-      setError("Failed to generate Home Gym session");
+      setError("Failed to generate session for this gym");
     } finally {
       setLoading(false);
     }
@@ -176,7 +189,6 @@ function StartSessionModal({
       onShow={handleOpen}
       onRequestClose={onClose}
     >
-      {/* backdrop */}
       <Pressable
         style={{
           flex: 1,
@@ -185,7 +197,6 @@ function StartSessionModal({
         }}
         onPress={onClose}
       >
-        {/* sheet — stops press propagation */}
         <Pressable
           style={{
             backgroundColor: Colors.card,
@@ -200,7 +211,6 @@ function StartSessionModal({
         >
           {step === "choose" ? (
             <>
-              {/* header */}
               <Text
                 style={{
                   fontFamily: "Courier",
@@ -227,68 +237,83 @@ function StartSessionModal({
                   : "Isolation"}
               </Text>
 
-              {/* Work Gym button */}
-              <Pressable
-                onPress={handleStartWorkGym}
-                disabled={loading}
-                style={{
-                  backgroundColor: Colors.text,
-                  borderRadius: 14,
-                  padding: 16,
-                  alignItems: "center",
-                  marginBottom: 10,
-                  opacity: loading ? 0.6 : 1,
-                }}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#000" />
-                ) : (
-                  <>
-                    <Text
-                      style={{ fontSize: 16, fontWeight: "700", color: "#000" }}
-                    >
-                      🏋️ Start — Work Gym
-                    </Text>
-                    <Text
-                      style={{
-                        fontSize: 12,
-                        color: "rgba(0,0,0,0.5)",
-                        marginTop: 2,
-                      }}
-                    >
-                      Use the planned programme
-                    </Text>
-                  </>
-                )}
-              </Pressable>
-
-              {/* Home Gym button */}
-              <Pressable
-                onPress={() => setStep("confirm_home")}
-                disabled={loading}
-                style={{
-                  backgroundColor: "transparent",
-                  borderRadius: 14,
-                  padding: 16,
-                  alignItems: "center",
-                  borderWidth: 0.5,
-                  borderColor: Colors.line2,
-                  opacity: loading ? 0.6 : 1,
-                }}
-              >
-                <Text
+              {/* Default gym — primary button */}
+              {defaultGym && (
+                <Pressable
+                  onPress={handleStartDefault}
+                  disabled={loading}
                   style={{
-                    fontSize: 16,
-                    fontWeight: "600",
-                    color: Colors.text,
+                    backgroundColor: Colors.text,
+                    borderRadius: 14,
+                    padding: 16,
+                    alignItems: "center",
+                    marginBottom: 10,
+                    opacity: loading ? 0.6 : 1,
                   }}
                 >
-                  🏠 Switch to Home Gym
-                </Text>
-                <Text style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}>
-                  Regenerate with home equipment
-                </Text>
-              </Pressable>
+                  {loading && !selectedGym ? (
+                    <ActivityIndicator color="#000" />
+                  ) : (
+                    <>
+                      <Text
+                        style={{
+                          fontSize: 16,
+                          fontWeight: "700",
+                          color: "#000",
+                        }}
+                      >
+                        Start — {defaultGym.gym_name}
+                      </Text>
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color: "rgba(0,0,0,0.5)",
+                          marginTop: 2,
+                        }}
+                      >
+                        Use the planned programme
+                      </Text>
+                    </>
+                  )}
+                </Pressable>
+              )}
+
+              {/* Other gyms — secondary buttons */}
+              {otherGyms.map((gym) => (
+                <Pressable
+                  key={gym.id}
+                  onPress={() => {
+                    setSelectedGym(gym);
+                    setStep("confirm_swap");
+                  }}
+                  disabled={loading}
+                  style={{
+                    backgroundColor: "transparent",
+                    borderRadius: 14,
+                    padding: 16,
+                    alignItems: "center",
+                    borderWidth: 0.5,
+                    borderColor: Colors.line2,
+                    marginBottom: 10,
+                    opacity: loading ? 0.6 : 1,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 16,
+                      fontWeight: "600",
+                      color: Colors.text,
+                    }}
+                  >
+                    Switch to {gym.gym_name}
+                  </Text>
+                  <Text
+                    style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}
+                  >
+                    Regenerate with {gym.gym_name.toLowerCase()} equipment
+                  </Text>
+                </Pressable>
+              ))}
 
               {error ? (
                 <Text
@@ -303,7 +328,6 @@ function StartSessionModal({
                 </Text>
               ) : null}
 
-              {/* cancel */}
               <Pressable
                 onPress={onClose}
                 style={{ marginTop: 16, alignItems: "center" }}
@@ -313,7 +337,6 @@ function StartSessionModal({
             </>
           ) : (
             <>
-              {/* confirmation step */}
               <Text
                 style={{
                   fontFamily: "Courier",
@@ -335,7 +358,7 @@ function StartSessionModal({
                   marginBottom: 10,
                 }}
               >
-                Switch to Home Gym?
+                Switch to {selectedGym?.gym_name}?
               </Text>
               <Text
                 style={{
@@ -345,14 +368,13 @@ function StartSessionModal({
                   marginBottom: 24,
                 }}
               >
-                This will replace all planned exercises with Home Gym
-                alternatives using the same selection logic. This cannot be
-                undone.
+                This will replace all planned exercises with alternatives for{" "}
+                {selectedGym?.gym_name} using the same selection logic. This
+                cannot be undone.
               </Text>
 
-              {/* Confirm button */}
               <Pressable
-                onPress={handleConfirmHomeGym}
+                onPress={handleConfirmSwap}
                 disabled={loading}
                 style={{
                   backgroundColor: Colors.accent,
@@ -373,7 +395,7 @@ function StartSessionModal({
                       color: Colors.accentInk,
                     }}
                   >
-                    Confirm — Switch to Home Gym
+                    Confirm — Switch to {selectedGym?.gym_name}
                   </Text>
                 )}
               </Pressable>
@@ -391,7 +413,6 @@ function StartSessionModal({
                 </Text>
               ) : null}
 
-              {/* back */}
               <Pressable
                 onPress={() => {
                   setStep("choose");
@@ -1215,6 +1236,7 @@ export default function WeekScreen() {
   const [extraModalVisible, setExtraModalVisible] = useState(false);
   const [cardioModalVisible, setCardioModalVisible] = useState(false);
   const [cardioEntries, setCardioEntries] = useState<CardioEntry[]>([]);
+  const [gyms, setGyms] = useState<Gym[]>([]);
 
   useFocusEffect(
     useCallback(() => {
@@ -1226,14 +1248,13 @@ export default function WeekScreen() {
     setLoading(true);
     setError("");
     try {
-      const [sessionData, profileData, cardioData] = await Promise.all([
-        getWeekSessions(),
-        getProfile(),
-        getCardio(1),
-      ]);
+      const [sessionData, profileData, cardioData, gymData] = await Promise.all(
+        [getWeekSessions(), getProfile(), getCardio(1), getGyms()],
+      );
       setSessions(sessionData);
       setProfile(profileData);
       setCardioEntries(cardioData);
+      setGyms(gymData);
     } catch (err: any) {
       setError("Failed to load sessions");
     } finally {
@@ -1631,6 +1652,7 @@ export default function WeekScreen() {
         visible={modalVisible}
         onClose={handleModalClose}
         onStarted={handleSessionStarted}
+        gyms={gyms}
       />
 
       {/* Extra session modal */}
