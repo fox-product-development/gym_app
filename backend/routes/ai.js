@@ -76,6 +76,42 @@ async function getBodyCompHistory(userId) {
   return result.rows;
 }
 
+async function getDietHistory(userId) {
+  const result = await pool.query(
+    `SELECT logged_at, calories_kcal, protein_g, carbs_g, fat_g, sugar_g
+     FROM diet_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [userId],
+  );
+  return result.rows;
+}
+
+async function getMoodHistory(userId) {
+  const result = await pool.query(
+    `SELECT logged_at, mood, energy, notes
+     FROM mood_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [userId],
+  );
+  return result.rows;
+}
+
+async function getCardioHistory(userId) {
+  const result = await pool.query(
+    `SELECT logged_at, activity_type, duration_minutes, distance_km
+     FROM cardio_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [userId],
+  );
+  return result.rows;
+}
+
 async function getPreviousBlockExercises(userId, phase, blockNumber) {
   const previousBlock = blockNumber === 2 ? 1 : null;
   if (!previousBlock) return [];
@@ -173,11 +209,17 @@ router.post("/generate-block", async (req, res) => {
       oneRepMaxHistory,
       bodyCompHistory,
       previousBlockExercises,
+      dietHistory,
+      moodHistory,
+      cardioHistory,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
       getBodyCompHistory(req.userId),
       getPreviousBlockExercises(req.userId, current_phase, current_block),
+      getDietHistory(req.userId),
+      getMoodHistory(req.userId),
+      getCardioHistory(req.userId),
     ]);
 
     const gymCSV = await buildGymCSV(gym, req.userId);
@@ -207,9 +249,18 @@ ${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None 
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
 
+DIET — LAST 2 WEEKS
+${dietHistory.length > 0 ? JSON.stringify(dietHistory, null, 2) : "No diet data logged"}
+
+MOOD AND ENERGY — LAST 2 WEEKS
+${moodHistory.length > 0 ? JSON.stringify(moodHistory, null, 2) : "No mood data logged"}
+
+CARDIO — LAST 2 WEEKS
+${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio logged"}
+
+Use diet, mood, energy and cardio data to inform weight selection and exercise ordering. If energy has been consistently low, favour moderate weights over ambitious targets. If cardio load has been high, consider recovery when selecting compound movements.
+
 Return ONLY this exact JSON structure, nothing else:
-{
-  "block": <number>,
   "phase": "<phase_name>",
   "compound_session": {
     "exercises": [
@@ -574,12 +625,21 @@ router.post("/extra-session", requireAuth, async (req, res) => {
     const user = userResult.rows[0];
     const { current_phase, current_block, phase_week } = user;
 
-    const [sessionHistory, oneRepMaxHistory, bodyCompHistory] =
-      await Promise.all([
-        getSessionHistory(req.userId),
-        getOneRepMaxHistory(req.userId),
-        getBodyCompHistory(req.userId),
-      ]);
+    const [
+      sessionHistory,
+      oneRepMaxHistory,
+      bodyCompHistory,
+      dietHistory,
+      moodHistory,
+      cardioHistory,
+    ] = await Promise.all([
+      getSessionHistory(req.userId),
+      getOneRepMaxHistory(req.userId),
+      getBodyCompHistory(req.userId),
+      getDietHistory(req.userId),
+      getMoodHistory(req.userId),
+      getCardioHistory(req.userId),
+    ]);
 
     const lastSession = sessionHistory[0];
     const daysSinceLast = lastSession
@@ -613,6 +673,17 @@ ${JSON.stringify(sessionHistory, null, 2)}
 
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
+
+DIET — LAST 2 WEEKS
+${dietHistory.length > 0 ? JSON.stringify(dietHistory, null, 2) : "No diet data logged"}
+
+MOOD AND ENERGY — LAST 2 WEEKS
+${moodHistory.length > 0 ? JSON.stringify(moodHistory, null, 2) : "No mood data logged"}
+
+CARDIO — LAST 2 WEEKS
+${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio logged"}
+
+Use today's mood and energy scores to inform exercise selection and weight targets. If energy is low today, select exercises the athlete performs well at moderate intensity. If cardio load has been heavy this week, favour upper body compound movements to allow leg recovery.
 
 Return ONLY this exact JSON structure, nothing else:
 {
