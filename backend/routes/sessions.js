@@ -464,8 +464,6 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
           response.status,
           await response.text(),
         );
-      } else {
-        console.log("Activity Coach push successful for session", session.id);
       }
     } catch (pushErr) {
       console.error("Activity Coach push error:", pushErr.message);
