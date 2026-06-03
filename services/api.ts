@@ -222,3 +222,67 @@ export async function getWeeklyFeedback() {
 export async function generateWeeklyReport() {
   return request("/report/generate", "POST");
 }
+
+// ─── Diet ─────────────────────────────────────────────────────────────────────
+
+export async function logDiet(data: {
+  calories_kcal?: number;
+  fat_g?: number;
+  saturated_fat_g?: number;
+  carbs_g?: number;
+  sugar_g?: number;
+  fibre_g?: number;
+  protein_g?: number;
+  salt_g?: number;
+  source?: string;
+}) {
+  return request("/diet", "POST", data);
+}
+
+export async function getDiet(weeks: number = 4) {
+  return request(`/diet?weeks=${weeks}`);
+}
+
+export async function extractDietFromImage(
+  image_base64: string,
+  media_type: string,
+) {
+  return request("/diet/extract-from-image", "POST", {
+    image_base64,
+    media_type,
+  });
+}
+
+// ─── Mood ─────────────────────────────────────────────────────────────────────
+
+export async function logMood(data: {
+  mood: number;
+  energy: number;
+  notes?: string;
+}) {
+  return request("/mood", "POST", data);
+}
+
+export async function getMood(weeks: number = 4) {
+  return request(`/mood?weeks=${weeks}`);
+}
+
+// ─── Cardio ───────────────────────────────────────────────────────────────────
+
+export async function logCardio(data: {
+  activity_type: string;
+  duration_minutes: number;
+  distance_km?: number;
+  notes?: string;
+  logged_at?: string;
+}) {
+  return request("/cardio", "POST", data);
+}
+
+export async function getCardio(weeks: number = 4) {
+  return request(`/cardio?weeks=${weeks}`);
+}
+
+export async function deleteCardio(id: number) {
+  return request(`/cardio/${id}`, "DELETE");
+}

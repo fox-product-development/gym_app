@@ -60,6 +60,9 @@ app.use("/diet", dietRoutes);
 const moodRoutes = require("./routes/mood");
 app.use("/mood", moodRoutes);
 
+const cardioRoutes = require("./routes/cardio");
+app.use("/cardio", cardioRoutes);
+
 // ─── Scheduled jobs ───────────────────────────────────────────────────────────
 
 // Sunday at 8PM — generate weekly coaching report and advance phase week
