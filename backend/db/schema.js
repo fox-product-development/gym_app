@@ -230,7 +230,8 @@ async function createTables() {
       CREATE TABLE IF NOT EXISTS exercises (
         id                SERIAL PRIMARY KEY,
         user_id           INTEGER REFERENCES users(id),
-        gym               TEXT NOT NULL CHECK (gym IN ('work', 'home')),
+        gym_id            INTEGER REFERENCES gyms(id),
+        equipment_id      INTEGER REFERENCES equipment(id),
         exercise          TEXT NOT NULL,
         muscles_primary   TEXT NOT NULL,
         muscles_secondary TEXT,
@@ -241,8 +242,9 @@ async function createTables() {
         active            BOOLEAN NOT NULL DEFAULT TRUE,
         target_weight_kg  NUMERIC(6,2) DEFAULT NULL,
         one_rep_max       NUMERIC(6,2) DEFAULT NULL,
+        gym               TEXT,
         created_at        TIMESTAMP DEFAULT NOW(),
-        UNIQUE (user_id, gym, exercise)
+        UNIQUE (user_id, gym_id, exercise)
       );
     `);
     console.log("✓ exercises table ready");

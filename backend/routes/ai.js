@@ -1583,20 +1583,22 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
 
 async function buildGymCSV(gymId, userId) {
   if (!gymId) {
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg\n(no gym selected)";
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight_kg,increment_kg,max_weight_kg\n(no gym selected)";
   }
   try {
     const result = await pool.query(
-      `SELECT exercise, muscles_primary, muscles_secondary, type,
-              equipment_type, sub_component, emg_score, target_weight_kg
-       FROM exercises
-       WHERE user_id = $1 AND gym_id = $2 AND active = TRUE
-       ORDER BY muscles_primary, emg_score DESC`,
+      `SELECT e.exercise, e.muscles_primary, e.muscles_secondary, e.type,
+              e.equipment_type, e.sub_component, e.emg_score, e.target_weight_kg,
+              eq.equipment_name, eq.increment_kg, eq.max_weight_kg
+       FROM exercises e
+       LEFT JOIN equipment eq ON eq.id = e.equipment_id
+       WHERE e.user_id = $1 AND e.gym_id = $2 AND e.active = TRUE
+       ORDER BY e.muscles_primary, e.emg_score DESC`,
       [userId, gymId],
     );
 
     const header =
-      "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg";
+      "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight_kg,increment_kg,max_weight_kg";
 
     if (result.rows.length === 0) {
       return header + "\n(no exercises configured for this gym)";
@@ -1604,12 +1606,12 @@ async function buildGymCSV(gymId, userId) {
 
     const rows = result.rows.map(
       (e) =>
-        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"}`,
+        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"},${e.increment_kg ?? "null"},${e.max_weight_kg ?? "null"}`,
     );
     return [header, ...rows].join("\n");
   } catch (err) {
     console.error("buildGymCSV DB error:", err.message);
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg\n(error loading exercises)";
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight_kg,increment_kg,max_weight_kg\n(error loading exercises)";
   }
 }
 
@@ -1644,12 +1646,16 @@ CONDITIONING SELECTION RULES
 - For rep-based exercises: weight_kg should be 0
 
 WEIGHT RULES
-- If target_weight_kg is NOT null: use it directly
+- The exercise library CSV includes equipment_name, increment_kg, and max_weight_kg per exercise
+- If max_weight_kg is provided: NEVER suggest a weight exceeding it
+- If increment_kg is provided: the weight must be a multiple of the increment
+- If target_weight_kg is NOT null: use it directly (as long as it does not exceed max_weight_kg)
 - If target_weight_kg IS null: estimate using phase percentage of 1RM if available, or a conservative starting weight:
   - Anatomical Adaptation: 60% of 1RM
   - Hypertrophy: 67% of 1RM
   - Maximum Strength: 80% of 1RM
   - Muscle Definition: 55% of 1RM
+- For loadable equipment (where increment_kg and max_weight_kg are null): use the valid weights from the WEIGHT GUIDANCE section in the user prompt
 
 You must only suggest weights that are valid for the exercise's equipment_type. The user prompt includes the full valid weight list — pick the closest valid value that does not exceed the calculated target.
 
