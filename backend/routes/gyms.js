@@ -128,8 +128,13 @@ router.get("/:gymId/equipment", requireAuth, async (req, res) => {
 
 // POST /gyms/:gymId/equipment
 router.post("/:gymId/equipment", requireAuth, async (req, res) => {
-  const { equipment_name, type, unladen_weight_kg, increment_kg } = req.body;
-
+  const {
+    equipment_name,
+    type,
+    unladen_weight_kg,
+    increment_kg,
+    max_weight_kg,
+  } = req.body;
   if (!equipment_name || !type) {
     return res
       .status(400)
@@ -146,8 +151,8 @@ router.post("/:gymId/equipment", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `INSERT INTO equipment
-         (user_id, gym_id, equipment_name, type, unladen_weight_kg, increment_kg)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (user_id, gym_id, equipment_name, type, unladen_weight_kg, increment_kg, max_weight_kg)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
         req.userId,
@@ -156,6 +161,7 @@ router.post("/:gymId/equipment", requireAuth, async (req, res) => {
         type,
         unladen_weight_kg || null,
         increment_kg || null,
+        max_weight_kg || null,
       ],
     );
     res.status(201).json(result.rows[0]);
@@ -167,22 +173,29 @@ router.post("/:gymId/equipment", requireAuth, async (req, res) => {
 
 // PATCH /gyms/:gymId/equipment/:id
 router.patch("/:gymId/equipment/:id", requireAuth, async (req, res) => {
-  const { equipment_name, type, unladen_weight_kg, increment_kg } = req.body;
-
+  const {
+    equipment_name,
+    type,
+    unladen_weight_kg,
+    increment_kg,
+    max_weight_kg,
+  } = req.body;
   try {
     const result = await pool.query(
       `UPDATE equipment
-       SET equipment_name   = COALESCE($1, equipment_name),
-           type             = COALESCE($2, type),
+       SET equipment_name    = COALESCE($1, equipment_name),
+           type              = COALESCE($2, type),
            unladen_weight_kg = COALESCE($3, unladen_weight_kg),
-           increment_kg     = COALESCE($4, increment_kg)
-       WHERE id = $5 AND gym_id = $6 AND user_id = $7
+           increment_kg      = COALESCE($4, increment_kg),
+           max_weight_kg     = COALESCE($5, max_weight_kg)
+       WHERE id = $6 AND gym_id = $7 AND user_id = $8
        RETURNING *`,
       [
         equipment_name,
         type,
         unladen_weight_kg,
         increment_kg,
+        max_weight_kg,
         req.params.id,
         req.params.gymId,
         req.userId,
