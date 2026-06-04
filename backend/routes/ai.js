@@ -142,11 +142,40 @@ async function getConditioningExercises(gymId) {
   return result.rows;
 }
 
-// ─── Valid weight reference string ───────────────────────────────────────────
+// ─── Equipment summary for AI prompt ─────────────────────────────────────────────
+// Builds weight guidance for the AI prompt.
+// Machine and fixed: uses increment_kg and max_weight_kg from the equipment table.
+// Loadable: uses hardcoded validWeights arrays (plate logic not yet DB-driven).
+// Bodyweight: always 0.
 
-function buildValidWeightsSummary() {
-  return `VALID WEIGHTS PER EQUIPMENT TYPE
-You must only suggest weights that appear in these lists. Do not round or interpolate — the weight must be an exact value from the relevant list.
+async function buildEquipmentSummary(gymId, userId) {
+  let machineAndFixedSection = "";
+
+  try {
+    const result = await pool.query(
+      `SELECT equipment_name, type, increment_kg, max_weight_kg
+       FROM equipment
+       WHERE gym_id = $1 AND user_id = $2
+         AND type IN ('machine', 'fixed')
+         AND increment_kg IS NOT NULL
+       ORDER BY type, equipment_name`,
+      [gymId, userId],
+    );
+
+    if (result.rows.length > 0) {
+      const lines = result.rows.map((e) => {
+        const max = e.max_weight_kg ? ` — max ${e.max_weight_kg}kg` : "";
+        return `  ${e.equipment_name} (${e.type}): increments of ${e.increment_kg}kg${max}`;
+      });
+      machineAndFixedSection = `\nMACHINE AND FIXED EQUIPMENT (from gym database)\nFor these, select any weight that is a multiple of the increment and does not exceed the max:\n${lines.join("\n")}`;
+    }
+  } catch (err) {
+    console.error("buildEquipmentSummary DB error:", err.message);
+  }
+
+  return `WEIGHT GUIDANCE PER EQUIPMENT TYPE
+
+LOADABLE EQUIPMENT (barbell, dumbbells — use these exact values only):
 
 home gym — dumbbells and single dumbbell (weight shown is per dumbbell):
 ${validWeights.home_dumbbell.join(", ")}
@@ -162,9 +191,7 @@ ${validWeights.work_barbell.join(", ")}
 
 work gym — olympic barbell (20kg bar, total weight including bar, 5kg increments):
 ${validWeights.work_olympic_barbell.join(", ")}
-
-work gym — machine / cable (2.2kg increments):
-${validWeights.work_machine.join(", ")}
+${machineAndFixedSection}
 
 DUMBBELL CONVENTION
 All dumbbell weights (equipment_type = "dumbbells" or "single dumbbell") are stored and displayed as the weight of ONE dumbbell. For example, weight_kg: 10 means 10kg in each hand for a pair exercise, or 10kg in one hand for a single dumbbell exercise. Never double the weight for pair exercises.
@@ -315,6 +342,7 @@ router.post("/generate-block", async (req, res) => {
 
     const gymCSV = await buildGymCSV(gym, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
+    const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
 
     const compoundInstruction = buildWildcardInstruction(
       weightExercises,
@@ -341,7 +369,7 @@ CURRENT STATE
 EXERCISE LIBRARY
 ${gymCSV}
 
-${buildValidWeightsSummary()}
+${equipmentSummary}
 
 CONDITIONING LIBRARY
 ${condCSV}
@@ -636,6 +664,7 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
 
     const gymCSV = await buildGymCSV(gymType, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
+    const equipmentSummary = await buildEquipmentSummary(gym_id, req.userId);
     const sessionTypeLabel =
       session_type === "compound" ? "compound" : "isolation";
     const weightInstruction = buildWildcardInstruction(
@@ -660,7 +689,7 @@ CURRENT STATE
 EXERCISE LIBRARY (${gymName} only)
 ${gymCSV}
 
-${buildValidWeightsSummary()}
+${equipmentSummary}
 
 CONDITIONING LIBRARY
 ${condCSV}
@@ -892,6 +921,7 @@ router.post("/generate-missing", async (req, res) => {
 
     const gymCSV = await buildGymCSV(gym, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
+    const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
     const compoundInstruction = buildWildcardInstruction(
       weightExercises,
       "compound",
@@ -925,7 +955,7 @@ ${existingPlanSection}
 EXERCISE LIBRARY
 ${gymCSV}
 
-${buildValidWeightsSummary()}
+${equipmentSummary}
 
 CONDITIONING LIBRARY
 ${condCSV}
@@ -1201,6 +1231,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
 
     const gymCSV = await buildGymCSV(gym, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
+    const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
 
     const userPrompt = `The athlete has arrived at the gym for an extra session today. Select the ${weightExercises} best weight exercises for them based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
 
@@ -1217,7 +1248,7 @@ CURRENT STATE
 EXERCISE LIBRARY
 ${gymCSV}
 
-${buildValidWeightsSummary()}
+${equipmentSummary}
 
 CONDITIONING LIBRARY
 ${condCSV}
@@ -1464,7 +1495,7 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 2000,
+      max_tokens: 3000,
       messages: [
         {
           role: "user",
@@ -1476,8 +1507,7 @@ ${equipmentList}
 EXERCISES ALREADY IN THEIR LIBRARY (exclude these)
 ${existingNames.length > 0 ? existingNames.join(", ") : "None"}
 
-Suggest 20-30 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
-
+SSuggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
