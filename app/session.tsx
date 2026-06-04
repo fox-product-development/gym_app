@@ -60,6 +60,20 @@ function isDumbbellExercise(exerciseName: string): boolean {
   return exerciseName.toLowerCase().includes("dumbbell");
 }
 
+function isConditioningExercise(exercise: PlannedExercise): boolean {
+  return exercise.muscles_primary === "Conditioning";
+}
+
+function weightUnit(weight: number, exercise: PlannedExercise): string {
+  if (isConditioningExercise(exercise)) {
+    return weight > 0 ? `${weight}s` : "bodyweight";
+  }
+  if (isDumbbellExercise(exercise.exercise_name)) {
+    return `${weight} kg per dumbbell`;
+  }
+  return `${weight} kg`;
+}
+
 // ─── Rep entry modal ──────────────────────────────────────────────────────────
 
 function RepEntryModal({
@@ -67,6 +81,7 @@ function RepEntryModal({
   targetReps,
   weight,
   exerciseName,
+  musclesPrimary,
   onConfirm,
   onClose,
 }: {
@@ -74,6 +89,7 @@ function RepEntryModal({
   targetReps: number;
   weight: number;
   exerciseName: string;
+  musclesPrimary: string;
   onConfirm: (reps: number) => void;
   onClose: () => void;
 }) {
@@ -105,9 +121,14 @@ function RepEntryModal({
     }
   }
 
-  const weightLabel = isDumbbellExercise(exerciseName)
-    ? `${weight} kg per dumbbell`
-    : `${weight} kg`;
+  const weightLabel =
+    musclesPrimary === "Conditioning"
+      ? weight > 0
+        ? `${weight} seconds`
+        : "bodyweight"
+      : isDumbbellExercise(exerciseName)
+        ? `${weight} kg per dumbbell`
+        : `${weight} kg`;
 
   return (
     <Modal
@@ -409,7 +430,7 @@ function ExerciseBlock({
           >
             {isDropSet
               ? `Drop set · ${exercise.target_reps} reps @ ${exercise.target_weight} kg${allDone ? "" : `  ·  ${totalLoggedReps}/${exercise.target_reps} reps`}`
-              : `${exercise.target_sets} × ${exercise.target_reps} @ ${exercise.target_weight} kg${isDumbbell ? " per dumbbell" : ""}${completedSets > 0 && !allDone ? `  ·  ${completedSets}/${totalSets} done` : ""}`}
+              : `${exercise.target_sets} × ${exercise.target_reps} @ ${weightUnit(exercise.target_weight, exercise)}${completedSets > 0 && !allDone ? `  ·  ${completedSets}/${totalSets} done` : ""}`}
             {rangeExceeded ? "  ·  ↑ weight next session" : ""}
           </Text>
         </View>
@@ -711,7 +732,13 @@ function ExerciseBlock({
                         {exercise.target_weight}
                       </Text>
                       <Text style={{ fontSize: 11, color: Colors.ter }}>
-                        {isDumbbell ? "kg ea" : "kg"}
+                        {isConditioningExercise(exercise)
+                          ? exercise.target_weight > 0
+                            ? "sec"
+                            : ""
+                          : isDumbbell
+                            ? "kg ea"
+                            : "kg"}
                       </Text>
 
                       <View
@@ -796,6 +823,7 @@ function ExerciseBlock({
         targetReps={isDropSet ? remainingReps : exercise.target_reps}
         weight={activeWeight}
         exerciseName={exercise.exercise_name}
+        musclesPrimary={exercise.muscles_primary}
         onConfirm={handleRepConfirm}
         onClose={() => {
           setRepModalOpen(false);
@@ -957,7 +985,7 @@ export default function ActiveSessionScreen() {
     session.session_type === "compound"
       ? `Compound · Session ${session.occurrence}`
       : "Isolation";
-  const gymLabel = session.gym === "home" ? "🏠 Home Gym" : "🏋️ Work Gym";
+  const gymLabel = session.gym || "Gym";
 
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
