@@ -174,6 +174,7 @@ function AddEquipmentModal({
   const [type, setType] = useState("loadable");
   const [unladenWeight, setUnladenWeight] = useState("");
   const [increment, setIncrement] = useState("");
+  const [maxWeight, setMaxWeight] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -182,6 +183,7 @@ function AddEquipmentModal({
     setType("loadable");
     setUnladenWeight("");
     setIncrement("");
+    setMaxWeight("");
     setError("");
     onClose();
   }
@@ -201,6 +203,7 @@ function AddEquipmentModal({
           ? parseFloat(unladenWeight)
           : undefined,
         increment_kg: increment ? parseFloat(increment) : undefined,
+        max_weight_kg: maxWeight ? parseFloat(maxWeight) : undefined,
       });
       onSaved();
       handleClose();
@@ -246,143 +249,157 @@ function AddEquipmentModal({
             backgroundColor: Colors.card,
             borderTopLeftRadius: 24,
             borderTopRightRadius: 24,
-            padding: 24,
-            paddingBottom: 40,
+            maxHeight: "85%",
           }}
           onPress={() => {}}
         >
-          <Text
-            style={{
-              fontSize: 18,
-              fontWeight: "700",
-              color: Colors.text,
-              marginBottom: 20,
-            }}
+          <ScrollView
+            contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
+            keyboardShouldPersistTaps="handled"
           >
-            Add equipment
-          </Text>
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "700",
+                color: Colors.text,
+                marginBottom: 20,
+              }}
+            >
+              Add equipment
+            </Text>
 
-          <Text style={labelStyle}>Name</Text>
-          <TextInput
-            value={name}
-            onChangeText={setName}
-            placeholder="e.g. Olympic barbell"
-            placeholderTextColor={Colors.ter}
-            style={inputStyle}
-          />
+            <Text style={labelStyle}>Name</Text>
+            <TextInput
+              value={name}
+              onChangeText={setName}
+              placeholder="e.g. Olympic barbell"
+              placeholderTextColor={Colors.ter}
+              style={inputStyle}
+            />
 
-          <Text style={labelStyle}>Type</Text>
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 8,
-              marginBottom: 12,
-            }}
-          >
-            {EQUIPMENT_TYPES.map((t) => (
+            <Text style={labelStyle}>Type</Text>
+            <View
+              style={{
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 8,
+                marginBottom: 12,
+              }}
+            >
+              {EQUIPMENT_TYPES.map((t) => (
+                <Pressable
+                  key={t}
+                  onPress={() => setType(t)}
+                  style={{
+                    paddingHorizontal: 14,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor:
+                      type === t ? Colors.accentDim : Colors.card2,
+                    borderWidth: type === t ? 1 : 0,
+                    borderColor: Colors.accent,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      color: type === t ? Colors.accent : Colors.sec,
+                      fontWeight: type === t ? "600" : "400",
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {t}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {type === "loadable" && (
+              <>
+                <Text style={labelStyle}>Unladen weight (kg)</Text>
+                <TextInput
+                  value={unladenWeight}
+                  onChangeText={setUnladenWeight}
+                  keyboardType="decimal-pad"
+                  placeholder="e.g. 20"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </>
+            )}
+
+            {(type === "fixed" || type === "machine") && (
+              <>
+                <Text style={labelStyle}>Increment (kg)</Text>
+                <TextInput
+                  value={increment}
+                  onChangeText={setIncrement}
+                  keyboardType="decimal-pad"
+                  placeholder="e.g. 2.5"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+                <Text style={labelStyle}>Max weight (kg)</Text>
+                <TextInput
+                  value={maxWeight}
+                  onChangeText={setMaxWeight}
+                  keyboardType="decimal-pad"
+                  placeholder="e.g. 100"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </>
+            )}
+
+            {error ? (
+              <Text
+                style={{ fontSize: 13, color: Colors.warn, marginBottom: 12 }}
+              >
+                {error}
+              </Text>
+            ) : null}
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
               <Pressable
-                key={t}
-                onPress={() => setType(t)}
+                onPress={handleClose}
                 style={{
-                  paddingHorizontal: 14,
-                  paddingVertical: 8,
-                  borderRadius: 8,
-                  backgroundColor: type === t ? Colors.accentDim : Colors.card2,
-                  borderWidth: type === t ? 1 : 0,
-                  borderColor: Colors.accent,
+                  flex: 1,
+                  backgroundColor: Colors.card2,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
                 }}
               >
-                <Text
-                  style={{
-                    fontSize: 13,
-                    color: type === t ? Colors.accent : Colors.sec,
-                    fontWeight: type === t ? "600" : "400",
-                    textTransform: "capitalize",
-                  }}
-                >
-                  {t}
-                </Text>
+                <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
               </Pressable>
-            ))}
-          </View>
-
-          {type === "loadable" && (
-            <>
-              <Text style={labelStyle}>Unladen weight (kg)</Text>
-              <TextInput
-                value={unladenWeight}
-                onChangeText={setUnladenWeight}
-                keyboardType="decimal-pad"
-                placeholder="e.g. 20"
-                placeholderTextColor={Colors.ter}
-                style={inputStyle}
-              />
-            </>
-          )}
-
-          {(type === "fixed" || type === "machine") && (
-            <>
-              <Text style={labelStyle}>Increment (kg)</Text>
-              <TextInput
-                value={increment}
-                onChangeText={setIncrement}
-                keyboardType="decimal-pad"
-                placeholder="e.g. 2.5"
-                placeholderTextColor={Colors.ter}
-                style={inputStyle}
-              />
-            </>
-          )}
-
-          {error ? (
-            <Text
-              style={{ fontSize: 13, color: Colors.warn, marginBottom: 12 }}
-            >
-              {error}
-            </Text>
-          ) : null}
-
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <Pressable
-              onPress={handleClose}
-              style={{
-                flex: 1,
-                backgroundColor: Colors.card2,
-                borderRadius: 12,
-                padding: 14,
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSave}
-              disabled={saving}
-              style={{
-                flex: 2,
-                backgroundColor: Colors.accent,
-                borderRadius: 12,
-                padding: 14,
-                alignItems: "center",
-                opacity: saving ? 0.7 : 1,
-              }}
-            >
-              {saving ? (
-                <ActivityIndicator color={Colors.accentInk} />
-              ) : (
-                <Text
-                  style={{
-                    fontSize: 15,
-                    fontWeight: "700",
-                    color: Colors.accentInk,
-                  }}
-                >
-                  Save
-                </Text>
-              )}
-            </Pressable>
-          </View>
+              <Pressable
+                onPress={handleSave}
+                disabled={saving}
+                style={{
+                  flex: 2,
+                  backgroundColor: Colors.accent,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                  opacity: saving ? 0.7 : 1,
+                }}
+              >
+                {saving ? (
+                  <ActivityIndicator color={Colors.accentInk} />
+                ) : (
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: "700",
+                      color: Colors.accentInk,
+                    }}
+                  >
+                    Save
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </ScrollView>
         </Pressable>
       </Pressable>
     </Modal>

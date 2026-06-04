@@ -343,6 +343,7 @@ export async function createEquipment(
     type: string;
     unladen_weight_kg?: number;
     increment_kg?: number;
+    max_weight_kg?: number;
   },
 ) {
   return request(`/gyms/${gymId}/equipment`, "POST", data);
