@@ -2114,6 +2114,18 @@ export default function GymSettingsScreen() {
     setHasPlateChanges(false);
   }
 
+  async function handleSetDefault(gym: Gym) {
+    try {
+      await updateGym(gym.id, { is_default: true });
+      setGyms((prev) =>
+        prev.map((g) => ({ ...g, is_default: g.id === gym.id })),
+      );
+      setSelectedGym({ ...gym, is_default: true });
+    } catch (err) {
+      console.error("Failed to set default gym:", err);
+    }
+  }
+
   async function handleDeleteEquipment(id: number) {
     if (!selectedGym) return;
     try {
@@ -2254,7 +2266,7 @@ export default function GymSettingsScreen() {
                       >
                         {gym.gym_name}
                       </Text>
-                      {gym.is_default && (
+                      {gym.is_default ? (
                         <Text
                           style={{
                             fontSize: 10,
@@ -2264,6 +2276,23 @@ export default function GymSettingsScreen() {
                         >
                           Default
                         </Text>
+                      ) : (
+                        <Pressable
+                          onPress={() => {
+                            handleSetDefault(gym);
+                            setGymDropdownOpen(false);
+                          }}
+                        >
+                          <Text
+                            style={{
+                              fontSize: 11,
+                              color: Colors.accent,
+                              fontFamily: "Courier",
+                            }}
+                          >
+                            Set default
+                          </Text>
+                        </Pressable>
                       )}
                       {selectedGym?.id === gym.id && (
                         <Text style={{ color: Colors.accent }}>✓</Text>
