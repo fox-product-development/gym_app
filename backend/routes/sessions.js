@@ -476,4 +476,141 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Replan current block ─────────────────────────────────────────────────────
+// POST /sessions/replan
+// Deletes all planned (not started, not complete) sessions in the current block
+// and triggers a fresh block generation using the user's current settings.
+
+router.post("/replan", requireAuth, async (req, res) => {
+  try {
+    const userResult = await pool.query(
+      `SELECT current_phase, current_block FROM users WHERE id = $1`,
+      [req.userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const { current_phase, current_block } = userResult.rows[0];
+
+    // Find the current programme
+    const progResult = await pool.query(
+      `SELECT id FROM programmes
+       WHERE user_id = $1 AND phase = $2 AND block_number = $3
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [req.userId, current_phase, current_block],
+    );
+
+    if (progResult.rows.length === 0) {
+      return res.status(404).json({ error: "No active programme found" });
+    }
+
+    const programmeId = progResult.rows[0].id;
+
+    const client = await pool.connect();
+    let plannedIds = [];
+    let weeksNeeded = [];
+    try {
+      await client.query("BEGIN");
+
+      // Find planned sessions only — leave complete and in_progress untouched
+      const plannedSessions = await client.query(
+        `SELECT id, week_number FROM sessions
+         WHERE programme_id = $1 AND user_id = $2 AND status = 'planned'`,
+        [programmeId, req.userId],
+      );
+
+      plannedIds = plannedSessions.rows.map((s) => s.id);
+      // Capture unique week numbers that need regenerating
+      weeksNeeded = [
+        ...new Set(plannedSessions.rows.map((s) => s.week_number)),
+      ];
+
+      if (plannedIds.length > 0) {
+        // Delete planned exercises for those sessions first
+        await client.query(
+          `DELETE FROM planned_exercises WHERE session_id = ANY($1)`,
+          [plannedIds],
+        );
+
+        // Delete the planned sessions themselves
+        await client.query(`DELETE FROM sessions WHERE id = ANY($1)`, [
+          plannedIds,
+        ]);
+      }
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Build existing plan from any completed sessions in this programme
+    // so generate-missing can use it as a baseline
+    const completedSessions = await pool.query(
+      `SELECT s.session_type, s.occurrence,
+              json_agg(pe.exercise_name ORDER BY pe.order_index) AS exercises
+       FROM sessions s
+       JOIN planned_exercises pe ON pe.session_id = s.id
+       WHERE s.programme_id = $1 AND s.user_id = $2
+         AND s.status IN ('complete', 'in_progress')
+       GROUP BY s.id`,
+      [programmeId, req.userId],
+    );
+
+    // Derive a simple existing plan summary from completed sessions
+    const existingPlan =
+      completedSessions.rows.length > 0
+        ? {
+            compound: completedSessions.rows
+              .filter(
+                (s) => s.session_type === "compound" && s.occurrence === 1,
+              )
+              .map((s) => s.exercises)
+              .flat(),
+            isolation: completedSessions.rows
+              .filter((s) => s.session_type === "isolation")
+              .map((s) => s.exercises)
+              .flat(),
+          }
+        : null;
+
+    // Call generate-missing with the weeks that need sessions
+    const missingResponse = await fetch(
+      `http://localhost:${process.env.PORT || 3000}/ai/generate-missing`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-cron-secret": process.env.CRON_SECRET,
+        },
+        body: JSON.stringify({
+          user_id: req.userId,
+          programme_id: programmeId,
+          weeks_needed: weeksNeeded,
+          existing_plan: existingPlan,
+        }),
+      },
+    );
+
+    if (!missingResponse.ok) {
+      const err = await missingResponse.json();
+      throw new Error(err.detail || "Session generation failed");
+    }
+
+    res.json({
+      message: "Sessions replanned successfully",
+      deleted: plannedIds.length,
+      weeks: weeksNeeded,
+    });
+  } catch (err) {
+    console.error("Replan error:", err.message);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 module.exports = router;

@@ -18,7 +18,7 @@ import {
   getWeekSessions,
   getProfile,
   startSession,
-  generateHomeSession,
+  generateGymSession,
   generateExtraSession,
   logCardio,
   getCardio,
@@ -169,7 +169,7 @@ function StartSessionModal({
     setLoading(true);
     setError("");
     try {
-      await generateHomeSession(session.id);
+      await generateGymSession(session.id, selectedGym.id);
       onClose();
       onStarted();
     } catch (err: any) {

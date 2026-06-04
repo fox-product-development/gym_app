@@ -111,6 +111,8 @@ export async function updateProfile(data: {
   training_level?: string;
   weekly_sessions?: number;
   goal_description?: string;
+  weight_exercises_per_session?: number;
+  conditioning_exercises_per_session?: number;
 }) {
   return request("/user/profile", "PATCH", data);
 }
@@ -207,10 +209,12 @@ export async function generateBlock() {
   return request("/ai/generate-block", "POST", {});
 }
 
-export async function generateHomeSession(session_id: number) {
-  return request("/ai/generate-home-session", "POST", { session_id });
+export async function generateGymSession(session_id: number, gym_id: number) {
+  return request("/ai/generate-gym-session", "POST", { session_id, gym_id });
 }
-
+export async function replanSessions() {
+  return request("/sessions/replan", "POST", {});
+}
 export async function generateExtraSession(gym: string) {
   return request("/ai/extra-session", "POST", { gym });
 }

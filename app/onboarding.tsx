@@ -45,6 +45,80 @@ function StarRating({
   );
 }
 
+// ─── Stepper component ────────────────────────────────────────────────────────
+
+function Stepper({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <View style={{ alignItems: "center", flex: 1 }}>
+      <Text
+        style={{
+          fontFamily: "Courier",
+          fontSize: 10,
+          color: Colors.ter,
+          letterSpacing: 0.8,
+          textTransform: "uppercase",
+          marginBottom: 12,
+          textAlign: "center",
+        }}
+      >
+        {label}
+      </Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
+        <Pressable
+          onPress={() => onChange(Math.max(min, value - 1))}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            backgroundColor: Colors.card2,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Text style={{ fontSize: 20, color: Colors.accent }}>−</Text>
+        </Pressable>
+        <Text
+          style={{
+            fontSize: 36,
+            fontWeight: "700",
+            color: Colors.text,
+            fontFamily: "Courier",
+            minWidth: 40,
+            textAlign: "center",
+          }}
+        >
+          {value}
+        </Text>
+        <Pressable
+          onPress={() => onChange(Math.min(max, value + 1))}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            backgroundColor: Colors.card2,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Text style={{ fontSize: 20, color: Colors.accent }}>+</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 // ─── Progress bar ─────────────────────────────────────────────────────────────
 
 function ProgressBar({ step }: { step: number }) {
@@ -99,8 +173,32 @@ export default function OnboardingScreen() {
   const [goalDefinition, setGoalDefinition] = useState(3);
   const [goalFitness, setGoalFitness] = useState(3);
   const [trainingLevel, setTrainingLevel] = useState("serious");
-  const [weeklySessions, setWeeklySessions] = useState(3);
+  const [weeklySessions, setWeeklySessions] = useState(4);
+  const [weightExercises, setWeightExercises] = useState(7);
+  const [conditioningExercises, setConditioningExercises] = useState(3);
   const [goalDescription, setGoalDescription] = useState("");
+
+  // Default suggestions by training level
+  const suggestedSessions: Record<string, number> = {
+    new: 3,
+    amateur: 3,
+    serious: 4,
+    professional: 5,
+  };
+
+  const suggestedWeightExercises: Record<string, number> = {
+    new: 5,
+    amateur: 6,
+    serious: 7,
+    professional: 8,
+  };
+
+  const suggestedConditioningExercises: Record<string, number> = {
+    new: 3,
+    amateur: 3,
+    serious: 3,
+    professional: 3,
+  };
 
   // Prefill existing values when in redefine mode
   useEffect(() => {
@@ -118,6 +216,10 @@ export default function OnboardingScreen() {
       if (profile.goal_fitness) setGoalFitness(profile.goal_fitness);
       if (profile.training_level) setTrainingLevel(profile.training_level);
       if (profile.weekly_sessions) setWeeklySessions(profile.weekly_sessions);
+      if (profile.weight_exercises_per_session)
+        setWeightExercises(profile.weight_exercises_per_session);
+      if (profile.conditioning_exercises_per_session)
+        setConditioningExercises(profile.conditioning_exercises_per_session);
       if (profile.goal_description)
         setGoalDescription(profile.goal_description);
     } catch (err) {
@@ -127,16 +229,11 @@ export default function OnboardingScreen() {
     }
   }
 
-  const suggestedSessions: Record<string, number> = {
-    new: 3,
-    amateur: 3,
-    serious: 4,
-    professional: 5,
-  };
-
   function handleLevelSelect(level: string) {
     setTrainingLevel(level);
     setWeeklySessions(suggestedSessions[level]);
+    setWeightExercises(suggestedWeightExercises[level]);
+    setConditioningExercises(suggestedConditioningExercises[level]);
   }
 
   async function handleFinish() {
@@ -150,6 +247,8 @@ export default function OnboardingScreen() {
         goal_fitness: goalFitness,
         training_level: trainingLevel,
         weekly_sessions: weeklySessions,
+        weight_exercises_per_session: weightExercises,
+        conditioning_exercises_per_session: conditioningExercises,
         goal_description: goalDescription || undefined,
       });
       if (isRedefine) {
@@ -162,15 +261,6 @@ export default function OnboardingScreen() {
       setLoading(false);
     }
   }
-
-  const labelStyle = {
-    fontFamily: "Courier",
-    fontSize: 10,
-    color: Colors.ter,
-    letterSpacing: 0.8,
-    textTransform: "uppercase" as const,
-    marginBottom: 8,
-  };
 
   const levels = [
     { key: "new", label: "New", desc: "Just getting started" },
@@ -251,10 +341,10 @@ export default function OnboardingScreen() {
                 letterSpacing: -0.4,
               }}
             >
-              Weekly sessions
+              Session structure
             </Text>
             <Text style={{ fontSize: 14, color: Colors.sec, marginTop: 4 }}>
-              How many sessions per week?
+              How many sessions and exercises per week?
             </Text>
           </>
         )}
@@ -271,7 +361,7 @@ export default function OnboardingScreen() {
               Anything else?
             </Text>
             <Text style={{ fontSize: 14, color: Colors.sec, marginTop: 4 }}>
-              Optional — helps the agent plan better for you
+              Optional notes to guide your programme
             </Text>
           </>
         )}
@@ -370,66 +460,55 @@ export default function OnboardingScreen() {
         </View>
       )}
 
-      {/* Step 3 — Weekly sessions */}
+      {/* Step 3 — Session structure */}
       {step === 3 && (
-        <View
-          style={{ paddingHorizontal: 24, marginTop: 32, alignItems: "center" }}
-        >
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 24 }}>
-            <Pressable
-              onPress={() => setWeeklySessions((s) => Math.max(1, s - 1))}
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 12,
-                backgroundColor: Colors.card2,
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Text style={{ fontSize: 22, color: Colors.accent }}>−</Text>
-            </Pressable>
-            <Text
-              style={{
-                fontSize: 48,
-                fontWeight: "700",
-                color: Colors.text,
-                fontFamily: "Courier",
-                minWidth: 60,
-                textAlign: "center",
-              }}
-            >
-              {weeklySessions}
-            </Text>
-            <Pressable
-              onPress={() => setWeeklySessions((s) => Math.min(14, s + 1))}
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 12,
-                backgroundColor: Colors.card2,
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Text style={{ fontSize: 22, color: Colors.accent }}>+</Text>
-            </Pressable>
+        <View style={{ paddingHorizontal: 24, marginTop: 32 }}>
+          {/* Sessions per week */}
+          <View style={{ alignItems: "center", marginBottom: 32 }}>
+            <Stepper
+              label="Sessions per week"
+              value={weeklySessions}
+              min={1}
+              max={14}
+              onChange={setWeeklySessions}
+            />
           </View>
+
+          {/* Weight and conditioning side by side */}
+          <View style={{ flexDirection: "row", gap: 16 }}>
+            <Stepper
+              label="Weight exercises"
+              value={weightExercises}
+              min={3}
+              max={10}
+              onChange={setWeightExercises}
+            />
+            <Stepper
+              label="Conditioning"
+              value={conditioningExercises}
+              min={0}
+              max={8}
+              onChange={setConditioningExercises}
+            />
+          </View>
+
           <Text
             style={{
               fontFamily: "Courier",
               fontSize: 11,
               color: Colors.ter,
-              marginTop: 12,
+              marginTop: 20,
+              textAlign: "center",
               letterSpacing: 0.4,
             }}
           >
-            Suggested for {trainingLevel} level
+            {weightExercises + conditioningExercises} exercises per session ·
+            suggested for {trainingLevel} level
           </Text>
         </View>
       )}
 
-      {/* Step 4 — Free text */}
+      {/* Step 4 — Free text (was step 4, now step 4 of 5) */}
       {step === 4 && (
         <View style={{ paddingHorizontal: 24, marginTop: 24 }}>
           <TextInput
