@@ -142,6 +142,63 @@ async function getConditioningExercises(gymId) {
   return result.rows;
 }
 
+// ─── Weight validation ────────────────────────────────────────────────────────
+// Post-processes AI-generated exercises to correct weights based on actual
+// equipment constraints. The AI cannot be trusted with arithmetic — this
+// function enforces increment rounding and max weight caps deterministically.
+
+async function validateAndCorrectWeights(exercises, gymId, userId) {
+  if (!exercises || exercises.length === 0) return exercises;
+
+  try {
+    // Build lookup map: exercise name → { increment_kg, max_weight_kg }
+    const result = await pool.query(
+      `SELECT e.exercise, eq.increment_kg, eq.max_weight_kg
+       FROM exercises e
+       LEFT JOIN equipment eq ON eq.id = e.equipment_id
+       WHERE e.user_id = $1 AND e.gym_id = $2`,
+      [userId, gymId],
+    );
+
+    const equipMap = {};
+    for (const row of result.rows) {
+      equipMap[row.exercise.toLowerCase()] = {
+        increment_kg: row.increment_kg ? parseFloat(row.increment_kg) : null,
+        max_weight_kg: row.max_weight_kg ? parseFloat(row.max_weight_kg) : null,
+      };
+    }
+
+    // Validate each exercise weight
+    for (const ex of exercises) {
+      const lookup = equipMap[ex.exercise.toLowerCase()];
+      if (!lookup) continue;
+
+      let weight = parseFloat(ex.weight_kg) || 0;
+      if (weight <= 0) continue;
+
+      // Round to nearest valid increment
+      if (lookup.increment_kg && lookup.increment_kg > 0) {
+        weight = Math.round(weight / lookup.increment_kg) * lookup.increment_kg;
+        // Ensure we don't round down to zero
+        if (weight <= 0) weight = lookup.increment_kg;
+      }
+
+      // Cap at max weight
+      if (lookup.max_weight_kg && weight > lookup.max_weight_kg) {
+        weight = lookup.max_weight_kg;
+      }
+
+      // Round to 1 decimal place to avoid floating point weirdness
+      ex.weight_kg = Math.round(weight * 10) / 10;
+    }
+  } catch (err) {
+    console.error("validateAndCorrectWeights error:", err.message);
+    // Non-fatal — return exercises as-is if validation fails
+  }
+
+  return exercises;
+}
+
 // ─── Equipment summary for AI prompt ─────────────────────────────────────────────
 // Builds weight guidance for the AI prompt.
 // Machine and fixed: uses increment_kg and max_weight_kg from the equipment table.
@@ -472,6 +529,18 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       throw new Error("Invalid block plan structure from Claude");
     }
 
+    // Validate and correct AI-generated weights against equipment constraints
+    blockPlan.compound_session.exercises = await validateAndCorrectWeights(
+      blockPlan.compound_session.exercises,
+      gymId,
+      req.userId,
+    );
+    blockPlan.isolation_session.exercises = await validateAndCorrectWeights(
+      blockPlan.isolation_session.exercises,
+      gymId,
+      req.userId,
+    );
+
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -753,6 +822,13 @@ No extra fields. No explanation. No markdown.`;
     if (!result.exercises || result.exercises.length === 0) {
       throw new Error("Invalid session structure from Claude");
     }
+
+    // Validate and correct AI-generated weights against equipment constraints
+    result.exercises = await validateAndCorrectWeights(
+      result.exercises,
+      gym_id,
+      req.userId,
+    );
 
     const client = await pool.connect();
     try {
@@ -1059,6 +1135,18 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       throw new Error("Invalid block plan structure from Claude");
     }
 
+    // Validate and correct AI-generated weights against equipment constraints
+    blockPlan.compound_session.exercises = await validateAndCorrectWeights(
+      blockPlan.compound_session.exercises,
+      gymId,
+      req.userId,
+    );
+    blockPlan.isolation_session.exercises = await validateAndCorrectWeights(
+      blockPlan.isolation_session.exercises,
+      gymId,
+      req.userId,
+    );
+
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -1332,6 +1420,13 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
     if (!result.exercises || result.exercises.length === 0) {
       throw new Error("Invalid session structure from Claude");
     }
+
+    // Validate and correct AI-generated weights against equipment constraints
+    result.exercises = await validateAndCorrectWeights(
+      result.exercises,
+      gymId,
+      req.userId,
+    );
 
     const progResult = await pool.query(
       `SELECT p.id FROM programmes p
