@@ -311,14 +311,21 @@ router.post("/generate-block", async (req, res) => {
 
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
-    const gym = "work";
 
-    // Get the work gym id
+    // Get the user's default gym
     const gymResult = await pool.query(
-      `SELECT id FROM gyms WHERE user_id = $1 AND gym_name ILIKE '%work%' LIMIT 1`,
+      `SELECT id, gym_name FROM gyms
+       WHERE user_id = $1 AND is_default = TRUE
+       LIMIT 1`,
       [req.userId],
     );
-    const gymId = gymResult.rows.length > 0 ? gymResult.rows[0].id : 1;
+    if (gymResult.rows.length === 0) {
+      return res.status(400).json({
+        error: "No default gym configured. Set a default gym in Gym Settings.",
+      });
+    }
+    const gymId = gymResult.rows[0].id;
+    const gymName = gymResult.rows[0].gym_name;
 
     const [
       sessionHistory,
@@ -340,7 +347,7 @@ router.post("/generate-block", async (req, res) => {
       getConditioningExercises(gymId),
     ]);
 
-    const gymCSV = await buildGymCSV(gym, req.userId);
+    const gymCSV = await buildGymCSV(gymId, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
     const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
 
@@ -361,7 +368,7 @@ CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
-- Gym: ${gym}
+- Gym: ${gymName}
 - Weight exercises per session: ${weightExercises}
 - Conditioning exercises per session: ${conditioningCount}
 - Athlete notes: ${goal_description || "None"}
@@ -445,7 +452,7 @@ Return ONLY this exact JSON structure, nothing else:
 }
 
 ${compoundInstruction} Then ${conditioningCount} conditioning exercises appended after.
-Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after.${current_phase === "muscle_definition" ? " IMPORTANT: This is Muscle Definition phase at the work gym — every weight exercise in both sessions must have equipment_type = 'machine'. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction." : ""} No extra fields. No explanation. No markdown.`;
+Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after.${current_phase === "muscle_definition" ? " IMPORTANT: This is Muscle Definition phase — every weight exercise in both sessions must have equipment_type = 'machine'. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction." : ""} No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -530,10 +537,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         // Compound session — occurrence 1
         const comp1Result = await client.query(
           `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym)
-           VALUES ($1, $2, 'compound', 1, $3, $4)
+             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
+           VALUES ($1, $2, 'compound', 1, $3, $4, $5)
            RETURNING id`,
-          [req.userId, programmeId, week, gym],
+          [req.userId, programmeId, week, gymId, gymName],
         );
         await insertSessionExercises(
           comp1Result.rows[0].id,
@@ -544,10 +551,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         // Compound session — occurrence 2
         const comp2Result = await client.query(
           `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym)
-           VALUES ($1, $2, 'compound', 2, $3, $4)
+             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
+           VALUES ($1, $2, 'compound', 2, $3, $4, $5)
            RETURNING id`,
-          [req.userId, programmeId, week, gym],
+          [req.userId, programmeId, week, gymId, gymName],
         );
         await insertSessionExercises(
           comp2Result.rows[0].id,
@@ -558,10 +565,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         // Isolation session
         const isoResult = await client.query(
           `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym)
-           VALUES ($1, $2, 'isolation', 1, $3, $4)
+             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
+           VALUES ($1, $2, 'isolation', 1, $3, $4, $5)
            RETURNING id`,
-          [req.userId, programmeId, week, gym],
+          [req.userId, programmeId, week, gymId, gymName],
         );
         await insertSessionExercises(
           isoResult.rows[0].id,
@@ -616,8 +623,6 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Gym not found" });
     }
     const gymName = gymResult.rows[0].gym_name;
-    // Determine if this is a home-style gym for the valid weights summary
-    const gymType = gymName.toLowerCase().includes("home") ? "home" : "work";
 
     const sessionResult = await pool.query(
       `SELECT s.*, p.phase, p.block_number
@@ -662,7 +667,7 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
       getConditioningExercises(gym_id),
     ]);
 
-    const gymCSV = await buildGymCSV(gymType, req.userId);
+    const gymCSV = await buildGymCSV(gym_id, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
     const equipmentSummary = await buildEquipmentSummary(gym_id, req.userId);
     const sessionTypeLabel =
@@ -891,13 +896,21 @@ router.post("/generate-missing", async (req, res) => {
 
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
-    const gym = "work";
 
+    // Use user's default gym
     const gymResult = await pool.query(
-      `SELECT id FROM gyms WHERE user_id = $1 AND gym_name ILIKE '%work%' LIMIT 1`,
+      `SELECT id, gym_name FROM gyms
+       WHERE user_id = $1 AND is_default = TRUE
+       LIMIT 1`,
       [req.userId],
     );
-    const gymId = gymResult.rows.length > 0 ? gymResult.rows[0].id : 1;
+    if (gymResult.rows.length === 0) {
+      return res.status(400).json({
+        error: "No default gym configured.",
+      });
+    }
+    const gymId = gymResult.rows[0].id;
+    const gymName = gymResult.rows[0].gym_name;
 
     const [
       sessionHistory,
@@ -919,7 +932,7 @@ router.post("/generate-missing", async (req, res) => {
       getConditioningExercises(gymId),
     ]);
 
-    const gymCSV = await buildGymCSV(gym, req.userId);
+    const gymCSV = await buildGymCSV(gymId, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
     const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
     const compoundInstruction = buildWildcardInstruction(
@@ -944,7 +957,7 @@ CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
-- Gym: ${gym}
+- Gym: ${gymName}
 - Weeks to generate: ${weeks_needed.join(", ")}
 - Weight exercises per session: ${weightExercises}
 - Conditioning exercises per session: ${conditioningCount}
@@ -1101,10 +1114,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         // Compound occurrence 1
         const comp1 = await client.query(
           `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym)
-           VALUES ($1, $2, 'compound', 1, $3, $4)
+             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
+           VALUES ($1, $2, 'compound', 1, $3, $4, $5)
            RETURNING id`,
-          [req.userId, programme_id, week, gym],
+          [req.userId, programme_id, week, gymId, gymName],
         );
         await insertSessionExercises(
           comp1.rows[0].id,
@@ -1115,10 +1128,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         // Compound occurrence 2
         const comp2 = await client.query(
           `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym)
-           VALUES ($1, $2, 'compound', 2, $3, $4)
+             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
+           VALUES ($1, $2, 'compound', 2, $3, $4, $5)
            RETURNING id`,
-          [req.userId, programme_id, week, gym],
+          [req.userId, programme_id, week, gymId, gymName],
         );
         await insertSessionExercises(
           comp2.rows[0].id,
@@ -1129,10 +1142,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         // Isolation
         const iso = await client.query(
           `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym)
-           VALUES ($1, $2, 'isolation', 1, $3, $4)
+             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
+           VALUES ($1, $2, 'isolation', 1, $3, $4, $5)
            RETURNING id`,
-          [req.userId, programme_id, week, gym],
+          [req.userId, programme_id, week, gymId, gymName],
         );
         await insertSessionExercises(
           iso.rows[0].id,
@@ -1165,13 +1178,24 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
 // POST /ai/extra-session
 
 router.post("/extra-session", requireAuth, async (req, res) => {
-  const { gym } = req.body;
+  const { gym_id } = req.body;
 
-  if (!gym || !["work", "home"].includes(gym)) {
-    return res.status(400).json({ error: "gym must be work or home" });
+  if (!gym_id) {
+    return res.status(400).json({ error: "gym_id is required" });
   }
 
   try {
+    // Verify the gym belongs to this user, and get its name
+    const gymCheck = await pool.query(
+      `SELECT id, gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
+      [gym_id, req.userId],
+    );
+    if (gymCheck.rows.length === 0) {
+      return res.status(404).json({ error: "Gym not found" });
+    }
+    const gymId = gymCheck.rows[0].id;
+    const gymName = gymCheck.rows[0].gym_name;
+
     const userResult = await pool.query(
       `SELECT current_phase, current_block, phase_week,
               weight_exercises_per_session, conditioning_exercises_per_session,
@@ -1196,12 +1220,6 @@ router.post("/extra-session", requireAuth, async (req, res) => {
 
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
-
-    const gymResult = await pool.query(
-      `SELECT id FROM gyms WHERE user_id = $1 AND gym_name ILIKE $2 LIMIT 1`,
-      [req.userId, gym === "work" ? "%work%" : "%home%"],
-    );
-    const gymId = gymResult.rows.length > 0 ? gymResult.rows[0].id : null;
 
     const [
       sessionHistory,
@@ -1229,7 +1247,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
         )
       : 7;
 
-    const gymCSV = await buildGymCSV(gym, req.userId);
+    const gymCSV = await buildGymCSV(gymId, req.userId);
     const condCSV = buildConditioningCSV(conditioningExercises);
     const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
 
@@ -1336,10 +1354,10 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
 
       const sessionResult = await client.query(
         `INSERT INTO sessions
-           (user_id, programme_id, session_type, occurrence, week_number, gym, status, started_at)
-         VALUES ($1, $2, 'extra', 1, $3, $4, 'in_progress', NOW())
+           (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym, status, started_at)
+         VALUES ($1, $2, 'extra', 1, $3, $4, $5, 'in_progress', NOW())
          RETURNING id`,
-        [req.userId, programmeId, phase_week, gym],
+        [req.userId, programmeId, phase_week, gymId, gymName],
       );
 
       const sessionId = sessionResult.rows[0].id;
@@ -1563,48 +1581,36 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
 
 // ─── Gym CSV builder ──────────────────────────────────────────────────────────
 
-async function buildGymCSV(gym, userId) {
+async function buildGymCSV(gymId, userId) {
+  if (!gymId) {
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg\n(no gym selected)";
+  }
   try {
-    const gymResult = await pool.query(
-      `SELECT id FROM gyms WHERE user_id = $1 AND gym_name ILIKE $2 LIMIT 1`,
-      [userId, gym === "work" ? "%work%" : "%home%"],
-    );
-
-    const gymId = gymResult.rows.length > 0 ? gymResult.rows[0].id : null;
-
     const result = await pool.query(
       `SELECT exercise, muscles_primary, muscles_secondary, type,
               equipment_type, sub_component, emg_score, target_weight_kg
        FROM exercises
-       WHERE user_id = $1 AND (gym_id = $2 OR (gym_id IS NULL AND gym = $3))
+       WHERE user_id = $1 AND gym_id = $2 AND active = TRUE
        ORDER BY muscles_primary, emg_score DESC`,
-      [userId, gymId, gym],
+      [userId, gymId],
     );
 
-    if (result.rows.length > 0) {
-      const header =
-        "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg";
-      const rows = result.rows.map(
-        (e) =>
-          `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"}`,
-      );
-      return [header, ...rows].join("\n");
+    const header =
+      "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg";
+
+    if (result.rows.length === 0) {
+      return header + "\n(no exercises configured for this gym)";
     }
-  } catch (err) {
-    console.error(
-      "buildGymCSV DB error, falling back to hardcoded:",
-      err.message,
-    );
-  }
 
-  const exercises = gym === "work" ? WORK_GYM_EXERCISES : HOME_GYM_EXERCISES;
-  const header =
-    "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg";
-  const rows = exercises.map(
-    (e) =>
-      `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},null`,
-  );
-  return [header, ...rows].join("\n");
+    const rows = result.rows.map(
+      (e) =>
+        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"}`,
+    );
+    return [header, ...rows].join("\n");
+  } catch (err) {
+    console.error("buildGymCSV DB error:", err.message);
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_type,sub_component,emg_score,target_weight_kg\n(error loading exercises)";
+  }
 }
 
 // ─── System prompts ───────────────────────────────────────────────────────────
@@ -1657,502 +1663,8 @@ PHASE SCHEMES
 - Muscle Definition: 1 set x 40 reps target (min 30) — DROP SET STYLE (Work Gym only)
 
 MUSCLE DEFINITION — CABLE MACHINE RESTRICTION
-When the gym is 'work' and the phase is 'muscle_definition', weight exercises must only use equipment_type = 'machine'. Conditioning exercises are exempt from this restriction.
+When the phase is 'muscle_definition', weight exercises must only use equipment_type = 'machine'. Conditioning exercises are exempt from this restriction.
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
-
-// ─── Exercise data (fallback only) ───────────────────────────────────────────
-
-const HOME_GYM_EXERCISES = [
-  {
-    exercise: "Dumbbell Bent Over Row",
-    muscles_primary: "Back",
-    muscles_secondary: "Biceps/Rear Delts",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Lat/Mid-trap",
-    emg_score: 4,
-  },
-  {
-    exercise: "EZ Bar Bent Over Row",
-    muscles_primary: "Back",
-    muscles_secondary: "Biceps/Rear Delts",
-    type: "Compound",
-    equipment_type: "barbell",
-    sub_component: "Lat/Mid-trap",
-    emg_score: 3,
-  },
-  {
-    exercise: "Single Arm Dumbbell Row",
-    muscles_primary: "Back",
-    muscles_secondary: "Biceps",
-    type: "Compound",
-    equipment_type: "single dumbbell",
-    sub_component: "Lower lat",
-    emg_score: 3,
-  },
-  {
-    exercise: "Dumbbell Curl",
-    muscles_primary: "Biceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Short head",
-    emg_score: 3,
-  },
-  {
-    exercise: "Dumbbell Hammer Curl",
-    muscles_primary: "Biceps",
-    muscles_secondary: "Brachialis",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Brachialis/Long head",
-    emg_score: 2,
-  },
-  {
-    exercise: "EZ Bar Curl",
-    muscles_primary: "Biceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "barbell",
-    sub_component: "Long head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Dumbbell Bench Press",
-    muscles_primary: "Chest",
-    muscles_secondary: "Shoulders/Triceps",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Sternal head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Leg Raise",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "none",
-    sub_component: "Lower abs",
-    emg_score: 4,
-  },
-  {
-    exercise: "Lying Knee Raise",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "none",
-    sub_component: "Lower abs",
-    emg_score: 1,
-  },
-  {
-    exercise: "Reverse Wrist Curl (Dumbbell)",
-    muscles_primary: "Forearms",
-    muscles_secondary: "Brachialis",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Extensors",
-    emg_score: 2,
-  },
-  {
-    exercise: "Wrist Curl (Dumbbell)",
-    muscles_primary: "Forearms",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Flexors",
-    emg_score: 2,
-  },
-  {
-    exercise: "Dumbbell Stiff Leg Deadlift",
-    muscles_primary: "Lower Back",
-    muscles_secondary: "Hamstrings/Glutes",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Hamstring/Glute",
-    emg_score: 3,
-  },
-  {
-    exercise: "Romanian Deadlift (Dumbbell)",
-    muscles_primary: "Lower Back",
-    muscles_secondary: "Hamstrings/Glutes",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Hip hinge/Hamstring emphasis",
-    emg_score: 4,
-  },
-  {
-    exercise: "Dumbbell Squat",
-    muscles_primary: "Quads",
-    muscles_secondary: "Glutes/Hamstrings",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Quads/Glutes",
-    emg_score: 3,
-  },
-  {
-    exercise: "Dumbbell Lateral Raise",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "dumbbells",
-    sub_component: "Lateral delt",
-    emg_score: 2,
-  },
-  {
-    exercise: "Dumbbell Rear Delt Fly",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "dumbbells",
-    sub_component: "Rear delt/Rhomboids",
-    emg_score: 2,
-  },
-  {
-    exercise: "Dumbbell Shoulder Press",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "Triceps",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Anterior delt/Stabilisers",
-    emg_score: 4,
-  },
-  {
-    exercise: "Overhead Tricep Extension",
-    muscles_primary: "Triceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Long head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Dumbbell Kickback",
-    muscles_primary: "Triceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Lateral head",
-    emg_score: 3,
-  },
-  {
-    exercise: "EZ Bar Skull Crusher",
-    muscles_primary: "Triceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "barbell",
-    sub_component: "Long head/Medial head",
-    emg_score: 4,
-  },
-];
-
-const WORK_GYM_EXERCISES = [
-  {
-    exercise: "Barbell Bent Over Row",
-    muscles_primary: "Back",
-    muscles_secondary: "Biceps/Rear Delts",
-    type: "Compound",
-    equipment_type: "barbell",
-    sub_component: "Lat/Mid-trap",
-    emg_score: 4,
-  },
-  {
-    exercise: "Cable Row",
-    muscles_primary: "Back",
-    muscles_secondary: "Biceps",
-    type: "Compound",
-    equipment_type: "machine",
-    sub_component: "Mid-trap/Rhomboids",
-    emg_score: 3,
-  },
-  {
-    exercise: "Lat Pulldown",
-    muscles_primary: "Back",
-    muscles_secondary: "Biceps",
-    type: "Compound",
-    equipment_type: "machine",
-    sub_component: "Upper lat",
-    emg_score: 4,
-  },
-  {
-    exercise: "Single Arm Cable Row",
-    muscles_primary: "Back",
-    muscles_secondary: "Biceps",
-    type: "Compound",
-    equipment_type: "machine",
-    sub_component: "Lower lat",
-    emg_score: 3,
-  },
-  {
-    exercise: "Barbell Curl",
-    muscles_primary: "Biceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "barbell",
-    sub_component: "Short head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Cable Curl",
-    muscles_primary: "Biceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "machine",
-    sub_component: "Short head",
-    emg_score: 3,
-  },
-  {
-    exercise: "Dumbbell Curl",
-    muscles_primary: "Biceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "dumbbells",
-    sub_component: "Short head",
-    emg_score: 3,
-  },
-  {
-    exercise: "EZ Bar Curl",
-    muscles_primary: "Biceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "barbell",
-    sub_component: "Long head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Barbell Bench Press",
-    muscles_primary: "Chest",
-    muscles_secondary: "Shoulders/Triceps",
-    type: "Compound",
-    equipment_type: "barbell",
-    sub_component: "Sternal head",
-    emg_score: 5,
-  },
-  {
-    exercise: "Cable Fly",
-    muscles_primary: "Chest",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "machine",
-    sub_component: "Sternal/Clavicular head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Dumbbell Bench Press",
-    muscles_primary: "Chest",
-    muscles_secondary: "Shoulders/Triceps",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Sternal head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Incline Barbell Press",
-    muscles_primary: "Chest",
-    muscles_secondary: "Shoulders/Triceps",
-    type: "Compound",
-    equipment_type: "barbell",
-    sub_component: "Upper/Clavicular head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Incline Dumbbell Press",
-    muscles_primary: "Chest",
-    muscles_secondary: "Shoulders/Triceps",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Upper/Clavicular head",
-    emg_score: 3,
-  },
-  {
-    exercise: "Bench Situp",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "none",
-    sub_component: "Upper abs",
-    emg_score: 1,
-  },
-  {
-    exercise: "Cable Crunch",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "machine",
-    sub_component: "Upper abs",
-    emg_score: 4,
-  },
-  {
-    exercise: "Incline Russian Twist",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "none",
-    sub_component: "Obliques",
-    emg_score: 3,
-  },
-  {
-    exercise: "Incline Situp",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "none",
-    sub_component: "Upper abs",
-    emg_score: 2,
-  },
-  {
-    exercise: "Leg Raise",
-    muscles_primary: "Core",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "none",
-    sub_component: "Lower abs",
-    emg_score: 4,
-  },
-  {
-    exercise: "Reverse Wrist Curl",
-    muscles_primary: "Forearms",
-    muscles_secondary: "Brachialis",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Extensors",
-    emg_score: 2,
-  },
-  {
-    exercise: "Wrist Curl (Barbell)",
-    muscles_primary: "Forearms",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "barbell",
-    sub_component: "Flexors",
-    emg_score: 2,
-  },
-  {
-    exercise: "Leg Curl Machine",
-    muscles_primary: "Hamstrings",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "machine",
-    sub_component: "Hamstrings",
-    emg_score: 3,
-  },
-  {
-    exercise: "Barbell Deadlift",
-    muscles_primary: "Lower Back",
-    muscles_secondary: "Glutes/Hamstrings",
-    type: "Compound",
-    equipment_type: "olympic barbell",
-    sub_component: "Full posterior chain",
-    emg_score: 5,
-  },
-  {
-    exercise: "Romanian Deadlift",
-    muscles_primary: "Lower Back",
-    muscles_secondary: "Hamstrings/Glutes",
-    type: "Compound",
-    equipment_type: "olympic barbell",
-    sub_component: "Hip hinge/Hamstring emphasis",
-    emg_score: 4,
-  },
-  {
-    exercise: "Barbell Squat",
-    muscles_primary: "Quads",
-    muscles_secondary: "Glutes/Hamstrings",
-    type: "Compound",
-    equipment_type: "barbell",
-    sub_component: "Quads/Glutes",
-    emg_score: 5,
-  },
-  {
-    exercise: "Leg Extension Machine",
-    muscles_primary: "Quads",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "machine",
-    sub_component: "Quads",
-    emg_score: 3,
-  },
-  {
-    exercise: "Leg Press Machine",
-    muscles_primary: "Quads",
-    muscles_secondary: "Glutes/Hamstrings",
-    type: "Compound",
-    equipment_type: "machine",
-    sub_component: "Quads/Glutes — different loading angle",
-    emg_score: 4,
-  },
-  {
-    exercise: "Dumbbell Lateral Raise",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "dumbbells",
-    sub_component: "Lateral delt",
-    emg_score: 2,
-  },
-  {
-    exercise: "Dumbbell Rear Delt Fly",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "dumbbells",
-    sub_component: "Rear delt/Rhomboids",
-    emg_score: 2,
-  },
-  {
-    exercise: "Dumbbell Shoulder Press",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "Triceps",
-    type: "Compound",
-    equipment_type: "dumbbells",
-    sub_component: "Anterior delt/Stabilisers",
-    emg_score: 4,
-  },
-  {
-    exercise: "Face Pull",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "Upper Back/Rotator Cuff",
-    type: "Isolation",
-    equipment_type: "machine",
-    sub_component: "Rear delt/Rotator cuff",
-    emg_score: 3,
-  },
-  {
-    exercise: "Overhead Barbell Press",
-    muscles_primary: "Shoulders",
-    muscles_secondary: "Triceps/Upper Chest",
-    type: "Compound",
-    equipment_type: "barbell",
-    sub_component: "Anterior/Lateral delt",
-    emg_score: 5,
-  },
-  {
-    exercise: "Overhead Tricep Extension",
-    muscles_primary: "Triceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "single dumbbell",
-    sub_component: "Long head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Skull Crusher",
-    muscles_primary: "Triceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "barbell",
-    sub_component: "Long head/Medial head",
-    emg_score: 4,
-  },
-  {
-    exercise: "Tricep Pushdown (Cable)",
-    muscles_primary: "Triceps",
-    muscles_secondary: "None",
-    type: "Isolation",
-    equipment_type: "machine",
-    sub_component: "Lateral head",
-    emg_score: 4,
-  },
-];
 
 module.exports = router;

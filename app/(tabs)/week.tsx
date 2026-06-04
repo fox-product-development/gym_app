@@ -440,27 +440,31 @@ function ExtraSessionModal({
   visible,
   onClose,
   onGenerated,
+  gyms,
 }: {
   visible: boolean;
   onClose: () => void;
   onGenerated: (sessionId: number) => void;
+  gyms: Gym[];
 }) {
   const [step, setStep] = useState<ExtraModalStep>("choose");
-  const [selectedGym, setSelectedGym] = useState<"work" | "home">("work");
+  const [selectedGym, setSelectedGym] = useState<Gym | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   function handleOpen() {
     setStep("choose");
-    setSelectedGym("work");
+    const defaultGym = gyms.find((g) => g.is_default) || gyms[0] || null;
+    setSelectedGym(defaultGym);
     setError("");
   }
 
   async function handleConfirm() {
+    if (!selectedGym) return;
     setLoading(true);
     setError("");
     try {
-      const result = await generateExtraSession(selectedGym);
+      const result = await generateExtraSession(selectedGym.id);
       onClose();
       onGenerated(result.session_id);
     } catch (err: any) {
@@ -524,62 +528,48 @@ function ExtraSessionModal({
                 Which gym?
               </Text>
 
-              <Pressable
-                onPress={() => {
-                  setSelectedGym("work");
-                  setStep("confirm");
-                }}
-                style={{
-                  backgroundColor: Colors.text,
-                  borderRadius: 14,
-                  padding: 16,
-                  alignItems: "center",
-                  marginBottom: 10,
-                }}
-              >
-                <Text
-                  style={{ fontSize: 16, fontWeight: "700", color: "#000" }}
-                >
-                  🏋️ Work Gym
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    color: "rgba(0,0,0,0.5)",
-                    marginTop: 2,
-                  }}
-                >
-                  Full barbell and cable equipment
-                </Text>
-              </Pressable>
-
-              <Pressable
-                onPress={() => {
-                  setSelectedGym("home");
-                  setStep("confirm");
-                }}
-                style={{
-                  backgroundColor: "transparent",
-                  borderRadius: 14,
-                  padding: 16,
-                  alignItems: "center",
-                  borderWidth: 0.5,
-                  borderColor: Colors.line2,
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 16,
-                    fontWeight: "600",
-                    color: Colors.text,
-                  }}
-                >
-                  🏠 Home Gym
-                </Text>
-                <Text style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}>
-                  EZ bar and dumbbells
-                </Text>
-              </Pressable>
+              {gyms.map((gym, i) => {
+                const isDefault = gym.is_default;
+                return (
+                  <Pressable
+                    key={gym.id}
+                    onPress={() => {
+                      setSelectedGym(gym);
+                      setStep("confirm");
+                    }}
+                    style={{
+                      backgroundColor: isDefault ? Colors.text : "transparent",
+                      borderRadius: 14,
+                      padding: 16,
+                      alignItems: "center",
+                      marginBottom: 10,
+                      borderWidth: isDefault ? 0 : 0.5,
+                      borderColor: Colors.line2,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 16,
+                        fontWeight: isDefault ? "700" : "600",
+                        color: isDefault ? "#000" : Colors.text,
+                      }}
+                    >
+                      {gym.gym_name}
+                    </Text>
+                    {isDefault && (
+                      <Text
+                        style={{
+                          fontSize: 12,
+                          color: "rgba(0,0,0,0.5)",
+                          marginTop: 2,
+                        }}
+                      >
+                        Default
+                      </Text>
+                    )}
+                  </Pressable>
+                );
+              })}
 
               <Pressable
                 onPress={onClose}
@@ -621,9 +611,8 @@ function ExtraSessionModal({
                   marginBottom: 24,
                 }}
               >
-                {selectedGym === "work" ? "🏋️ Work Gym" : "🏠 Home Gym"} · AI
-                will select the 6 best exercises for you based on your training
-                history.
+                {selectedGym?.gym_name} · AI will select the best exercises for
+                you based on your training history.
               </Text>
 
               <Pressable
@@ -1660,6 +1649,7 @@ export default function WeekScreen() {
         visible={extraModalVisible}
         onClose={() => setExtraModalVisible(false)}
         onGenerated={handleExtraGenerated}
+        gyms={gyms}
       />
 
       {/* Cardio modal */}

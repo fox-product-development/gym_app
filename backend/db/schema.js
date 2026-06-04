@@ -143,11 +143,12 @@ async function createTables() {
         id             SERIAL PRIMARY KEY,
         programme_id   INTEGER REFERENCES programmes(id),
         user_id        INTEGER REFERENCES users(id),
+        gym_id         INTEGER REFERENCES gyms(id),
         session_type   TEXT NOT NULL
           CHECK (session_type IN ('compound', 'isolation', 'extra')),
         occurrence     INTEGER NOT NULL DEFAULT 1,
         week_number    INTEGER NOT NULL,
-        gym            TEXT NOT NULL CHECK (gym IN ('work', 'home')),
+        gym            TEXT,
         status         TEXT NOT NULL DEFAULT 'planned'
           CHECK (status IN ('planned', 'in_progress', 'complete')),
         notes          TEXT,
