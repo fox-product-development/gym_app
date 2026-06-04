@@ -20,6 +20,7 @@ import {
   deleteGym,
   getEquipment,
   createEquipment,
+  updateEquipment,
   deleteEquipment,
   getPlates,
   createPlate,
@@ -47,6 +48,7 @@ interface Equipment {
   type: string;
   unladen_weight_kg: string | null;
   increment_kg: string | null;
+  max_weight_kg: string | null;
 }
 
 interface Plate {
@@ -1569,7 +1571,14 @@ function ExercisesTab({ gymId }: { gymId: number }) {
             >
               {muscle}
             </Text>
-            <Card>
+            <View
+              style={{
+                backgroundColor: Colors.card,
+                borderRadius: 12,
+                borderWidth: 0.5,
+                borderColor: Colors.line,
+              }}
+            >
               {grouped[muscle].map((ex, i) => (
                 <View key={ex.id}>
                   {i > 0 && (
@@ -1716,7 +1725,7 @@ function ExercisesTab({ gymId }: { gymId: number }) {
                   </View>
                 </View>
               ))}
-            </Card>
+            </View>
           </View>
         ))}
       </View>
@@ -1778,6 +1787,221 @@ function ExercisesTab({ gymId }: { gymId: number }) {
 }
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
+// ─── Edit equipment modal ─────────────────────────────────────────────────────
+
+function EditEquipmentModal({
+  visible,
+  equipment,
+  onClose,
+  onSaved,
+  gymId,
+}: {
+  visible: boolean;
+  equipment: Equipment | null;
+  onClose: () => void;
+  onSaved: () => void;
+  gymId: number;
+}) {
+  const [name, setName] = useState("");
+  const [increment, setIncrement] = useState("");
+  const [maxWeight, setMaxWeight] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (equipment) {
+      setName(equipment.equipment_name);
+      setIncrement(
+        equipment.increment_kg
+          ? String(parseFloat(equipment.increment_kg))
+          : "",
+      );
+      setMaxWeight(
+        equipment.max_weight_kg
+          ? String(parseFloat(equipment.max_weight_kg))
+          : "",
+      );
+      setError("");
+    }
+  }, [equipment]);
+
+  function handleClose() {
+    setError("");
+    onClose();
+  }
+
+  async function handleSave() {
+    if (!equipment) return;
+    setSaving(true);
+    setError("");
+    try {
+      await updateEquipment(gymId, equipment.id, {
+        equipment_name: name.trim() || undefined,
+        increment_kg: increment ? parseFloat(increment) : undefined,
+        max_weight_kg: maxWeight ? parseFloat(maxWeight) : undefined,
+      });
+      onSaved();
+      handleClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputStyle = {
+    backgroundColor: Colors.bg,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 15,
+    color: Colors.text,
+    borderWidth: 0.5,
+    borderColor: Colors.line,
+    marginBottom: 12,
+  };
+
+  const labelStyle = {
+    fontFamily: "Courier",
+    fontSize: 10,
+    color: Colors.ter,
+    letterSpacing: 0.6,
+    textTransform: "uppercase" as const,
+    marginBottom: 6,
+  };
+
+  const showIncrementFields =
+    equipment?.type === "fixed" || equipment?.type === "machine";
+
+  return (
+    <Modal visible={visible} transparent animationType="slide">
+      <Pressable
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "flex-end",
+        }}
+        onPress={handleClose}
+      >
+        <Pressable
+          style={{
+            backgroundColor: Colors.card,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            maxHeight: "85%",
+          }}
+          onPress={() => {}}
+        >
+          <ScrollView
+            contentContainerStyle={{ padding: 24, paddingBottom: 40 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "700",
+                color: Colors.text,
+                marginBottom: 4,
+              }}
+            >
+              Edit equipment
+            </Text>
+            <Text
+              style={{
+                fontSize: 12,
+                color: Colors.ter,
+                fontFamily: "Courier",
+                marginBottom: 20,
+              }}
+            >
+              {equipment?.type?.toUpperCase()}
+            </Text>
+
+            <Text style={labelStyle}>Name</Text>
+            <TextInput
+              value={name}
+              onChangeText={setName}
+              placeholderTextColor={Colors.ter}
+              style={inputStyle}
+            />
+
+            {showIncrementFields && (
+              <>
+                <Text style={labelStyle}>Increment (kg)</Text>
+                <TextInput
+                  value={increment}
+                  onChangeText={setIncrement}
+                  keyboardType="decimal-pad"
+                  placeholder="e.g. 2.5"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+                <Text style={labelStyle}>Max weight (kg)</Text>
+                <TextInput
+                  value={maxWeight}
+                  onChangeText={setMaxWeight}
+                  keyboardType="decimal-pad"
+                  placeholder="e.g. 100"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </>
+            )}
+
+            {error ? (
+              <Text
+                style={{ fontSize: 13, color: Colors.warn, marginBottom: 12 }}
+              >
+                {error}
+              </Text>
+            ) : null}
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable
+                onPress={handleClose}
+                style={{
+                  flex: 1,
+                  backgroundColor: Colors.card2,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSave}
+                disabled={saving}
+                style={{
+                  flex: 2,
+                  backgroundColor: Colors.accent,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                  opacity: saving ? 0.7 : 1,
+                }}
+              >
+                {saving ? (
+                  <ActivityIndicator color={Colors.accentInk} />
+                ) : (
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: "700",
+                      color: Colors.accentInk,
+                    }}
+                  >
+                    Save
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 export default function GymSettingsScreen() {
   const [gyms, setGyms] = useState<Gym[]>([]);
   const [selectedGym, setSelectedGym] = useState<Gym | null>(null);
@@ -1796,6 +2020,8 @@ export default function GymSettingsScreen() {
   const [addGymVisible, setAddGymVisible] = useState(false);
   const [newGymName, setNewGymName] = useState("");
   const [addGymSaving, setAddGymSaving] = useState(false);
+  const [editEquipmentTarget, setEditEquipmentTarget] =
+    useState<Equipment | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -2130,6 +2356,19 @@ export default function GymSettingsScreen() {
                           </Text>
                           <TypeBadge type={item.type} />
                           <Pressable
+                            onPress={() => setEditEquipmentTarget(item)}
+                          >
+                            <Text
+                              style={{
+                                fontSize: 13,
+                                color: Colors.accent,
+                                paddingLeft: 8,
+                              }}
+                            >
+                              Edit
+                            </Text>
+                          </Pressable>
+                          <Pressable
                             onPress={() => handleDeleteEquipment(item.id)}
                           >
                             <Text
@@ -2204,6 +2443,19 @@ export default function GymSettingsScreen() {
                               +{parseFloat(item.increment_kg)}kg
                             </Text>
                           )}
+                          <Pressable
+                            onPress={() => setEditEquipmentTarget(item)}
+                          >
+                            <Text
+                              style={{
+                                fontSize: 13,
+                                color: Colors.accent,
+                                paddingLeft: 8,
+                              }}
+                            >
+                              Edit
+                            </Text>
+                          </Pressable>
                           <Pressable
                             onPress={() => handleDeleteEquipment(item.id)}
                           >
@@ -2520,6 +2772,20 @@ export default function GymSettingsScreen() {
           visible={addEquipmentVisible}
           onClose={() => setAddEquipmentVisible(false)}
           onSaved={() => loadGymData(selectedGym.id)}
+          gymId={selectedGym.id}
+        />
+      )}
+
+      {/* Edit equipment modal */}
+      {selectedGym && (
+        <EditEquipmentModal
+          visible={editEquipmentTarget !== null}
+          equipment={editEquipmentTarget}
+          onClose={() => setEditEquipmentTarget(null)}
+          onSaved={() => {
+            loadGymData(selectedGym.id);
+            setEditEquipmentTarget(null);
+          }}
           gymId={selectedGym.id}
         />
       )}
