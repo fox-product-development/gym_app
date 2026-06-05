@@ -459,6 +459,7 @@ router.post("/:gymId/exercises", requireAuth, async (req, res) => {
     equipment_type,
     sub_component,
     emg_score,
+    equipment_id,
   } = req.body;
 
   if (!exercise || !muscles_primary || !type) {
@@ -484,8 +485,8 @@ router.post("/:gymId/exercises", requireAuth, async (req, res) => {
     const result = await pool.query(
       `INSERT INTO exercises
          (user_id, gym_id, gym, exercise, muscles_primary, muscles_secondary,
-          type, equipment_type, sub_component, emg_score, active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+          type, equipment_type, sub_component, emg_score, equipment_id, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
        RETURNING *`,
       [
         req.userId,
@@ -498,6 +499,7 @@ router.post("/:gymId/exercises", requireAuth, async (req, res) => {
         equipment_type || null,
         sub_component || null,
         emg_score || 3,
+        equipment_id || null,
       ],
     );
 

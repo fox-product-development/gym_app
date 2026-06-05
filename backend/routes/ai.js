@@ -1586,7 +1586,7 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
     const gymName = gymResult.rows[0].gym_name;
 
     const equipmentResult = await pool.query(
-      `SELECT equipment_name, type, unladen_weight_kg, increment_kg
+      `SELECT id, equipment_name, type, unladen_weight_kg, increment_kg
        FROM equipment WHERE gym_id = $1 AND user_id = $2
        ORDER BY type ASC, equipment_name ASC`,
       [gym_id, req.userId],
@@ -1599,12 +1599,12 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
 
     const existingNames = existingResult.rows.map((e) => e.exercise);
 
-    const equipmentList =
-      equipmentResult.rows.length > 0
-        ? equipmentResult.rows
-            .map((e) => `${e.equipment_name} (${e.type})`)
-            .join(", ")
-        : "General gym equipment";
+    const equipmentLines = equipmentResult.rows
+      .map((e) => `  id=${e.id}: ${e.equipment_name} (${e.type})`)
+      .join("\n");
+    const equipmentIdList = equipmentResult.rows
+      .map((e) => `${e.id}`)
+      .join(", ");
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -1614,13 +1614,17 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
           role: "user",
           content: `Suggest gym exercises for a user setting up their exercise library for "${gymName}".
 
-AVAILABLE EQUIPMENT
-${equipmentList}
+EQUIPMENT AT THIS GYM (use these exact IDs)
+${equipmentLines}
+
+Valid equipment_id values: ${equipmentIdList}, or null for bodyweight exercises.
+For exercises using a dumbbell in one hand (e.g. single arm row, hammer curl), still use the Dumbbells equipment_id — the exercise name indicates single-hand usage.
 
 EXERCISES ALREADY IN THEIR LIBRARY (exclude these)
 ${existingNames.length > 0 ? existingNames.join(", ") : "None"}
 
-SSuggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
+Suggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library. Only suggest exercises that can be performed with the equipment listed above.
+
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
@@ -1631,7 +1635,7 @@ Return ONLY this exact JSON structure, nothing else:
       "type": "<Compound or Isolation>",
       "sub_component": "<specific sub-component>",
       "emg_score": <integer 1-5>,
-      "equipment_type": "<barbell, dumbbells, single dumbbell, machine, none>"
+      "equipment_id": <integer from the list above, or null for bodyweight>
     }
   ]
 }
@@ -1647,6 +1651,17 @@ Group logically but return as a flat array. No explanation. No markdown. Valid J
       .join("");
 
     const result = JSON.parse(cleanJSON(rawText));
+
+    // Validate equipment_ids — only allow IDs that exist at this gym
+    const validIds = new Set(equipmentResult.rows.map((e) => e.id));
+    if (result.exercises) {
+      for (const ex of result.exercises) {
+        if (ex.equipment_id !== null && !validIds.has(ex.equipment_id)) {
+          ex.equipment_id = null; // Invalid ID → clear it
+        }
+      }
+    }
+
     res.json(result);
   } catch (err) {
     console.error("Suggest exercises error:", err.message);

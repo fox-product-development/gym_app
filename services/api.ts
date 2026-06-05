@@ -428,6 +428,7 @@ export async function updateExercise(
     sub_component?: string;
     type?: string;
     emg_score?: number;
+    equipment_id?: number;
   },
 ) {
   return request(`/gyms/${gymId}/exercises/${id}`, "PATCH", data);
@@ -443,6 +444,7 @@ export async function createExercise(
     equipment_type?: string;
     sub_component?: string;
     emg_score?: number;
+    equipment_id?: number;
   },
 ) {
   return request(`/gyms/${gymId}/exercises`, "POST", data);
