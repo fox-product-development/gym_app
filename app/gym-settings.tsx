@@ -1605,7 +1605,9 @@ function EditExerciseModal({
 
   useEffect(() => {
     if (exercise) {
-      setSelectedEquipmentId(exercise.equipment_id ?? null);
+      setSelectedEquipmentId(
+        exercise.equipment_id ? Number(exercise.equipment_id) : null,
+      );
       setError("");
     }
   }, [exercise]);
