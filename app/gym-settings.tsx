@@ -1375,6 +1375,7 @@ interface Exercise {
   sub_component: string | null;
   emg_score: number;
   active: boolean;
+  equipment_id: number | null;
 }
 
 function EmgDots({ score }: { score: number }) {
@@ -1579,6 +1580,249 @@ function DeleteExerciseModal({
   );
 }
 
+// ─── Edit exercise modal ──────────────────────────────────────────────────────
+
+function EditExerciseModal({
+  visible,
+  exercise,
+  onClose,
+  onSaved,
+  gymId,
+  equipment,
+}: {
+  visible: boolean;
+  exercise: Exercise | null;
+  onClose: () => void;
+  onSaved: () => void;
+  gymId: number;
+  equipment: Equipment[];
+}) {
+  const [selectedEquipmentId, setSelectedEquipmentId] = useState<number | null>(
+    null,
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (exercise) {
+      setSelectedEquipmentId(exercise.equipment_id ?? null);
+      setError("");
+    }
+  }, [exercise]);
+
+  async function handleSave() {
+    if (!exercise) return;
+    setSaving(true);
+    setError("");
+    try {
+      await updateExercise(gymId, exercise.id, {
+        equipment_id: selectedEquipmentId ?? undefined,
+      });
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!exercise) return null;
+
+  return (
+    <Modal visible={visible} transparent animationType="slide">
+      <Pressable
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "flex-end",
+        }}
+        onPress={onClose}
+      >
+        <Pressable
+          style={{
+            backgroundColor: Colors.card,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 24,
+            paddingBottom: 40,
+          }}
+          onPress={() => {}}
+        >
+          <Text
+            style={{
+              fontSize: 18,
+              fontWeight: "700",
+              color: Colors.text,
+              marginBottom: 4,
+            }}
+          >
+            {exercise.exercise}
+          </Text>
+          <Text
+            style={{
+              fontSize: 12,
+              color: Colors.ter,
+              fontFamily: "Courier",
+              marginBottom: 4,
+            }}
+          >
+            {exercise.muscles_primary} · {exercise.type}
+          </Text>
+          {exercise.sub_component && (
+            <Text
+              style={{
+                fontSize: 11,
+                color: Colors.ter,
+                fontFamily: "Courier",
+                marginBottom: 16,
+              }}
+            >
+              {exercise.sub_component}
+            </Text>
+          )}
+
+          <Text
+            style={{
+              fontFamily: "Courier",
+              fontSize: 10,
+              color: Colors.ter,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              marginBottom: 8,
+            }}
+          >
+            Equipment
+          </Text>
+          <View
+            style={{
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: 8,
+              marginBottom: 20,
+            }}
+          >
+            <Pressable
+              onPress={() => setSelectedEquipmentId(null)}
+              style={{
+                paddingHorizontal: 12,
+                paddingVertical: 8,
+                borderRadius: 8,
+                backgroundColor:
+                  selectedEquipmentId === null ? Colors.accent : Colors.card2,
+                borderWidth: 0.5,
+                borderColor:
+                  selectedEquipmentId === null ? Colors.accent : Colors.line,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 12,
+                  color:
+                    selectedEquipmentId === null
+                      ? Colors.accentInk
+                      : Colors.sec,
+                  fontWeight: selectedEquipmentId === null ? "600" : "400",
+                }}
+              >
+                Bodyweight
+              </Text>
+            </Pressable>
+            {equipment
+              .filter((e) => e.type !== "apparatus")
+              .map((eq) => (
+                <Pressable
+                  key={eq.id}
+                  onPress={() => setSelectedEquipmentId(eq.id)}
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor:
+                      selectedEquipmentId === eq.id
+                        ? Colors.accent
+                        : Colors.card2,
+                    borderWidth: 0.5,
+                    borderColor:
+                      selectedEquipmentId === eq.id
+                        ? Colors.accent
+                        : Colors.line,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      color:
+                        selectedEquipmentId === eq.id
+                          ? Colors.accentInk
+                          : Colors.sec,
+                      fontWeight: selectedEquipmentId === eq.id ? "600" : "400",
+                    }}
+                  >
+                    {eq.equipment_name}
+                  </Text>
+                </Pressable>
+              ))}
+          </View>
+
+          {error ? (
+            <Text
+              style={{
+                fontSize: 13,
+                color: Colors.warn,
+                marginBottom: 12,
+              }}
+            >
+              {error}
+            </Text>
+          ) : null}
+
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              onPress={onClose}
+              style={{
+                flex: 1,
+                backgroundColor: Colors.card2,
+                borderRadius: 12,
+                padding: 14,
+                alignItems: "center",
+              }}
+            >
+              <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSave}
+              disabled={saving}
+              style={{
+                flex: 2,
+                backgroundColor: Colors.accent,
+                borderRadius: 12,
+                padding: 14,
+                alignItems: "center",
+                opacity: saving ? 0.7 : 1,
+              }}
+            >
+              {saving ? (
+                <ActivityIndicator color={Colors.accentInk} />
+              ) : (
+                <Text
+                  style={{
+                    fontSize: 15,
+                    fontWeight: "700",
+                    color: Colors.accentInk,
+                  }}
+                >
+                  Save
+                </Text>
+              )}
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 function ExercisesTab({
   gymId,
   equipment,
@@ -1589,6 +1833,7 @@ function ExercisesTab({
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [loading, setLoading] = useState(true);
   const [kebabOpen, setKebabOpen] = useState<number | null>(null);
+  const [editTarget, setEditTarget] = useState<Exercise | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Exercise | null>(null);
   const [deleteStep, setDeleteStep] = useState<1 | 2>(1);
   const [deleting, setDeleting] = useState(false);
@@ -1684,7 +1929,10 @@ function ExercisesTab({
               }}
             >
               {grouped[muscle].map((ex, i) => (
-                <View key={ex.id}>
+                <View
+                  key={ex.id}
+                  style={{ zIndex: kebabOpen === ex.id ? 10 : 0 }}
+                >
                   {i > 0 && (
                     <View
                       style={{ height: 0.5, backgroundColor: Colors.line }}
@@ -1800,6 +2048,7 @@ function ExercisesTab({
                           <Pressable
                             onPress={() => {
                               setKebabOpen(null);
+                              setEditTarget(ex);
                             }}
                             style={{
                               padding: 13,
@@ -1873,6 +2122,18 @@ function ExercisesTab({
         visible={suggestVisible}
         onClose={() => setSuggestVisible(false)}
         onSaved={loadExercises}
+        gymId={gymId}
+        equipment={equipment}
+      />
+
+      <EditExerciseModal
+        visible={editTarget !== null}
+        exercise={editTarget}
+        onClose={() => setEditTarget(null)}
+        onSaved={() => {
+          loadExercises();
+          setEditTarget(null);
+        }}
         gymId={gymId}
         equipment={equipment}
       />
