@@ -69,7 +69,7 @@ app.use("/gyms", gymRoutes);
 // ─── Scheduled jobs ───────────────────────────────────────────────────────────
 
 // Sunday at 8PM — generate weekly coaching report and advance phase week
-cron.schedule("0 20 * * 0", () => {
+cron.schedule("30 22 * * 0", () => {
   console.log("Triggering Sunday report via node-cron...");
   runSundayReport(false);
 });
