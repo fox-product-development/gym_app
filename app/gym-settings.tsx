@@ -1735,13 +1735,13 @@ function EditExerciseModal({
               .map((eq) => (
                 <Pressable
                   key={eq.id}
-                  onPress={() => setSelectedEquipmentId(eq.id)}
+                  onPress={() => setSelectedEquipmentId(Number(eq.id))}
                   style={{
                     paddingHorizontal: 12,
                     paddingVertical: 8,
                     borderRadius: 8,
                     backgroundColor:
-                      selectedEquipmentId === eq.id
+                      selectedEquipmentId === Number(eq.id)
                         ? Colors.accent
                         : Colors.card2,
                     borderWidth: 0.5,

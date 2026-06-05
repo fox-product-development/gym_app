@@ -5,7 +5,7 @@ const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("../db");
 const requireAuth = require("../middleware");
-const { validWeights } = require("../validWeights");
+const { getValidWeightsForEquipment } = require("../weightCalc");
 
 const router = express.Router();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -199,62 +199,67 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
   return exercises;
 }
 
-// ─── Equipment summary for AI prompt ─────────────────────────────────────────────
+// ─── Equipment summary for AI prompt ─────────────────────────────────────────
 // Builds weight guidance for the AI prompt.
-// Machine and fixed: uses increment_kg and max_weight_kg from the equipment table.
-// Loadable: uses hardcoded validWeights arrays (plate logic not yet DB-driven).
-// Bodyweight: always 0.
+// All equipment types now use the database — no hardcoded weight arrays.
 
 async function buildEquipmentSummary(gymId, userId) {
-  let machineAndFixedSection = "";
+  const sections = [];
 
   try {
     const result = await pool.query(
-      `SELECT equipment_name, type, increment_kg, max_weight_kg
+      `SELECT id, equipment_name, type, increment_kg, max_weight_kg, unladen_weight_kg
        FROM equipment
        WHERE gym_id = $1 AND user_id = $2
-         AND type IN ('machine', 'fixed')
-         AND increment_kg IS NOT NULL
+         AND type != 'apparatus'
        ORDER BY type, equipment_name`,
       [gymId, userId],
     );
 
-    if (result.rows.length > 0) {
-      const lines = result.rows.map((e) => {
-        const max = e.max_weight_kg ? ` — max ${e.max_weight_kg}kg` : "";
-        return `  ${e.equipment_name} (${e.type}): increments of ${e.increment_kg}kg${max}`;
-      });
-      machineAndFixedSection = `\nMACHINE AND FIXED EQUIPMENT (from gym database)\nFor these, select any weight that is a multiple of the increment and does not exceed the max:\n${lines.join("\n")}`;
+    for (const eq of result.rows) {
+      const validWeights = await getValidWeightsForEquipment(
+        eq.id,
+        gymId,
+        userId,
+      );
+
+      if (eq.type === "loadable" && validWeights.length > 0) {
+        const isDumbbell = eq.equipment_name.toLowerCase().includes("dumbbell");
+        const convention = isDumbbell
+          ? " (weight shown is per dumbbell)"
+          : " (total weight including bar)";
+        sections.push(
+          `${eq.equipment_name}${convention}:\n${validWeights.join(", ")}`,
+        );
+      } else if (
+        (eq.type === "fixed" || eq.type === "machine") &&
+        eq.increment_kg
+      ) {
+        const max = eq.max_weight_kg ? ` — max ${eq.max_weight_kg}kg` : "";
+        sections.push(
+          `${eq.equipment_name} (${eq.type}): increments of ${eq.increment_kg}kg${max}`,
+        );
+      }
     }
   } catch (err) {
     console.error("buildEquipmentSummary DB error:", err.message);
   }
 
-  return `WEIGHT GUIDANCE PER EQUIPMENT TYPE
+  const equipmentSection =
+    sections.length > 0
+      ? sections.join("\n\n")
+      : "(no equipment data available)";
 
-LOADABLE EQUIPMENT (barbell, dumbbells — use these exact values only):
+  return `WEIGHT GUIDANCE PER EQUIPMENT
+You must only suggest weights that are achievable on the specified equipment. For loadable equipment, use exact values from the lists below. For fixed/machine equipment, use multiples of the increment that do not exceed the max.
 
-home gym — dumbbells and single dumbbell (weight shown is per dumbbell):
-${validWeights.home_dumbbell.join(", ")}
-
-home gym — EZ bar / barbell (total weight including 5kg bar):
-${validWeights.home_barbell.join(", ")}
-
-work gym — dumbbells and single dumbbell (weight shown is per dumbbell, fixed rubber dumbbells in 1kg increments):
-${validWeights.work_dumbbell.join(", ")}
-
-work gym — barbell (bench bar, 10kg bar, total weight including bar, 5kg increments):
-${validWeights.work_barbell.join(", ")}
-
-work gym — olympic barbell (20kg bar, total weight including bar, 5kg increments):
-${validWeights.work_olympic_barbell.join(", ")}
-${machineAndFixedSection}
+${equipmentSection}
 
 DUMBBELL CONVENTION
-All dumbbell weights (equipment_type = "dumbbells" or "single dumbbell") are stored and displayed as the weight of ONE dumbbell. For example, weight_kg: 10 means 10kg in each hand for a pair exercise, or 10kg in one hand for a single dumbbell exercise. Never double the weight for pair exercises.
+All dumbbell weights are stored and displayed as the weight of ONE dumbbell. For example, weight_kg: 10 means 10kg in each hand for a pair exercise, or 10kg in one hand for a single dumbbell exercise. Never double the weight for pair exercises.
 
 BODYWEIGHT EXERCISES
-Exercises with equipment_type = "none" always have weight_kg: 0.`;
+Exercises with no linked equipment always have weight_kg: 0.`;
 }
 
 // Builds a plain-text summary of conditioning exercises for the AI prompt.
@@ -1586,7 +1591,7 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
     const gymName = gymResult.rows[0].gym_name;
 
     const equipmentResult = await pool.query(
-      `SELECT id, equipment_name, type, unladen_weight_kg, increment_kg
+      `SELECT equipment_name, type, unladen_weight_kg, increment_kg
        FROM equipment WHERE gym_id = $1 AND user_id = $2
        ORDER BY type ASC, equipment_name ASC`,
       [gym_id, req.userId],
@@ -1599,12 +1604,12 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
 
     const existingNames = existingResult.rows.map((e) => e.exercise);
 
-    const equipmentLines = equipmentResult.rows
-      .map((e) => `  id=${e.id}: ${e.equipment_name} (${e.type})`)
-      .join("\n");
-    const equipmentIdList = equipmentResult.rows
-      .map((e) => `${e.id}`)
-      .join(", ");
+    const equipmentList =
+      equipmentResult.rows.length > 0
+        ? equipmentResult.rows
+            .map((e) => `${e.equipment_name} (${e.type})`)
+            .join(", ")
+        : "General gym equipment";
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -1614,17 +1619,13 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
           role: "user",
           content: `Suggest gym exercises for a user setting up their exercise library for "${gymName}".
 
-EQUIPMENT AT THIS GYM (use these exact IDs)
-${equipmentLines}
-
-Valid equipment_id values: ${equipmentIdList}, or null for bodyweight exercises.
-For exercises using a dumbbell in one hand (e.g. single arm row, hammer curl), still use the Dumbbells equipment_id — the exercise name indicates single-hand usage.
+AVAILABLE EQUIPMENT
+${equipmentList}
 
 EXERCISES ALREADY IN THEIR LIBRARY (exclude these)
 ${existingNames.length > 0 ? existingNames.join(", ") : "None"}
 
-Suggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library. Only suggest exercises that can be performed with the equipment listed above.
-
+SSuggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
@@ -1635,7 +1636,7 @@ Return ONLY this exact JSON structure, nothing else:
       "type": "<Compound or Isolation>",
       "sub_component": "<specific sub-component>",
       "emg_score": <integer 1-5>,
-      "equipment_id": <integer from the list above, or null for bodyweight>
+      "equipment_type": "<barbell, dumbbells, single dumbbell, machine, none>"
     }
   ]
 }
@@ -1651,17 +1652,6 @@ Group logically but return as a flat array. No explanation. No markdown. Valid J
       .join("");
 
     const result = JSON.parse(cleanJSON(rawText));
-
-    // Validate equipment_ids — only allow IDs that exist at this gym
-    const validIds = new Set(equipmentResult.rows.map((e) => e.id));
-    if (result.exercises) {
-      for (const ex of result.exercises) {
-        if (ex.equipment_id !== null && !validIds.has(ex.equipment_id)) {
-          ex.equipment_id = null; // Invalid ID → clear it
-        }
-      }
-    }
-
     res.json(result);
   } catch (err) {
     console.error("Suggest exercises error:", err.message);
