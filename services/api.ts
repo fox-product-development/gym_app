@@ -293,6 +293,9 @@ export async function logCardio(data: {
   activity_type: string;
   duration_minutes: number;
   distance_km?: number;
+  avg_heart_rate?: number;
+  calories?: number;
+  avg_pace_seconds?: number;
   notes?: string;
   logged_at?: string;
 }) {
@@ -303,8 +306,33 @@ export async function getCardio(weeks: number = 4) {
   return request(`/cardio?weeks=${weeks}`);
 }
 
+export async function updateCardio(
+  id: number,
+  data: {
+    activity_type: string;
+    duration_minutes: number;
+    distance_km?: number;
+    avg_heart_rate?: number;
+    calories?: number;
+    avg_pace_seconds?: number;
+    notes?: string;
+  },
+) {
+  return request(`/cardio/${id}`, "PUT", data);
+}
+
 export async function deleteCardio(id: number) {
   return request(`/cardio/${id}`, "DELETE");
+}
+
+export async function extractCardioFromImage(
+  image_base64: string,
+  media_type: string,
+) {
+  return request("/cardio/extract-from-image", "POST", {
+    image_base64,
+    media_type,
+  });
 }
 
 // ─── Gyms ─────────────────────────────────────────────────────────────────────

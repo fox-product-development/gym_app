@@ -13,6 +13,7 @@ import {
   TextInput,
 } from "react-native";
 import { useFocusEffect, router } from "expo-router";
+import * as ImagePicker from "expo-image-picker";
 import { Colors } from "../../constants/theme";
 import {
   getWeekSessions,
@@ -22,7 +23,9 @@ import {
   generateExtraSession,
   logCardio,
   getCardio,
+  updateCardio,
   deleteCardio,
+  extractCardioFromImage,
   getGyms,
 } from "../../services/api";
 
@@ -67,6 +70,9 @@ interface CardioEntry {
   activity_type: string;
   duration_minutes: number;
   distance_km: string | null;
+  avg_heart_rate: number | null;
+  calories: number | null;
+  avg_pace_seconds: number | null;
   notes: string | null;
   logged_at: string;
 }
@@ -931,6 +937,31 @@ function SessionCard({
   );
 }
 
+// ─── Pace conversion helpers ──────────────────────────────────────────────────
+
+function secondsToPaceString(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function paceStringToSeconds(pace: string): number | null {
+  const parts = pace.split(":");
+  if (parts.length !== 2) return null;
+  const mins = parseInt(parts[0]);
+  const secs = parseInt(parts[1]);
+  if (isNaN(mins) || isNaN(secs)) return null;
+  return mins * 60 + secs;
+}
+
+function secondsToKmh(seconds: number): string {
+  return (3600 / seconds).toFixed(1);
+}
+
+function kmhToSeconds(kmh: number): number {
+  return Math.round(3600 / kmh);
+}
+
 // ─── Cardio log modal ─────────────────────────────────────────────────────────
 
 const CARDIO_TYPES = [
@@ -947,27 +978,136 @@ function CardioModal({
   visible,
   onClose,
   onSaved,
+  editEntry,
 }: {
   visible: boolean;
   onClose: () => void;
   onSaved: () => void;
+  editEntry?: CardioEntry | null;
 }) {
+  const isEditing = !!editEntry;
+
   const [activityType, setActivityType] = useState("Running");
   const [customType, setCustomType] = useState("");
   const [duration, setDuration] = useState("");
   const [distance, setDistance] = useState("");
+  const [heartRate, setHeartRate] = useState("");
+  const [calories, setCalories] = useState("");
+  const [paceInput, setPaceInput] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const [error, setError] = useState("");
+
+  function populateFromEntry(entry: CardioEntry) {
+    const type = CARDIO_TYPES.includes(entry.activity_type)
+      ? entry.activity_type
+      : "Other";
+    setActivityType(type);
+    if (type === "Other") setCustomType(entry.activity_type);
+    setDuration(String(entry.duration_minutes));
+    setDistance(
+      entry.distance_km ? parseFloat(entry.distance_km).toString() : "",
+    );
+    setHeartRate(entry.avg_heart_rate ? String(entry.avg_heart_rate) : "");
+    setCalories(entry.calories ? String(entry.calories) : "");
+    if (entry.avg_pace_seconds) {
+      if (entry.activity_type === "Cycling") {
+        setPaceInput(secondsToKmh(entry.avg_pace_seconds));
+      } else {
+        setPaceInput(secondsToPaceString(entry.avg_pace_seconds));
+      }
+    } else {
+      setPaceInput("");
+    }
+    setNotes(entry.notes || "");
+  }
+
+  function handleOpen() {
+    if (isEditing && editEntry) {
+      populateFromEntry(editEntry);
+    } else {
+      setActivityType("Running");
+      setCustomType("");
+      setDuration("");
+      setDistance("");
+      setHeartRate("");
+      setCalories("");
+      setPaceInput("");
+      setNotes("");
+    }
+    setError("");
+  }
 
   function handleClose() {
     setActivityType("Running");
     setCustomType("");
     setDuration("");
     setDistance("");
+    setHeartRate("");
+    setCalories("");
+    setPaceInput("");
     setNotes("");
     setError("");
     onClose();
+  }
+
+  async function handleStravaUpload() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9,
+      base64: true,
+    });
+
+    if (result.canceled || !result.assets?.[0]) return;
+
+    const asset = result.assets[0];
+    if (!asset.base64) {
+      setError("Could not read image");
+      return;
+    }
+
+    const mediaType = (asset.mimeType as any) || "image/jpeg";
+    setExtracting(true);
+    setError("");
+
+    try {
+      const extracted = await extractCardioFromImage(asset.base64, mediaType);
+
+      const type = CARDIO_TYPES.includes(extracted.activity_type)
+        ? extracted.activity_type
+        : "Other";
+      setActivityType(type);
+      if (type === "Other") setCustomType(extracted.activity_type || "");
+      if (extracted.duration_minutes)
+        setDuration(String(extracted.duration_minutes));
+      if (extracted.distance_km) setDistance(String(extracted.distance_km));
+      if (extracted.avg_heart_rate)
+        setHeartRate(String(extracted.avg_heart_rate));
+      if (extracted.calories) setCalories(String(extracted.calories));
+      if (extracted.avg_pace_seconds) {
+        if (extracted.activity_type === "Cycling") {
+          setPaceInput(secondsToKmh(extracted.avg_pace_seconds));
+        } else {
+          setPaceInput(secondsToPaceString(extracted.avg_pace_seconds));
+        }
+      }
+      if (extracted.notes) setNotes(extracted.notes);
+    } catch (err: any) {
+      setError("Could not extract data — please fill in manually");
+    } finally {
+      setExtracting(false);
+    }
+  }
+
+  function buildAvgPaceSeconds(): number | null {
+    if (!paceInput.trim()) return null;
+    if (activityType === "Cycling") {
+      const kmh = parseFloat(paceInput);
+      if (isNaN(kmh) || kmh <= 0) return null;
+      return kmhToSeconds(kmh);
+    }
+    return paceStringToSeconds(paceInput);
   }
 
   async function handleSave() {
@@ -981,15 +1121,25 @@ function CardioModal({
       setError("Please enter an activity type");
       return;
     }
+
+    const payload = {
+      activity_type: type,
+      duration_minutes: mins,
+      distance_km: distance ? parseFloat(distance) : undefined,
+      avg_heart_rate: heartRate ? parseInt(heartRate) : undefined,
+      calories: calories ? parseInt(calories) : undefined,
+      avg_pace_seconds: buildAvgPaceSeconds() ?? undefined,
+      notes: notes.trim() || undefined,
+    };
+
     setSaving(true);
     setError("");
     try {
-      await logCardio({
-        activity_type: type,
-        duration_minutes: mins,
-        distance_km: distance ? parseFloat(distance) : undefined,
-        notes: notes.trim() || undefined,
-      });
+      if (isEditing && editEntry) {
+        await updateCardio(editEntry.id, payload);
+      } else {
+        await logCardio(payload);
+      }
       onSaved();
       handleClose();
     } catch (err: any) {
@@ -998,6 +1148,9 @@ function CardioModal({
       setSaving(false);
     }
   }
+
+  const isCycling = activityType === "Cycling";
+  const showPace = ["Running", "Cycling", "Walking"].includes(activityType);
 
   const inputStyle = {
     backgroundColor: Colors.bg,
@@ -1023,6 +1176,7 @@ function CardioModal({
       visible={visible}
       transparent
       animationType="slide"
+      onShow={handleOpen}
       onRequestClose={handleClose}
     >
       <Pressable
@@ -1042,167 +1196,254 @@ function CardioModal({
             paddingBottom: 40,
             borderTopWidth: 0.5,
             borderColor: Colors.line,
+            maxHeight: "92%",
           }}
           onPress={() => {}}
         >
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-              marginBottom: 6,
-            }}
-          >
-            Log Cardio
-          </Text>
-          <Text
-            style={{
-              fontSize: 22,
-              fontWeight: "700",
-              color: Colors.text,
-              letterSpacing: -0.4,
-              marginBottom: 20,
-            }}
-          >
-            What did you do?
-          </Text>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <Text
+              style={{
+                fontFamily: "Courier",
+                fontSize: 10,
+                color: Colors.ter,
+                letterSpacing: 0.6,
+                textTransform: "uppercase",
+                marginBottom: 6,
+              }}
+            >
+              {isEditing ? "Edit Cardio" : "Log Cardio"}
+            </Text>
+            <Text
+              style={{
+                fontSize: 22,
+                fontWeight: "700",
+                color: Colors.text,
+                letterSpacing: -0.4,
+                marginBottom: 20,
+              }}
+            >
+              {isEditing ? "Edit activity" : "What did you do?"}
+            </Text>
 
-          {/* Activity type picker */}
-          <Text style={labelStyle}>Activity</Text>
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 8,
-              marginBottom: 16,
-            }}
-          >
-            {CARDIO_TYPES.map((type) => (
+            {/* Strava screenshot button — only shown when creating */}
+            {!isEditing && (
               <Pressable
-                key={type}
-                onPress={() => setActivityType(type)}
+                onPress={handleStravaUpload}
+                disabled={extracting}
                 style={{
-                  paddingHorizontal: 14,
-                  paddingVertical: 8,
-                  borderRadius: 8,
-                  backgroundColor:
-                    activityType === type ? Colors.accentDim : Colors.card2,
-                  borderWidth: activityType === type ? 1 : 0,
-                  borderColor: Colors.accent,
+                  backgroundColor: Colors.card2,
+                  borderRadius: 12,
+                  padding: 14,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 10,
+                  marginBottom: 20,
+                  borderWidth: 0.5,
+                  borderColor: Colors.line,
+                  opacity: extracting ? 0.6 : 1,
                 }}
               >
+                {extracting ? (
+                  <ActivityIndicator color={Colors.accent} />
+                ) : (
+                  <Text style={{ fontSize: 18 }}>📸</Text>
+                )}
                 <Text
                   style={{
-                    fontSize: 13,
-                    color: activityType === type ? Colors.accent : Colors.sec,
-                    fontWeight: activityType === type ? "600" : "400",
+                    fontSize: 14,
+                    fontWeight: "600",
+                    color: extracting ? Colors.ter : Colors.text,
                   }}
                 >
-                  {type}
+                  {extracting
+                    ? "Reading screenshot…"
+                    : "Log from Strava Screenshot"}
                 </Text>
               </Pressable>
-            ))}
-          </View>
+            )}
 
-          {activityType === "Other" && (
-            <View style={{ marginBottom: 16 }}>
-              <Text style={labelStyle}>Activity name</Text>
-              <TextInput
-                value={customType}
-                onChangeText={setCustomType}
-                placeholder="e.g. Kickboxing"
-                placeholderTextColor={Colors.ter}
-                style={inputStyle}
-              />
-            </View>
-          )}
-
-          <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
-            <View style={{ flex: 1 }}>
-              <Text style={labelStyle}>Duration (mins)</Text>
-              <TextInput
-                value={duration}
-                onChangeText={setDuration}
-                keyboardType="numeric"
-                placeholder="30"
-                placeholderTextColor={Colors.ter}
-                style={inputStyle}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={labelStyle}>Distance (km)</Text>
-              <TextInput
-                value={distance}
-                onChangeText={setDistance}
-                keyboardType="decimal-pad"
-                placeholder="Optional"
-                placeholderTextColor={Colors.ter}
-                style={inputStyle}
-              />
-            </View>
-          </View>
-
-          <View style={{ marginBottom: 16 }}>
-            <Text style={labelStyle}>Notes</Text>
-            <TextInput
-              value={notes}
-              onChangeText={setNotes}
-              placeholder="Optional"
-              placeholderTextColor={Colors.ter}
-              style={inputStyle}
-            />
-          </View>
-
-          {error ? (
-            <Text
-              style={{ fontSize: 13, color: Colors.warn, marginBottom: 12 }}
-            >
-              {error}
-            </Text>
-          ) : null}
-
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <Pressable
-              onPress={handleClose}
+            {/* Activity type picker */}
+            <Text style={labelStyle}>Activity</Text>
+            <View
               style={{
-                flex: 1,
-                backgroundColor: Colors.card2,
-                borderRadius: 12,
-                padding: 14,
-                alignItems: "center",
+                flexDirection: "row",
+                flexWrap: "wrap",
+                gap: 8,
+                marginBottom: 16,
               }}
             >
-              <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={handleSave}
-              disabled={saving}
-              style={{
-                flex: 2,
-                backgroundColor: Colors.accent,
-                borderRadius: 12,
-                padding: 14,
-                alignItems: "center",
-                opacity: saving ? 0.7 : 1,
-              }}
-            >
-              {saving ? (
-                <ActivityIndicator color={Colors.accentInk} />
-              ) : (
-                <Text
+              {CARDIO_TYPES.map((type) => (
+                <Pressable
+                  key={type}
+                  onPress={() => setActivityType(type)}
                   style={{
-                    fontSize: 15,
-                    fontWeight: "700",
-                    color: Colors.accentInk,
+                    paddingHorizontal: 14,
+                    paddingVertical: 8,
+                    borderRadius: 8,
+                    backgroundColor:
+                      activityType === type ? Colors.accentDim : Colors.card2,
+                    borderWidth: activityType === type ? 1 : 0,
+                    borderColor: Colors.accent,
                   }}
                 >
-                  Save
+                  <Text
+                    style={{
+                      fontSize: 13,
+                      color: activityType === type ? Colors.accent : Colors.sec,
+                      fontWeight: activityType === type ? "600" : "400",
+                    }}
+                  >
+                    {type}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {activityType === "Other" && (
+              <View style={{ marginBottom: 16 }}>
+                <Text style={labelStyle}>Activity name</Text>
+                <TextInput
+                  value={customType}
+                  onChangeText={setCustomType}
+                  placeholder="e.g. Kickboxing"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </View>
+            )}
+
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={labelStyle}>Duration (mins)</Text>
+                <TextInput
+                  value={duration}
+                  onChangeText={setDuration}
+                  keyboardType="numeric"
+                  placeholder="30"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={labelStyle}>Distance (km)</Text>
+                <TextInput
+                  value={distance}
+                  onChangeText={setDistance}
+                  keyboardType="decimal-pad"
+                  placeholder="Optional"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </View>
+            </View>
+
+            <View style={{ flexDirection: "row", gap: 10, marginBottom: 16 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={labelStyle}>Avg Heart Rate</Text>
+                <TextInput
+                  value={heartRate}
+                  onChangeText={setHeartRate}
+                  keyboardType="numeric"
+                  placeholder="bpm"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={labelStyle}>Calories</Text>
+                <TextInput
+                  value={calories}
+                  onChangeText={setCalories}
+                  keyboardType="numeric"
+                  placeholder="kcal"
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </View>
+            </View>
+
+            {showPace && (
+              <View style={{ marginBottom: 16 }}>
+                <Text style={labelStyle}>
+                  {isCycling ? "Avg Speed (km/h)" : "Avg Pace (min:sec /km)"}
                 </Text>
-              )}
-            </Pressable>
-          </View>
+                <TextInput
+                  value={paceInput}
+                  onChangeText={setPaceInput}
+                  keyboardType={isCycling ? "decimal-pad" : "default"}
+                  placeholder={isCycling ? "e.g. 24.5" : "e.g. 6:38"}
+                  placeholderTextColor={Colors.ter}
+                  style={inputStyle}
+                />
+              </View>
+            )}
+
+            <View style={{ marginBottom: 16 }}>
+              <Text style={labelStyle}>Notes</Text>
+              <TextInput
+                value={notes}
+                onChangeText={setNotes}
+                placeholder="Optional"
+                placeholderTextColor={Colors.ter}
+                multiline
+                numberOfLines={3}
+                style={[
+                  inputStyle,
+                  { minHeight: 72, textAlignVertical: "top" },
+                ]}
+              />
+            </View>
+
+            {error ? (
+              <Text
+                style={{ fontSize: 13, color: Colors.warn, marginBottom: 12 }}
+              >
+                {error}
+              </Text>
+            ) : null}
+
+            <View style={{ flexDirection: "row", gap: 10 }}>
+              <Pressable
+                onPress={handleClose}
+                style={{
+                  flex: 1,
+                  backgroundColor: Colors.card2,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                }}
+              >
+                <Text style={{ fontSize: 15, color: Colors.sec }}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSave}
+                disabled={saving}
+                style={{
+                  flex: 2,
+                  backgroundColor: Colors.accent,
+                  borderRadius: 12,
+                  padding: 14,
+                  alignItems: "center",
+                  opacity: saving ? 0.7 : 1,
+                }}
+              >
+                {saving ? (
+                  <ActivityIndicator color={Colors.accentInk} />
+                ) : (
+                  <Text
+                    style={{
+                      fontSize: 15,
+                      fontWeight: "700",
+                      color: Colors.accentInk,
+                    }}
+                  >
+                    {isEditing ? "Save Changes" : "Save"}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          </ScrollView>
         </Pressable>
       </Pressable>
     </Modal>
@@ -1230,6 +1471,9 @@ export default function WeekScreen() {
   const [extraModalVisible, setExtraModalVisible] = useState(false);
   const [cardioModalVisible, setCardioModalVisible] = useState(false);
   const [cardioEntries, setCardioEntries] = useState<CardioEntry[]>([]);
+  const [editCardioEntry, setEditCardioEntry] = useState<CardioEntry | null>(
+    null,
+  );
   const [gyms, setGyms] = useState<Gym[]>([]);
 
   useFocusEffect(
@@ -1501,7 +1745,11 @@ export default function WeekScreen() {
                         }}
                       />
                     )}
-                    <View
+                    <Pressable
+                      onPress={() => {
+                        setEditCardioEntry(entry);
+                        setCardioModalVisible(true);
+                      }}
                       style={{
                         flexDirection: "row",
                         alignItems: "center",
@@ -1551,11 +1799,37 @@ export default function WeekScreen() {
                             fontFamily: "Courier",
                           }}
                         >
-                          {entry.duration_minutes} min
-                          {entry.distance_km
-                            ? ` · ${parseFloat(entry.distance_km).toFixed(1)}km`
-                            : ""}
+                          {[
+                            `${entry.duration_minutes} min`,
+                            entry.distance_km
+                              ? `${parseFloat(entry.distance_km).toFixed(1)}km`
+                              : null,
+                            entry.avg_pace_seconds
+                              ? entry.activity_type === "Cycling"
+                                ? `${(3600 / entry.avg_pace_seconds).toFixed(1)} km/h`
+                                : `${Math.floor(entry.avg_pace_seconds / 60)}:${String(entry.avg_pace_seconds % 60).padStart(2, "0")} /km`
+                              : null,
+                            entry.avg_heart_rate
+                              ? `${entry.avg_heart_rate} bpm`
+                              : null,
+                            entry.calories ? `${entry.calories} kcal` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </Text>
+                        {entry.notes ? (
+                          <Text
+                            numberOfLines={1}
+                            style={{
+                              fontSize: 11,
+                              color: Colors.sec,
+                              marginTop: 3,
+                              fontStyle: "italic",
+                            }}
+                          >
+                            {entry.notes}
+                          </Text>
+                        ) : null}
                       </View>
                       <Pressable
                         onPress={async () => {
@@ -1569,14 +1843,17 @@ export default function WeekScreen() {
                           ×
                         </Text>
                       </Pressable>
-                    </View>
+                    </Pressable>
                   </View>
                 ))}
               </View>
             )}
 
             <Pressable
-              onPress={() => setCardioModalVisible(true)}
+              onPress={() => {
+                setEditCardioEntry(null);
+                setCardioModalVisible(true);
+              }}
               style={{
                 backgroundColor: Colors.card,
                 borderRadius: 16,
@@ -1660,8 +1937,12 @@ export default function WeekScreen() {
       {/* Cardio modal */}
       <CardioModal
         visible={cardioModalVisible}
-        onClose={() => setCardioModalVisible(false)}
+        onClose={() => {
+          setCardioModalVisible(false);
+          setEditCardioEntry(null);
+        }}
         onSaved={loadData}
+        editEntry={editCardioEntry}
       />
     </View>
   );

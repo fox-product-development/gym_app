@@ -290,6 +290,8 @@ async function createTables() {
 
     // ─── Cardio logs ─────────────────────────────────────────────────────────
     // Non-gym cardio activity logging from the week screen.
+    // avg_pace_seconds is always stored as seconds per km regardless of activity type.
+    // For cycling, the UI converts to km/h for display (3600 / avg_pace_seconds).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS cardio_logs (
         id               SERIAL PRIMARY KEY,
@@ -298,6 +300,9 @@ async function createTables() {
         activity_type    TEXT NOT NULL,
         duration_minutes INTEGER NOT NULL,
         distance_km      NUMERIC(6,2),
+        avg_heart_rate   INTEGER,
+        calories         INTEGER,
+        avg_pace_seconds INTEGER,
         notes            TEXT,
         created_at       TIMESTAMP DEFAULT NOW()
       );
