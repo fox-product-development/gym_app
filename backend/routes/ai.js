@@ -129,9 +129,10 @@ async function getPreviousBlockExercises(userId, phase, blockNumber) {
   return result.rows.map((r) => r.exercise_name);
 }
 
-// Fetches conditioning exercises for a given gym.
-// gym_id = null rows are available at all gyms.
-async function getConditioningExercises(gymId) {
+// Fetches conditioning exercises for a given gym and returns a lookup map:
+// exercise name (lowercase) → { target, metric, sets, category }
+// Used both to build the CSV for the AI prompt and to enrich AI responses.
+async function getConditioningLookup(gymId) {
   const result = await pool.query(
     `SELECT exercise, category, metric, target, sets
      FROM conditioning
@@ -139,19 +140,24 @@ async function getConditioningExercises(gymId) {
      ORDER BY category, exercise`,
     [gymId],
   );
-  return result.rows;
+  const lookup = {};
+  for (const row of result.rows) {
+    lookup[row.exercise.toLowerCase()] = {
+      target: row.target,
+      metric: row.metric,
+      sets: row.sets,
+      category: row.category,
+    };
+  }
+  return lookup;
 }
 
 // ─── Weight validation ────────────────────────────────────────────────────────
-// Post-processes AI-generated exercises to correct weights based on actual
-// equipment constraints. The AI cannot be trusted with arithmetic — this
-// function enforces increment rounding and max weight caps deterministically.
 
 async function validateAndCorrectWeights(exercises, gymId, userId) {
   if (!exercises || exercises.length === 0) return exercises;
 
   try {
-    // Build lookup map: exercise name → { increment_kg, max_weight_kg }
     const result = await pool.query(
       `SELECT e.exercise, eq.increment_kg, eq.max_weight_kg
        FROM exercises e
@@ -168,7 +174,6 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
       };
     }
 
-    // Validate each exercise weight
     for (const ex of exercises) {
       const lookup = equipMap[ex.exercise.toLowerCase()];
       if (!lookup) continue;
@@ -176,32 +181,25 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
       let weight = parseFloat(ex.weight_kg) || 0;
       if (weight <= 0) continue;
 
-      // Round to nearest valid increment
       if (lookup.increment_kg && lookup.increment_kg > 0) {
         weight = Math.round(weight / lookup.increment_kg) * lookup.increment_kg;
-        // Ensure we don't round down to zero
         if (weight <= 0) weight = lookup.increment_kg;
       }
 
-      // Cap at max weight
       if (lookup.max_weight_kg && weight > lookup.max_weight_kg) {
         weight = lookup.max_weight_kg;
       }
 
-      // Round to 1 decimal place to avoid floating point weirdness
       ex.weight_kg = Math.round(weight * 10) / 10;
     }
   } catch (err) {
     console.error("validateAndCorrectWeights error:", err.message);
-    // Non-fatal — return exercises as-is if validation fails
   }
 
   return exercises;
 }
 
 // ─── Equipment summary for AI prompt ─────────────────────────────────────────
-// Builds weight guidance for the AI prompt.
-// All equipment types now use the database — no hardcoded weight arrays.
 
 async function buildEquipmentSummary(gymId, userId) {
   const sections = [];
@@ -262,20 +260,18 @@ BODYWEIGHT EXERCISES
 Exercises with no linked equipment always have weight_kg: 0.`;
 }
 
-// Builds a plain-text summary of conditioning exercises for the AI prompt.
-function buildConditioningCSV(conditioningExercises) {
-  if (!conditioningExercises || conditioningExercises.length === 0) {
-    return "No conditioning exercises available.";
-  }
+// Builds a plain-text CSV of the conditioning library for the AI prompt.
+function buildConditioningCSV(conditioningLookup) {
+  const entries = Object.entries(conditioningLookup);
+  if (entries.length === 0) return "No conditioning exercises available.";
   const header = "exercise,category,metric,target,sets";
-  const rows = conditioningExercises.map(
-    (e) => `${e.exercise},${e.category},${e.metric},${e.target},${e.sets}`,
+  const rows = entries.map(
+    ([name, e]) => `${name},${e.category},${e.metric},${e.target},${e.sets}`,
   );
   return [header, ...rows].join("\n");
 }
 
 // Builds the wildcard slot instruction based on how many weight exercises are requested.
-// Base is 6 exercises with 1 wildcard. Each exercise above or below 6 adds or removes a wildcard slot.
 function buildWildcardInstruction(
   weightExercises,
   sessionType,
@@ -288,9 +284,7 @@ function buildWildcardInstruction(
     : "";
 
   if (sessionType === "compound") {
-    const fixed = Math.min(weightExercises, 5); // Back, Chest, Lower Back, Quads, Shoulders
     if (weightExercises <= 4) {
-      // Drop from the end of the fixed list
       const slots = ["Back", "Chest", "Lower Back", "Quads", "Shoulders"].slice(
         0,
         weightExercises,
@@ -302,7 +296,6 @@ function buildWildcardInstruction(
     }
     return `${weightExercises} exercises: 1 each from Back, Chest, Lower Back, Quads, Shoulders, plus ${wildcardCount} Wildcard compounds.${goalHint}`;
   } else {
-    // Isolation: Core (always first), Biceps, Triceps, Shoulders, Forearms, then wildcards
     if (weightExercises <= 5) {
       const slots = [
         "Core (always first)",
@@ -322,10 +315,31 @@ function buildWildcardInstruction(
   }
 }
 
+// Enriches AI-returned conditioning exercises with target_reps and metric from
+// the DB lookup. Exercises not found in the lookup are skipped with a warning.
+function enrichConditioningExercises(condExs, conditioningLookup) {
+  const enriched = [];
+  for (const ex of condExs) {
+    const key = ex.exercise.toLowerCase();
+    const dbRow = conditioningLookup[key];
+    if (!dbRow) {
+      console.warn(
+        `Conditioning exercise not found in lookup, skipping: "${ex.exercise}"`,
+      );
+      continue;
+    }
+    enriched.push({
+      exercise: ex.exercise,
+      sets: ex.sets,
+      target_reps: dbRow.target,
+      metric: dbRow.metric,
+    });
+  }
+  return enriched;
+}
+
 // ─── Generate block ───────────────────────────────────────────────────────────
 // POST /ai/generate-block
-// Always generates for the default Work Gym.
-// Called on Week 1 and Week 4 of every phase by the Sunday cron job.
 
 router.post("/generate-block", async (req, res) => {
   const cronSecret = req.headers["x-cron-secret"];
@@ -357,11 +371,9 @@ router.post("/generate-block", async (req, res) => {
       [req.userId],
     );
 
-    if (userResult.rows.length === 0) {
+    if (userResult.rows.length === 0)
       return res.status(404).json({ error: "User not found" });
-    }
 
-    const user = userResult.rows[0];
     const {
       current_phase,
       current_block,
@@ -369,22 +381,21 @@ router.post("/generate-block", async (req, res) => {
       weight_exercises_per_session,
       conditioning_exercises_per_session,
       goal_description,
-    } = user;
-
+    } = userResult.rows[0];
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
 
-    // Get the user's default gym
     const gymResult = await pool.query(
-      `SELECT id, gym_name FROM gyms
-       WHERE user_id = $1 AND is_default = TRUE
-       LIMIT 1`,
+      `SELECT id, gym_name FROM gyms WHERE user_id = $1 AND is_default = TRUE LIMIT 1`,
       [req.userId],
     );
     if (gymResult.rows.length === 0) {
-      return res.status(400).json({
-        error: "No default gym configured. Set a default gym in Gym Settings.",
-      });
+      return res
+        .status(400)
+        .json({
+          error:
+            "No default gym configured. Set a default gym in Gym Settings.",
+        });
     }
     const gymId = gymResult.rows[0].id;
     const gymName = gymResult.rows[0].gym_name;
@@ -397,7 +408,7 @@ router.post("/generate-block", async (req, res) => {
       dietHistory,
       moodHistory,
       cardioHistory,
-      conditioningExercises,
+      conditioningLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
@@ -406,13 +417,12 @@ router.post("/generate-block", async (req, res) => {
       getDietHistory(req.userId),
       getMoodHistory(req.userId),
       getCardioHistory(req.userId),
-      getConditioningExercises(gymId),
+      getConditioningLookup(gymId),
     ]);
 
     const gymCSV = await buildGymCSV(gymId, req.userId);
-    const condCSV = buildConditioningCSV(conditioningExercises);
+    const condCSV = buildConditioningCSV(conditioningLookup);
     const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
-
     const compoundInstruction = buildWildcardInstruction(
       weightExercises,
       "compound",
@@ -466,7 +476,7 @@ ${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio
 
 Use diet, mood, energy and cardio data to inform weight selection and exercise ordering. If energy has been consistently low, favour moderate weights over ambitious targets. If cardio load has been high, consider recovery when selecting compound movements.
 
-For conditioning: select ${conditioningCount} exercises from the conditioning library. Aim for at least 1 cardio movement and 1 core exercise. Use remaining slots to match the athlete's goal description and phase. For time-based exercises (metric = time), the target value is seconds — weight_kg should equal the target value (e.g. Plank target 60 → weight_kg: 60). For rep-based exercises weight_kg should be 0.
+For conditioning: select ${conditioningCount} exercises from the conditioning library. Aim for at least 1 cardio movement and 1 core exercise. Use remaining slots to match the athlete's goal description and phase. Return only the exercise name and sets — targets and metrics are looked up server-side. Exercise names must match the conditioning library exactly.
 
 Return ONLY this exact JSON structure, nothing else:
 {
@@ -485,9 +495,7 @@ Return ONLY this exact JSON structure, nothing else:
     "conditioning": [
       {
         "exercise": "<name>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight_kg": <number>
+        "sets": <number>
       }
     ]
   },
@@ -505,9 +513,7 @@ Return ONLY this exact JSON structure, nothing else:
     "conditioning": [
       {
         "exercise": "<name>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight_kg": <number>
+        "sets": <number>
       }
     ]
   }
@@ -524,17 +530,15 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
     });
 
     const rawText = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
       .join("");
-
     const blockPlan = JSON.parse(cleanJSON(rawText));
 
     if (!blockPlan.compound_session || !blockPlan.isolation_session) {
       throw new Error("Invalid block plan structure from Claude");
     }
 
-    // Validate and correct AI-generated weights against equipment constraints
     blockPlan.compound_session.exercises = await validateAndCorrectWeights(
       blockPlan.compound_session.exercises,
       gymId,
@@ -546,21 +550,26 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       req.userId,
     );
 
+    blockPlan.compound_session.conditioning = enrichConditioningExercises(
+      blockPlan.compound_session.conditioning || [],
+      conditioningLookup,
+    );
+    blockPlan.isolation_session.conditioning = enrichConditioningExercises(
+      blockPlan.isolation_session.conditioning || [],
+      conditioningLookup,
+    );
+
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
 
       const progResult = await client.query(
-        `INSERT INTO programmes (user_id, phase, block_number, week_start)
-         VALUES ($1, $2, $3, CURRENT_DATE)
-         RETURNING id`,
+        `INSERT INTO programmes (user_id, phase, block_number, week_start) VALUES ($1, $2, $3, CURRENT_DATE) RETURNING id`,
         [req.userId, current_phase, current_block],
       );
-
       const programmeId = progResult.rows[0].id;
 
       for (let week = 1; week <= 3; week++) {
-        // Helper to insert exercises + conditioning for a session
         async function insertSessionExercises(sessionId, sessionPlan, phase) {
           const weightExs = sessionPlan.exercises || [];
           const condExs = sessionPlan.conditioning || [];
@@ -591,8 +600,8 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
             await client.query(
               `INSERT INTO planned_exercises
                  (session_id, exercise_name, muscles_primary, sub_component,
-                  order_index, target_sets, target_reps, target_weight, set_style)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                  order_index, target_sets, target_reps, target_weight, set_style, metric)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
               [
                 sessionId,
                 ex.exercise,
@@ -601,64 +610,54 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
                 weightExs.length + i,
                 ex.sets,
                 ex.target_reps,
-                ex.weight_kg,
+                0,
                 "standard",
+                ex.metric,
               ],
             );
           }
         }
 
-        // Compound session — occurrence 1
-        const comp1Result = await client.query(
-          `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
-           VALUES ($1, $2, 'compound', 1, $3, $4, $5)
-           RETURNING id`,
+        const comp1 = await client.query(
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 1, $3, $4, $5) RETURNING id`,
           [req.userId, programmeId, week, gymId, gymName],
         );
         await insertSessionExercises(
-          comp1Result.rows[0].id,
+          comp1.rows[0].id,
           blockPlan.compound_session,
           current_phase,
         );
 
-        // Compound session — occurrence 2
-        const comp2Result = await client.query(
-          `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
-           VALUES ($1, $2, 'compound', 2, $3, $4, $5)
-           RETURNING id`,
+        const comp2 = await client.query(
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 2, $3, $4, $5) RETURNING id`,
           [req.userId, programmeId, week, gymId, gymName],
         );
         await insertSessionExercises(
-          comp2Result.rows[0].id,
+          comp2.rows[0].id,
           blockPlan.compound_session,
           current_phase,
         );
 
-        // Isolation session
-        const isoResult = await client.query(
-          `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
-           VALUES ($1, $2, 'isolation', 1, $3, $4, $5)
-           RETURNING id`,
+        const iso = await client.query(
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'isolation', 1, $3, $4, $5) RETURNING id`,
           [req.userId, programmeId, week, gymId, gymName],
         );
         await insertSessionExercises(
-          isoResult.rows[0].id,
+          iso.rows[0].id,
           blockPlan.isolation_session,
           current_phase,
         );
       }
 
       await client.query("COMMIT");
-
-      res.status(201).json({
-        message: "Block generated successfully",
-        programme_id: programmeId,
-        compound_session: blockPlan.compound_session,
-        isolation_session: blockPlan.isolation_session,
-      });
+      res
+        .status(201)
+        .json({
+          message: "Block generated successfully",
+          programme_id: programmeId,
+          compound_session: blockPlan.compound_session,
+          isolation_session: blockPlan.isolation_session,
+        });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -673,49 +672,34 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
 
 // ─── Generate gym session ─────────────────────────────────────────────────────
 // POST /ai/generate-gym-session
-// Called when the user confirms they want to switch gym for a session.
-// Replaces the planned exercises for the given session with ones suited to the selected gym.
-// The session is then started immediately.
 
 router.post("/generate-gym-session", requireAuth, async (req, res) => {
   const { session_id, gym_id } = req.body;
-
-  if (!session_id) {
+  if (!session_id)
     return res.status(400).json({ error: "session_id is required" });
-  }
-  if (!gym_id) {
-    return res.status(400).json({ error: "gym_id is required" });
-  }
+  if (!gym_id) return res.status(400).json({ error: "gym_id is required" });
 
   try {
-    // Get the gym name for this gym_id
     const gymResult = await pool.query(
       `SELECT gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
       [gym_id, req.userId],
     );
-    if (gymResult.rows.length === 0) {
+    if (gymResult.rows.length === 0)
       return res.status(404).json({ error: "Gym not found" });
-    }
     const gymName = gymResult.rows[0].gym_name;
 
     const sessionResult = await pool.query(
-      `SELECT s.*, p.phase, p.block_number
-       FROM sessions s
-       JOIN programmes p ON p.id = s.programme_id
-       WHERE s.id = $1 AND s.user_id = $2`,
+      `SELECT s.*, p.phase, p.block_number FROM sessions s JOIN programmes p ON p.id = s.programme_id WHERE s.id = $1 AND s.user_id = $2`,
       [session_id, req.userId],
     );
-
-    if (sessionResult.rows.length === 0) {
+    if (sessionResult.rows.length === 0)
       return res.status(404).json({ error: "Session not found" });
-    }
 
     const session = sessionResult.rows[0];
     const { session_type, phase, block_number, phase_week } = session;
 
     const userResult = await pool.query(
-      `SELECT weight_exercises_per_session, conditioning_exercises_per_session, goal_description
-       FROM users WHERE id = $1`,
+      `SELECT weight_exercises_per_session, conditioning_exercises_per_session, goal_description FROM users WHERE id = $1`,
       [req.userId],
     );
     const {
@@ -723,7 +707,6 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
       conditioning_exercises_per_session,
       goal_description,
     } = userResult.rows[0];
-
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
 
@@ -732,17 +715,17 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
       oneRepMaxHistory,
       bodyCompHistory,
       previousBlockExercises,
-      conditioningExercises,
+      conditioningLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
       getBodyCompHistory(req.userId),
       getPreviousBlockExercises(req.userId, phase, block_number),
-      getConditioningExercises(gym_id),
+      getConditioningLookup(gym_id),
     ]);
 
     const gymCSV = await buildGymCSV(gym_id, req.userId);
-    const condCSV = buildConditioningCSV(conditioningExercises);
+    const condCSV = buildConditioningCSV(conditioningLookup);
     const equipmentSummary = await buildEquipmentSummary(gym_id, req.userId);
     const sessionTypeLabel =
       session_type === "compound" ? "compound" : "isolation";
@@ -800,9 +783,7 @@ Return ONLY this exact JSON structure, nothing else:
   "conditioning": [
     {
       "exercise": "<name>",
-      "sets": <number>,
-      "target_reps": <number>,
-      "weight_kg": <number>
+      "sets": <number>
     }
   ]
 }
@@ -818,27 +799,27 @@ No extra fields. No explanation. No markdown.`;
     });
 
     const rawText = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
       .join("");
-
     const result = JSON.parse(cleanJSON(rawText));
 
-    if (!result.exercises || result.exercises.length === 0) {
+    if (!result.exercises || result.exercises.length === 0)
       throw new Error("Invalid session structure from Claude");
-    }
 
-    // Validate and correct AI-generated weights against equipment constraints
     result.exercises = await validateAndCorrectWeights(
       result.exercises,
       gym_id,
       req.userId,
     );
+    result.conditioning = enrichConditioningExercises(
+      result.conditioning || [],
+      conditioningLookup,
+    );
 
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-
       await client.query(
         `DELETE FROM planned_exercises WHERE session_id = $1`,
         [session_id],
@@ -850,10 +831,7 @@ No extra fields. No explanation. No markdown.`;
       for (let i = 0; i < weightExs.length; i++) {
         const ex = weightExs[i];
         await client.query(
-          `INSERT INTO planned_exercises
-             (session_id, exercise_name, muscles_primary, sub_component,
-              order_index, target_sets, target_reps, target_weight)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             session_id,
             ex.exercise,
@@ -870,10 +848,7 @@ No extra fields. No explanation. No markdown.`;
       for (let i = 0; i < condExs.length; i++) {
         const ex = condExs[i];
         await client.query(
-          `INSERT INTO planned_exercises
-             (session_id, exercise_name, muscles_primary, sub_component,
-              order_index, target_sets, target_reps, target_weight)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, metric) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             session_id,
             ex.exercise,
@@ -882,26 +857,26 @@ No extra fields. No explanation. No markdown.`;
             weightExs.length + i,
             ex.sets,
             ex.target_reps,
-            ex.weight_kg,
+            0,
+            ex.metric,
           ],
         );
       }
 
       await client.query(
-        `UPDATE sessions
-         SET gym_id = $1, status = 'in_progress', started_at = NOW()
-         WHERE id = $2`,
+        `UPDATE sessions SET gym_id = $1, status = 'in_progress', started_at = NOW() WHERE id = $2`,
         [gym_id, session_id],
       );
-
       await client.query("COMMIT");
 
-      res.status(200).json({
-        message: "Gym session generated and started",
-        session_id,
-        exercises: result.exercises,
-        conditioning: result.conditioning,
-      });
+      res
+        .status(200)
+        .json({
+          message: "Gym session generated and started",
+          session_id,
+          exercises: result.exercises,
+          conditioning: result.conditioning,
+        });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -916,19 +891,12 @@ No extra fields. No explanation. No markdown.`;
 
 // ─── Generate missing sessions ────────────────────────────────────────────────
 // POST /ai/generate-missing
-// Called by the replan endpoint to regenerate only the specific week numbers
-// that had their planned sessions deleted. Uses the existing programme_id so
-// completed sessions in other weeks are preserved.
-// Takes the existing exercise plan as a baseline and modifies it rather than
-// picking entirely fresh exercises.
 
 router.post("/generate-missing", async (req, res) => {
-  // Allow cron secret or JWT
   const cronSecret = req.headers["x-cron-secret"];
   if (cronSecret) {
-    if (cronSecret !== process.env.CRON_SECRET) {
+    if (cronSecret !== process.env.CRON_SECRET)
       return res.status(401).json({ error: "Invalid cron secret" });
-    }
     req.userId = req.body.user_id;
   } else {
     const authHeader = req.headers["authorization"];
@@ -945,7 +913,6 @@ router.post("/generate-missing", async (req, res) => {
   }
 
   const { programme_id, weeks_needed, existing_plan } = req.body;
-
   if (!programme_id || !weeks_needed || weeks_needed.length === 0) {
     return res
       .status(400)
@@ -954,18 +921,12 @@ router.post("/generate-missing", async (req, res) => {
 
   try {
     const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week,
-              weight_exercises_per_session, conditioning_exercises_per_session,
-              goal_description
-       FROM users WHERE id = $1`,
+      `SELECT current_phase, current_block, phase_week, weight_exercises_per_session, conditioning_exercises_per_session, goal_description FROM users WHERE id = $1`,
       [req.userId],
     );
-
-    if (userResult.rows.length === 0) {
+    if (userResult.rows.length === 0)
       return res.status(404).json({ error: "User not found" });
-    }
 
-    const user = userResult.rows[0];
     const {
       current_phase,
       current_block,
@@ -973,23 +934,16 @@ router.post("/generate-missing", async (req, res) => {
       weight_exercises_per_session,
       conditioning_exercises_per_session,
       goal_description,
-    } = user;
-
+    } = userResult.rows[0];
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
 
-    // Use user's default gym
     const gymResult = await pool.query(
-      `SELECT id, gym_name FROM gyms
-       WHERE user_id = $1 AND is_default = TRUE
-       LIMIT 1`,
+      `SELECT id, gym_name FROM gyms WHERE user_id = $1 AND is_default = TRUE LIMIT 1`,
       [req.userId],
     );
-    if (gymResult.rows.length === 0) {
-      return res.status(400).json({
-        error: "No default gym configured.",
-      });
-    }
+    if (gymResult.rows.length === 0)
+      return res.status(400).json({ error: "No default gym configured." });
     const gymId = gymResult.rows[0].id;
     const gymName = gymResult.rows[0].gym_name;
 
@@ -1001,7 +955,7 @@ router.post("/generate-missing", async (req, res) => {
       dietHistory,
       moodHistory,
       cardioHistory,
-      conditioningExercises,
+      conditioningLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
@@ -1010,11 +964,11 @@ router.post("/generate-missing", async (req, res) => {
       getDietHistory(req.userId),
       getMoodHistory(req.userId),
       getCardioHistory(req.userId),
-      getConditioningExercises(gymId),
+      getConditioningLookup(gymId),
     ]);
 
     const gymCSV = await buildGymCSV(gymId, req.userId);
-    const condCSV = buildConditioningCSV(conditioningExercises);
+    const condCSV = buildConditioningCSV(conditioningLookup);
     const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
     const compoundInstruction = buildWildcardInstruction(
       weightExercises,
@@ -1028,8 +982,7 @@ router.post("/generate-missing", async (req, res) => {
     );
 
     const existingPlanSection = existing_plan
-      ? `EXISTING PLAN (use as baseline — keep exercises unless avoidance notes or quantity changes require substitution)
-${JSON.stringify(existing_plan, null, 2)}`
+      ? `EXISTING PLAN (use as baseline — keep exercises unless avoidance notes or quantity changes require substitution)\n${JSON.stringify(existing_plan, null, 2)}`
       : "EXISTING PLAN: None available — select fresh exercises following standard rules.";
 
     const userPrompt = `Regenerate missing sessions for the following athlete. Use the existing plan as a baseline and only change exercises where the athlete notes explicitly require avoidance, or where the exercise count has changed and wildcard slots need adjusting.
@@ -1091,9 +1044,7 @@ Return ONLY this exact JSON structure, nothing else:
     "conditioning": [
       {
         "exercise": "<name>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight_kg": <number>
+        "sets": <number>
       }
     ]
   },
@@ -1111,9 +1062,7 @@ Return ONLY this exact JSON structure, nothing else:
     "conditioning": [
       {
         "exercise": "<name>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight_kg": <number>
+        "sets": <number>
       }
     ]
   }
@@ -1130,17 +1079,14 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
     });
 
     const rawText = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
       .join("");
-
     const blockPlan = JSON.parse(cleanJSON(rawText));
 
-    if (!blockPlan.compound_session || !blockPlan.isolation_session) {
+    if (!blockPlan.compound_session || !blockPlan.isolation_session)
       throw new Error("Invalid block plan structure from Claude");
-    }
 
-    // Validate and correct AI-generated weights against equipment constraints
     blockPlan.compound_session.exercises = await validateAndCorrectWeights(
       blockPlan.compound_session.exercises,
       gymId,
@@ -1150,6 +1096,15 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       blockPlan.isolation_session.exercises,
       gymId,
       req.userId,
+    );
+
+    blockPlan.compound_session.conditioning = enrichConditioningExercises(
+      blockPlan.compound_session.conditioning || [],
+      conditioningLookup,
+    );
+    blockPlan.isolation_session.conditioning = enrichConditioningExercises(
+      blockPlan.isolation_session.conditioning || [],
+      conditioningLookup,
     );
 
     const client = await pool.connect();
@@ -1164,10 +1119,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           for (let i = 0; i < weightExs.length; i++) {
             const ex = weightExs[i];
             await client.query(
-              `INSERT INTO planned_exercises
-                 (session_id, exercise_name, muscles_primary, sub_component,
-                  order_index, target_sets, target_reps, target_weight, set_style)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, set_style) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
               [
                 sessionId,
                 ex.exercise,
@@ -1185,10 +1137,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           for (let i = 0; i < condExs.length; i++) {
             const ex = condExs[i];
             await client.query(
-              `INSERT INTO planned_exercises
-                 (session_id, exercise_name, muscles_primary, sub_component,
-                  order_index, target_sets, target_reps, target_weight, set_style)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, set_style, metric) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
               [
                 sessionId,
                 ex.exercise,
@@ -1197,19 +1146,16 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
                 weightExs.length + i,
                 ex.sets,
                 ex.target_reps,
-                ex.weight_kg,
+                0,
                 "standard",
+                ex.metric,
               ],
             );
           }
         }
 
-        // Compound occurrence 1
         const comp1 = await client.query(
-          `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
-           VALUES ($1, $2, 'compound', 1, $3, $4, $5)
-           RETURNING id`,
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 1, $3, $4, $5) RETURNING id`,
           [req.userId, programme_id, week, gymId, gymName],
         );
         await insertSessionExercises(
@@ -1218,12 +1164,8 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           current_phase,
         );
 
-        // Compound occurrence 2
         const comp2 = await client.query(
-          `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
-           VALUES ($1, $2, 'compound', 2, $3, $4, $5)
-           RETURNING id`,
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 2, $3, $4, $5) RETURNING id`,
           [req.userId, programme_id, week, gymId, gymName],
         );
         await insertSessionExercises(
@@ -1232,12 +1174,8 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           current_phase,
         );
 
-        // Isolation
         const iso = await client.query(
-          `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym)
-           VALUES ($1, $2, 'isolation', 1, $3, $4, $5)
-           RETURNING id`,
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'isolation', 1, $3, $4, $5) RETURNING id`,
           [req.userId, programme_id, week, gymId, gymName],
         );
         await insertSessionExercises(
@@ -1248,13 +1186,14 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       }
 
       await client.query("COMMIT");
-
-      res.status(201).json({
-        message: "Missing sessions generated successfully",
-        weeks: weeks_needed,
-        compound_session: blockPlan.compound_session,
-        isolation_session: blockPlan.isolation_session,
-      });
+      res
+        .status(201)
+        .json({
+          message: "Missing sessions generated successfully",
+          weeks: weeks_needed,
+          compound_session: blockPlan.compound_session,
+          isolation_session: blockPlan.isolation_session,
+        });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -1272,36 +1211,25 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
 
 router.post("/extra-session", requireAuth, async (req, res) => {
   const { gym_id } = req.body;
-
-  if (!gym_id) {
-    return res.status(400).json({ error: "gym_id is required" });
-  }
+  if (!gym_id) return res.status(400).json({ error: "gym_id is required" });
 
   try {
-    // Verify the gym belongs to this user, and get its name
     const gymCheck = await pool.query(
       `SELECT id, gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
       [gym_id, req.userId],
     );
-    if (gymCheck.rows.length === 0) {
+    if (gymCheck.rows.length === 0)
       return res.status(404).json({ error: "Gym not found" });
-    }
     const gymId = gymCheck.rows[0].id;
     const gymName = gymCheck.rows[0].gym_name;
 
     const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week,
-              weight_exercises_per_session, conditioning_exercises_per_session,
-              goal_description
-       FROM users WHERE id = $1`,
+      `SELECT current_phase, current_block, phase_week, weight_exercises_per_session, conditioning_exercises_per_session, goal_description FROM users WHERE id = $1`,
       [req.userId],
     );
-
-    if (userResult.rows.length === 0) {
+    if (userResult.rows.length === 0)
       return res.status(404).json({ error: "User not found" });
-    }
 
-    const user = userResult.rows[0];
     const {
       current_phase,
       current_block,
@@ -1309,8 +1237,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       weight_exercises_per_session,
       conditioning_exercises_per_session,
       goal_description,
-    } = user;
-
+    } = userResult.rows[0];
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
 
@@ -1321,7 +1248,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       dietHistory,
       moodHistory,
       cardioHistory,
-      conditioningExercises,
+      conditioningLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
@@ -1329,7 +1256,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       getDietHistory(req.userId),
       getMoodHistory(req.userId),
       getCardioHistory(req.userId),
-      getConditioningExercises(gymId),
+      getConditioningLookup(gymId),
     ]);
 
     const lastSession = sessionHistory[0];
@@ -1341,7 +1268,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       : 7;
 
     const gymCSV = await buildGymCSV(gymId, req.userId);
-    const condCSV = buildConditioningCSV(conditioningExercises);
+    const condCSV = buildConditioningCSV(conditioningLookup);
     const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
 
     const userPrompt = `The athlete has arrived at the gym for an extra session today. Select the ${weightExercises} best weight exercises for them based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
@@ -1350,7 +1277,7 @@ CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
-- Gym: ${gym}
+- Gym: ${gymName}
 - Days since last session: ${daysSinceLast}
 - Weight exercises: ${weightExercises}
 - Conditioning exercises: ${conditioningCount}
@@ -1399,9 +1326,7 @@ Return ONLY this exact JSON structure, nothing else:
   "conditioning": [
     {
       "exercise": "<name>",
-      "sets": <number>,
-      "target_reps": <number>,
-      "weight_kg": <number>
+      "sets": <number>
     }
   ]
 }
@@ -1416,36 +1341,30 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
     });
 
     const rawText = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
       .join("");
-
     const result = JSON.parse(cleanJSON(rawText));
 
-    if (!result.exercises || result.exercises.length === 0) {
+    if (!result.exercises || result.exercises.length === 0)
       throw new Error("Invalid session structure from Claude");
-    }
 
-    // Validate and correct AI-generated weights against equipment constraints
     result.exercises = await validateAndCorrectWeights(
       result.exercises,
       gymId,
       req.userId,
     );
-
-    const progResult = await pool.query(
-      `SELECT p.id FROM programmes p
-       JOIN sessions s ON s.programme_id = p.id
-       WHERE s.user_id = $1
-       ORDER BY p.created_at DESC
-       LIMIT 1`,
-      [req.userId],
+    result.conditioning = enrichConditioningExercises(
+      result.conditioning || [],
+      conditioningLookup,
     );
 
-    if (progResult.rows.length === 0) {
+    const progResult = await pool.query(
+      `SELECT p.id FROM programmes p JOIN sessions s ON s.programme_id = p.id WHERE s.user_id = $1 ORDER BY p.created_at DESC LIMIT 1`,
+      [req.userId],
+    );
+    if (progResult.rows.length === 0)
       return res.status(400).json({ error: "No active programme found" });
-    }
-
     const programmeId = progResult.rows[0].id;
 
     const client = await pool.connect();
@@ -1453,10 +1372,7 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
       await client.query("BEGIN");
 
       const sessionResult = await client.query(
-        `INSERT INTO sessions
-           (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym, status, started_at)
-         VALUES ($1, $2, 'extra', 1, $3, $4, $5, 'in_progress', NOW())
-         RETURNING id`,
+        `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym, status, started_at) VALUES ($1, $2, 'extra', 1, $3, $4, $5, 'in_progress', NOW()) RETURNING id`,
         [req.userId, programmeId, phase_week, gymId, gymName],
       );
 
@@ -1467,10 +1383,7 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
       for (let i = 0; i < weightExs.length; i++) {
         const ex = weightExs[i];
         await client.query(
-          `INSERT INTO planned_exercises
-             (session_id, exercise_name, muscles_primary, sub_component,
-              order_index, target_sets, target_reps, target_weight)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             sessionId,
             ex.exercise,
@@ -1487,10 +1400,7 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
       for (let i = 0; i < condExs.length; i++) {
         const ex = condExs[i];
         await client.query(
-          `INSERT INTO planned_exercises
-             (session_id, exercise_name, muscles_primary, sub_component,
-              order_index, target_sets, target_reps, target_weight)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, metric) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             sessionId,
             ex.exercise,
@@ -1499,17 +1409,19 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
             weightExs.length + i,
             ex.sets,
             ex.target_reps,
-            ex.weight_kg,
+            0,
+            ex.metric,
           ],
         );
       }
 
       await client.query("COMMIT");
-
-      res.status(201).json({
-        message: "Extra session generated and started",
-        session_id: sessionId,
-      });
+      res
+        .status(201)
+        .json({
+          message: "Extra session generated and started",
+          session_id: sessionId,
+        });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -1527,10 +1439,8 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
 
 router.post("/exercise-metadata", requireAuth, async (req, res) => {
   const { exercise_name } = req.body;
-
-  if (!exercise_name) {
+  if (!exercise_name)
     return res.status(400).json({ error: "exercise_name is required" });
-  }
 
   try {
     const message = await anthropic.messages.create({
@@ -1556,10 +1466,9 @@ No explanation. No markdown. Valid JSON only.`,
     });
 
     const rawText = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
       .join("");
-
     const metadata = JSON.parse(cleanJSON(rawText));
     res.json(metadata);
   } catch (err) {
@@ -1573,37 +1482,26 @@ No explanation. No markdown. Valid JSON only.`,
 
 router.post("/suggest-exercises", requireAuth, async (req, res) => {
   const { gym_id } = req.body;
-
-  if (!gym_id) {
-    return res.status(400).json({ error: "gym_id is required" });
-  }
+  if (!gym_id) return res.status(400).json({ error: "gym_id is required" });
 
   try {
     const gymResult = await pool.query(
       `SELECT gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
       [gym_id, req.userId],
     );
-
-    if (gymResult.rows.length === 0) {
+    if (gymResult.rows.length === 0)
       return res.status(404).json({ error: "Gym not found" });
-    }
-
     const gymName = gymResult.rows[0].gym_name;
 
     const equipmentResult = await pool.query(
-      `SELECT equipment_name, type, unladen_weight_kg, increment_kg
-       FROM equipment WHERE gym_id = $1 AND user_id = $2
-       ORDER BY type ASC, equipment_name ASC`,
+      `SELECT equipment_name, type, unladen_weight_kg, increment_kg FROM equipment WHERE gym_id = $1 AND user_id = $2 ORDER BY type ASC, equipment_name ASC`,
       [gym_id, req.userId],
     );
-
     const existingResult = await pool.query(
       `SELECT exercise FROM exercises WHERE gym_id = $1 AND user_id = $2`,
       [gym_id, req.userId],
     );
-
     const existingNames = existingResult.rows.map((e) => e.exercise);
-
     const equipmentList =
       equipmentResult.rows.length > 0
         ? equipmentResult.rows
@@ -1625,7 +1523,7 @@ ${equipmentList}
 EXERCISES ALREADY IN THEIR LIBRARY (exclude these)
 ${existingNames.length > 0 ? existingNames.join(", ") : "None"}
 
-SSuggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
+Suggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
@@ -1647,10 +1545,9 @@ Group logically but return as a flat array. No explanation. No markdown. Valid J
     });
 
     const rawText = message.content
-      .filter((block) => block.type === "text")
-      .map((block) => block.text)
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
       .join("");
-
     const result = JSON.parse(cleanJSON(rawText));
     res.json(result);
   } catch (err) {
@@ -1665,13 +1562,9 @@ Group logically but return as a flat array. No explanation. No markdown. Valid J
 router.get("/weekly-feedback", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT * FROM weekly_feedback
-       WHERE user_id = $1
-       ORDER BY created_at DESC
-       LIMIT 1`,
+      `SELECT * FROM weekly_feedback WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
       [req.userId],
     );
-
     res.json(result.rows.length > 0 ? result.rows[0] : null);
   } catch (err) {
     console.error("Get weekly feedback error:", err.message);
@@ -1699,10 +1592,8 @@ async function buildGymCSV(gymId, userId) {
 
     const header =
       "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight_kg,increment_kg,max_weight_kg";
-
-    if (result.rows.length === 0) {
+    if (result.rows.length === 0)
       return header + "\n(no exercises configured for this gym)";
-    }
 
     const rows = result.rows.map(
       (e) =>
@@ -1742,8 +1633,8 @@ BLOCK EXCLUSION — no exercise from Block 1 may appear in Block 2
 CONDITIONING SELECTION RULES
 - Always include at least 1 cardio category exercise and 1 core category exercise
 - Use remaining slots for mobility or trx based on athlete goals and phase
-- For time-based exercises (metric = time): target value is seconds, set weight_kg equal to target (e.g. Plank 60s → weight_kg: 60)
-- For rep-based exercises: weight_kg should be 0
+- Only return the exercise name and sets — targets and metrics are looked up server-side
+- Exercise names must match the conditioning library exactly
 
 WEIGHT RULES
 - The exercise library CSV includes equipment_name, increment_kg, and max_weight_kg per exercise

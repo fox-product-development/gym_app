@@ -28,6 +28,7 @@ interface PlannedExercise {
   target_weight: number;
   range_exceeded: boolean;
   set_style: "standard" | "drop";
+  metric: string | null;
 }
 
 interface LoggedSet {
@@ -60,17 +61,11 @@ function isDumbbellExercise(exerciseName: string): boolean {
   return exerciseName.toLowerCase().includes("dumbbell");
 }
 
-function isConditioningExercise(exercise: PlannedExercise): boolean {
-  return exercise.muscles_primary === "Conditioning";
-}
-
 function weightUnit(weight: number, exercise: PlannedExercise): string {
-  if (isConditioningExercise(exercise)) {
-    return weight > 0 ? `${weight}s` : "bodyweight";
-  }
-  if (isDumbbellExercise(exercise.exercise_name)) {
+  if (exercise.metric === "time") return `${exercise.target_reps} secs`;
+  if (exercise.metric === "reps") return `${exercise.target_reps} reps`;
+  if (isDumbbellExercise(exercise.exercise_name))
     return `${weight} kg per dumbbell`;
-  }
   return `${weight} kg`;
 }
 
@@ -82,6 +77,7 @@ function RepEntryModal({
   weight,
   exerciseName,
   musclesPrimary,
+  metric,
   onConfirm,
   onClose,
 }: {
@@ -90,6 +86,7 @@ function RepEntryModal({
   weight: number;
   exerciseName: string;
   musclesPrimary: string;
+  metric: string | null;
   onConfirm: (reps: number) => void;
   onClose: () => void;
 }) {
@@ -122,13 +119,13 @@ function RepEntryModal({
   }
 
   const weightLabel =
-    musclesPrimary === "Conditioning"
-      ? weight > 0
-        ? `${weight} seconds`
-        : "bodyweight"
-      : isDumbbellExercise(exerciseName)
-        ? `${weight} kg per dumbbell`
-        : `${weight} kg`;
+    metric === "time"
+      ? `${targetReps} seconds`
+      : metric === "reps"
+        ? `${targetReps} reps`
+        : isDumbbellExercise(exerciseName)
+          ? `${weight} kg per dumbbell`
+          : `${weight} kg`;
 
   return (
     <Modal
@@ -732,13 +729,13 @@ function ExerciseBlock({
                         {exercise.target_weight}
                       </Text>
                       <Text style={{ fontSize: 11, color: Colors.ter }}>
-                        {isConditioningExercise(exercise)
-                          ? exercise.target_weight > 0
-                            ? "sec"
-                            : ""
-                          : isDumbbell
-                            ? "kg ea"
-                            : "kg"}
+                        {exercise.metric === "time"
+                          ? "sec"
+                          : exercise.metric === "reps"
+                            ? "reps"
+                            : isDumbbell
+                              ? "kg ea"
+                              : "kg"}
                       </Text>
 
                       <View
@@ -824,6 +821,7 @@ function ExerciseBlock({
         weight={activeWeight}
         exerciseName={exercise.exercise_name}
         musclesPrimary={exercise.muscles_primary}
+        metric={exercise.metric}
         onConfirm={handleRepConfirm}
         onClose={() => {
           setRepModalOpen(false);

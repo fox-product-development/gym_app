@@ -36,6 +36,7 @@ interface PlannedExercise {
   target_sets: number;
   target_reps: number;
   target_weight: number;
+  metric: string | null;
 }
 
 interface Session {
@@ -917,7 +918,11 @@ function SessionCard({
                 textAlign: "right",
               }}
             >
-              {ex.target_weight} kg
+              {ex.metric === "time"
+                ? `${ex.target_reps}s`
+                : ex.metric === "reps"
+                  ? `${ex.target_reps} reps`
+                  : `${ex.target_weight} kg`}
             </Text>
           </View>
         ))}
