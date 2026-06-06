@@ -6,31 +6,9 @@ require("dotenv").config();
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("./db");
 const { sendWeeklyReport } = require("./email");
+const { SYSTEM_PROMPT, buildUserPrompt } = require("./prompts/sundayReport");
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// ─── System prompt ────────────────────────────────────────────────────────────
-
-const SUNDAY_REPORT_SYSTEM_PROMPT = `You are a personal gym coach writing a weekly review for your athlete. You have access to their full week of data — training sessions, diet logs, mood and energy ratings, cardio activity, and body composition. 
-
-Your job is to find the connections between these data points and tell a coherent story about the week. Do not summarise each category separately. Instead, reason across all the data to explain what happened and why — how diet may have influenced energy, how energy influenced session performance, how cardio load affected recovery, and how all of this connects to progressive overload and phase progress.
-
-Write like a coach who has reviewed the data carefully and has something specific to say. Not a data report. Not a list of observations. A considered, evidence-based assessment followed by clear actions.
-
-Tone guide is provided per athlete — follow it precisely.`;
-
-// ─── Tone map ─────────────────────────────────────────────────────────────────
-
-const TONE_GUIDE = {
-  motivational:
-    "Be encouraging and celebratory. Acknowledge every win. Frame challenges as opportunities. Keep energy high throughout.",
-  neutral:
-    "Be factual and balanced. No fluff, no cheerleading. State what happened and what to do about it.",
-  coaching:
-    "Explain the why behind every observation. Help the athlete understand the reasoning, not just the conclusion. Be instructional and clear.",
-  drill_sergeant:
-    "Be direct and demanding. High expectations, no excuses. Praise is brief. Criticism is specific. Focus on execution.",
-};
 
 // ─── Phase cycle ──────────────────────────────────────────────────────────────
 
@@ -347,62 +325,21 @@ async function generateReportForUser(user, overrideWeekStartDate = null) {
     [user.id],
   );
 
-  const tone = user.agent_tone || "neutral";
-  const toneGuide = TONE_GUIDE[tone] || TONE_GUIDE.neutral;
-
-  const userPrompt = `Write the weekly coaching report for the following athlete.
-
-ATHLETE PROFILE
-- Training level: ${user.training_level || "not set"}
-- Goals: Size ${user.goal_size || "?"}★ · Strength ${user.goal_strength || "?"}★ · Definition ${user.goal_definition || "?"}★ · Fitness ${user.goal_fitness || "?"}★
-- Preferences: ${user.goal_description || "none specified"}
-- Phase: ${user.current_phase} · Block ${user.current_block} · Week ${user.phase_week} of 6
-
-TONE
-${toneGuide}
-
-SESSION DATA — LAST 4 WEEKS
-${JSON.stringify(sessionResult.rows, null, 2)}
-
-PROGRESSIVE OVERLOAD ACHIEVED THIS WEEK
-${poResult.rows.length > 0 ? poResult.rows.map((p) => `${p.exercise_name} (${p.muscles_primary})`).join(", ") : "None this week"}
-
-ESTIMATED 1RM HISTORY
-${JSON.stringify(oneRepMaxResult.rows, null, 2)}
-
-BODY COMPOSITION — LAST 4 WEEKS
-${JSON.stringify(bodyCompResult.rows, null, 2)}
-
-DIET LOGS — LAST 2 WEEKS
-${dietResult.rows.length > 0 ? JSON.stringify(dietResult.rows, null, 2) : "No diet data logged"}
-
-MOOD AND ENERGY — LAST 2 WEEKS
-${moodResult.rows.length > 0 ? JSON.stringify(moodResult.rows, null, 2) : "No mood data logged"}
-
-CARDIO — LAST 2 WEEKS
-${cardioResult.rows.length > 0 ? JSON.stringify(cardioResult.rows, null, 2) : "No cardio logged"}
-
-Write the report in exactly this structure:
-
-[HEADLINE]
-One sentence capturing the character of this week. Written by you, specific to this athlete, not a template.
-
-[LOOKING BACK]
-Reason across ALL the data to tell the story of this week. Find the connections — how did diet influence energy, how did energy influence session performance, how did cardio load affect recovery? Name specific exercises, weights, and numbers. Do not summarise each category separately. Write one connected narrative that explains what happened and why.
-
-[STOP · START · CONTINUE]
-Three sections, each with 2-3 specific evidence-based actions. Every action must reference the data that supports it. No generic advice.
-
-STOP — things the data suggests are working against their goals
-START — new behaviours the data suggests would help
-CONTINUE — things that are clearly working and should be maintained
-
-Keep the entire report readable and direct. It will be displayed in the app and emailed to the athlete.`;
+  const userPrompt = buildUserPrompt({
+    user,
+    sessions: sessionResult.rows,
+    poExercises: poResult.rows,
+    oneRepMaxHistory: oneRepMaxResult.rows,
+    bodyComp: bodyCompResult.rows,
+    dietLogs: dietResult.rows,
+    moodLogs: moodResult.rows,
+    cardioLogs: cardioResult.rows,
+  });
 
   const message = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 4000,
-    system: SUNDAY_REPORT_SYSTEM_PROMPT,
+    system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],
   });
 
