@@ -57,6 +57,33 @@ async function advancePhaseWeek(user) {
   }
 
   const newWeek = phase_week + 1;
+
+  const skipRestWeek =
+    (current_phase === "anatomical_adaptation" ||
+      current_phase === "muscle_definition") &&
+    newWeek === 7;
+
+  if (skipRestWeek) {
+    const newPhase = nextPhase(current_phase, user.phase_cycle);
+    await pool.query(
+      `UPDATE users
+       SET current_phase = $1, current_block = 1, phase_week = 1,
+           phase_start_date = CURRENT_DATE
+       WHERE id = $2`,
+      [newPhase, id],
+    );
+    console.log(
+      `✓ Skipping rest week for ${current_phase} — advanced to new phase: ${newPhase}`,
+    );
+    await triggerBlockGeneration({
+      ...user,
+      current_phase: newPhase,
+      current_block: 1,
+      phase_week: 1,
+    });
+    return;
+  }
+
   await pool.query(`UPDATE users SET phase_week = $1 WHERE id = $2`, [
     newWeek,
     id,
