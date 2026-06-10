@@ -66,7 +66,7 @@ async function getOneRepMaxHistory(userId) {
 
 async function getBodyCompHistory(userId) {
   const result = await pool.query(
-    `SELECT weight_kg, muscle_mass_kg, logged_at
+    `SELECT weight, muscle_mass, logged_at
      FROM body_composition
      WHERE user_id = $1
        AND logged_at >= NOW() - INTERVAL '4 weeks'
@@ -159,7 +159,7 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
 
   try {
     const result = await pool.query(
-      `SELECT e.exercise, eq.increment_kg, eq.max_weight_kg
+      `SELECT e.exercise, eq.increment, eq.max_weight
        FROM exercises e
        LEFT JOIN equipment eq ON eq.id = e.equipment_id
        WHERE e.user_id = $1 AND e.gym_id = $2`,
@@ -169,8 +169,8 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
     const equipMap = {};
     for (const row of result.rows) {
       equipMap[row.exercise.toLowerCase()] = {
-        increment_kg: row.increment_kg ? parseFloat(row.increment_kg) : null,
-        max_weight_kg: row.max_weight_kg ? parseFloat(row.max_weight_kg) : null,
+        increment_: row.increment ? parseFloat(row.increment) : null,
+        max_weight_: row.max_weight ? parseFloat(row.max_weight) : null,
       };
     }
 
@@ -178,19 +178,19 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
       const lookup = equipMap[ex.exercise.toLowerCase()];
       if (!lookup) continue;
 
-      let weight = parseFloat(ex.weight_kg) || 0;
+      let weight = parseFloat(ex.weight) || 0;
       if (weight <= 0) continue;
 
-      if (lookup.increment_kg && lookup.increment_kg > 0) {
-        weight = Math.round(weight / lookup.increment_kg) * lookup.increment_kg;
-        if (weight <= 0) weight = lookup.increment_kg;
+      if (lookup.increment && lookup.increment > 0) {
+        weight = Math.round(weight / lookup.increment) * lookup.increment;
+        if (weight <= 0) weight = lookup.increment;
       }
 
-      if (lookup.max_weight_kg && weight > lookup.max_weight_kg) {
-        weight = lookup.max_weight_kg;
+      if (lookup.max_weight && weight > lookup.max_weight) {
+        weight = lookup.max_weight;
       }
 
-      ex.weight_kg = Math.round(weight * 10) / 10;
+      ex.weight = Math.round(weight * 10) / 10;
     }
   } catch (err) {
     console.error("validateAndCorrectWeights error:", err.message);
@@ -206,7 +206,7 @@ async function buildEquipmentSummary(gymId, userId) {
 
   try {
     const result = await pool.query(
-      `SELECT id, equipment_name, type, increment_kg, max_weight_kg, unladen_weight_kg
+      `SELECT id, equipment_name, type, increment, max_weight, unladen_weight
        FROM equipment
        WHERE gym_id = $1 AND user_id = $2
          AND type != 'apparatus'
@@ -231,11 +231,11 @@ async function buildEquipmentSummary(gymId, userId) {
         );
       } else if (
         (eq.type === "fixed" || eq.type === "machine") &&
-        eq.increment_kg
+        eq.increment
       ) {
-        const max = eq.max_weight_kg ? ` — max ${eq.max_weight_kg}kg` : "";
+        const max = eq.max_weight ? ` — max ${eq.max_weight}kg` : "";
         sections.push(
-          `${eq.equipment_name} (${eq.type}): increments of ${eq.increment_kg}kg${max}`,
+          `${eq.equipment_name} (${eq.type}): increments of ${eq.increment}kg${max}`,
         );
       }
     }
@@ -254,10 +254,10 @@ You must only suggest weights that are achievable on the specified equipment. Fo
 ${equipmentSection}
 
 DUMBBELL CONVENTION
-All dumbbell weights are stored and displayed as the weight of ONE dumbbell. For example, weight_kg: 10 means 10kg in each hand for a pair exercise, or 10kg in one hand for a single dumbbell exercise. Never double the weight for pair exercises.
+All dumbbell weights are stored and displayed as the weight of ONE dumbbell. For example, weight: 10 means 10kg in each hand for a pair exercise, or 10kg in one hand for a single dumbbell exercise. Never double the weight for pair exercises.
 
 BODYWEIGHT EXERCISES
-Exercises with no linked equipment always have weight_kg: 0.`;
+Exercises with no linked equipment always have weight: 0.`;
 }
 
 // Builds a plain-text CSV of the conditioning library for the AI prompt.
@@ -390,12 +390,9 @@ router.post("/generate-block", async (req, res) => {
       [req.userId],
     );
     if (gymResult.rows.length === 0) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "No default gym configured. Set a default gym in Gym Settings.",
-        });
+      return res.status(400).json({
+        error: "No default gym configured. Set a default gym in Gym Settings.",
+      });
     }
     const gymId = gymResult.rows[0].id;
     const gymName = gymResult.rows[0].gym_name;
@@ -489,7 +486,7 @@ Return ONLY this exact JSON structure, nothing else:
         "sub_component": "<sub component>",
         "sets": <number>,
         "target_reps": <number>,
-        "weight_kg": <number>
+        "weight": <number>
       }
     ],
     "conditioning": [
@@ -507,7 +504,7 @@ Return ONLY this exact JSON structure, nothing else:
         "sub_component": "<sub component>",
         "sets": <number>,
         "target_reps": <number>,
-        "weight_kg": <number>
+        "weight": <number>
       }
     ],
     "conditioning": [
@@ -589,7 +586,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
                 i,
                 ex.sets,
                 ex.target_reps,
-                ex.weight_kg,
+                ex.weight,
                 phase === "muscle_definition" ? "drop" : "standard",
               ],
             );
@@ -650,14 +647,12 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       }
 
       await client.query("COMMIT");
-      res
-        .status(201)
-        .json({
-          message: "Block generated successfully",
-          programme_id: programmeId,
-          compound_session: blockPlan.compound_session,
-          isolation_session: blockPlan.isolation_session,
-        });
+      res.status(201).json({
+        message: "Block generated successfully",
+        programme_id: programmeId,
+        compound_session: blockPlan.compound_session,
+        isolation_session: blockPlan.isolation_session,
+      });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -777,7 +772,7 @@ Return ONLY this exact JSON structure, nothing else:
       "sub_component": "<sub component>",
       "sets": <number>,
       "target_reps": <number>,
-      "weight_kg": <number>
+      "weight": <number>
     }
   ],
   "conditioning": [
@@ -840,7 +835,7 @@ No extra fields. No explanation. No markdown.`;
             i,
             ex.sets,
             ex.target_reps,
-            ex.weight_kg,
+            ex.weight,
           ],
         );
       }
@@ -869,14 +864,12 @@ No extra fields. No explanation. No markdown.`;
       );
       await client.query("COMMIT");
 
-      res
-        .status(200)
-        .json({
-          message: "Gym session generated and started",
-          session_id,
-          exercises: result.exercises,
-          conditioning: result.conditioning,
-        });
+      res.status(200).json({
+        message: "Gym session generated and started",
+        session_id,
+        exercises: result.exercises,
+        conditioning: result.conditioning,
+      });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -1038,7 +1031,7 @@ Return ONLY this exact JSON structure, nothing else:
         "sub_component": "<sub component>",
         "sets": <number>,
         "target_reps": <number>,
-        "weight_kg": <number>
+        "weight": <number>
       }
     ],
     "conditioning": [
@@ -1056,7 +1049,7 @@ Return ONLY this exact JSON structure, nothing else:
         "sub_component": "<sub component>",
         "sets": <number>,
         "target_reps": <number>,
-        "weight_kg": <number>
+        "weight": <number>
       }
     ],
     "conditioning": [
@@ -1128,7 +1121,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
                 i,
                 ex.sets,
                 ex.target_reps,
-                ex.weight_kg,
+                ex.weight,
                 phase === "muscle_definition" ? "drop" : "standard",
               ],
             );
@@ -1186,14 +1179,12 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       }
 
       await client.query("COMMIT");
-      res
-        .status(201)
-        .json({
-          message: "Missing sessions generated successfully",
-          weeks: weeks_needed,
-          compound_session: blockPlan.compound_session,
-          isolation_session: blockPlan.isolation_session,
-        });
+      res.status(201).json({
+        message: "Missing sessions generated successfully",
+        weeks: weeks_needed,
+        compound_session: blockPlan.compound_session,
+        isolation_session: blockPlan.isolation_session,
+      });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -1320,7 +1311,7 @@ Return ONLY this exact JSON structure, nothing else:
       "sub_component": "<sub component>",
       "sets": <number>,
       "target_reps": <number>,
-      "weight_kg": <number>
+      "weight": <number>
     }
   ],
   "conditioning": [
@@ -1331,7 +1322,7 @@ Return ONLY this exact JSON structure, nothing else:
   ]
 }
 
-Exactly ${weightExercises} weight exercises and ${conditioningCount} conditioning exercises. Apply the current phase sets and reps scheme. Use target_weight_kg from the exercise library where available. Only suggest weights from the valid weights lists above. No extra fields. No explanation. No markdown.`;
+Exactly ${weightExercises} weight exercises and ${conditioningCount} conditioning exercises. Apply the current phase sets and reps scheme. Use target_weight from the exercise library where available. Only suggest weights from the valid weights lists above. No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -1392,7 +1383,7 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
             i,
             ex.sets,
             ex.target_reps,
-            ex.weight_kg,
+            ex.weight,
           ],
         );
       }
@@ -1416,12 +1407,10 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
       }
 
       await client.query("COMMIT");
-      res
-        .status(201)
-        .json({
-          message: "Extra session generated and started",
-          session_id: sessionId,
-        });
+      res.status(201).json({
+        message: "Extra session generated and started",
+        session_id: sessionId,
+      });
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -1494,7 +1483,7 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
     const gymName = gymResult.rows[0].gym_name;
 
     const equipmentResult = await pool.query(
-      `SELECT equipment_name, type, unladen_weight_kg, increment_kg FROM equipment WHERE gym_id = $1 AND user_id = $2 ORDER BY type ASC, equipment_name ASC`,
+      `SELECT equipment_name, type, unladen_weight, increment FROM equipment WHERE gym_id = $1 AND user_id = $2 ORDER BY type ASC, equipment_name ASC`,
       [gym_id, req.userId],
     );
     const existingResult = await pool.query(
@@ -1576,13 +1565,13 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
 
 async function buildGymCSV(gymId, userId) {
   if (!gymId) {
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight_kg,increment_kg,max_weight_kg\n(no gym selected)";
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight,increment,max_weight\n(no gym selected)";
   }
   try {
     const result = await pool.query(
       `SELECT e.exercise, e.muscles_primary, e.muscles_secondary, e.type,
-              e.equipment_type, e.sub_component, e.emg_score, e.target_weight_kg,
-              eq.equipment_name, eq.increment_kg, eq.max_weight_kg
+              e.equipment_type, e.sub_component, e.emg_score, e.target_weight,
+              eq.equipment_name, eq.increment, eq.max_weight
        FROM exercises e
        LEFT JOIN equipment eq ON eq.id = e.equipment_id
        WHERE e.user_id = $1 AND e.gym_id = $2 AND e.active = TRUE
@@ -1591,18 +1580,18 @@ async function buildGymCSV(gymId, userId) {
     );
 
     const header =
-      "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight_kg,increment_kg,max_weight_kg";
+      "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight,increment,max_weight";
     if (result.rows.length === 0)
       return header + "\n(no exercises configured for this gym)";
 
     const rows = result.rows.map(
       (e) =>
-        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight_kg ?? "null"},${e.increment_kg ?? "null"},${e.max_weight_kg ?? "null"}`,
+        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight ?? "null"},${e.increment ?? "null"},${e.max_weight ?? "null"}`,
     );
     return [header, ...rows].join("\n");
   } catch (err) {
     console.error("buildGymCSV DB error:", err.message);
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight_kg,increment_kg,max_weight_kg\n(error loading exercises)";
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight,increment,max_weight\n(error loading exercises)";
   }
 }
 
@@ -1637,26 +1626,26 @@ CONDITIONING SELECTION RULES
 - Exercise names must match the conditioning library exactly
 
 WEIGHT RULES
-- The exercise library CSV includes equipment_name, increment_kg, and max_weight_kg per exercise
-- If max_weight_kg is provided: NEVER suggest a weight exceeding it
-- If increment_kg is provided: the weight must be a multiple of the increment
-- If target_weight_kg is NOT null: use it directly (as long as it does not exceed max_weight_kg)
-- If target_weight_kg IS null: estimate using phase percentage of 1RM if available, or a conservative starting weight:
+- The exercise library CSV includes equipment_name, increment, and max_weight per exercise
+- If max_weight is provided: NEVER suggest a weight exceeding it
+- If increment is provided: the weight must be a multiple of the increment
+- If target_weight is NOT null: use it directly (as long as it does not exceed max_weight)
+- If target_weight IS null: estimate using phase percentage of 1RM if available, or a conservative starting weight:
   - Anatomical Adaptation: 60% of 1RM
-  - Hypertrophy: 67% of 1RM
-  - Maximum Strength: 80% of 1RM
+  - Hypertrophy: 75% of 1RM
+  - Maximum Strength: 85% of 1RM
   - Muscle Definition: 55% of 1RM
-- For loadable equipment (where increment_kg and max_weight_kg are null): use the valid weights from the WEIGHT GUIDANCE section in the user prompt
+- For loadable equipment (where increment and max_weight are null): use the valid weights from the WEIGHT GUIDANCE section in the user prompt
 
 You must only suggest weights that are valid for the exercise's equipment_type. The user prompt includes the full valid weight list — pick the closest valid value that does not exceed the calculated target.
 
 DUMBBELL CONVENTION
-weight_kg for any dumbbell exercise is the weight of ONE dumbbell. Do not double it for pair exercises.
+weight for any dumbbell exercise is the weight of ONE dumbbell. Do not double it for pair exercises.
 
 PHASE SCHEMES
 - Anatomical Adaptation: 3 sets x 20 reps target (min 15)
-- Hypertrophy: 4 sets x 12 reps target (min 8)
-- Maximum Strength: 4 sets x 6 reps target (min 3)
+- Hypertrophy: 4 sets x 10 reps target (min 8)
+- Maximum Strength: 5 sets x 5 reps target (min 3)
 - Muscle Definition: 1 set x 40 reps target (min 30) — DROP SET STYLE (Work Gym only)
 
 MUSCLE DEFINITION — CABLE MACHINE RESTRICTION

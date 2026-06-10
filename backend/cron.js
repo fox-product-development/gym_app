@@ -1,12 +1,14 @@
 // backend/cron.js
 // Sunday evening cron job — advances phase week, generates weekly coaching report,
-// and emails it to the user. Runs every Sunday at 8PM via node-cron in index.js.
+// and emails it to the user. Runs every Sunday at 10:30PM UTC via node-cron in index.js.
 
 require("dotenv").config();
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("./db");
 const { sendWeeklyReport } = require("./email");
 const { SYSTEM_PROMPT, buildUserPrompt } = require("./prompts/sundayReport");
+const { PHASE_CONFIG } = require("./phaseConfig");
+const { snapToValidWeight } = require("./weightCalc");
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -29,6 +31,80 @@ function nextPhase(currentPhase, phaseCycle) {
   return phases[(idx + 1) % phases.length];
 }
 
+// ─── Phase transition weight recalculation ────────────────────────────────────
+// Runs at the end of a phase (phase_week = 7) before block generation fires.
+// Derives an implied 1RM from each exercise's current target weight using the
+// outgoing phase percentage, then calculates the new target using the incoming
+// phase percentage. Snaps DOWN to the nearest valid equipment weight to stay
+// conservative on the first session of the new phase.
+
+async function recalculateTargetWeightsForPhaseTransition(
+  userId,
+  outgoingPhase,
+  incomingPhase,
+) {
+  console.log(
+    `Recalculating target weights for user ${userId}: ${outgoingPhase} → ${incomingPhase}`,
+  );
+
+  const outgoingPercentage = PHASE_CONFIG[outgoingPhase]?.percentage;
+  const incomingPercentage = PHASE_CONFIG[incomingPhase]?.percentage;
+
+  if (!outgoingPercentage || !incomingPercentage) {
+    console.error(
+      `Unknown phase in transition: ${outgoingPhase} → ${incomingPhase}`,
+    );
+    return;
+  }
+
+  // Fetch all active exercises with a non-null target weight for this user
+  const exerciseResult = await pool.query(
+    `SELECT e.id, e.exercise, e.target_weight
+     FROM exercises e
+     WHERE e.user_id = $1
+       AND e.target_weight IS NOT NULL
+       AND e.active = TRUE`,
+    [userId],
+  );
+
+  if (exerciseResult.rows.length === 0) {
+    console.log(
+      `No exercises with target weights found for user ${userId} — skipping recalculation`,
+    );
+    return;
+  }
+
+  let updated = 0;
+  let skipped = 0;
+
+  for (const ex of exerciseResult.rows) {
+    const currentTarget = parseFloat(ex.target_weight);
+
+    // Derive implied 1RM from current target weight and outgoing phase percentage
+    const implied1RM = currentTarget / outgoingPercentage;
+
+    // Calculate new target for incoming phase
+    const newTargetRaw = implied1RM * incomingPercentage;
+
+    // Snap DOWN to nearest valid equipment weight (conservative)
+    const newTarget = await snapToValidWeight(newTargetRaw, ex.id, userId);
+
+    if (newTarget > 0 && newTarget !== currentTarget) {
+      await pool.query(
+        `UPDATE exercises SET target_weight = $1 WHERE id = $2`,
+        [newTarget, ex.id],
+      );
+      updated++;
+    } else {
+      skipped++;
+    }
+  }
+
+  console.log(
+    `✓ Phase transition recalculation complete for user ${userId}: ${updated} updated, ${skipped} unchanged`,
+  );
+}
+
 // ─── Phase advancement ────────────────────────────────────────────────────────
 
 async function advancePhaseWeek(user) {
@@ -39,6 +115,16 @@ async function advancePhaseWeek(user) {
 
   if (phase_week === 7) {
     const newPhase = nextPhase(current_phase, user.phase_cycle);
+
+    // Recalculate all target weights before advancing the phase counter.
+    // Block generation reads target_weight immediately after, so this
+    // must complete first.
+    await recalculateTargetWeightsForPhaseTransition(
+      id,
+      current_phase,
+      newPhase,
+    );
+
     await pool.query(
       `UPDATE users
        SET current_phase = $1, current_block = 1, phase_week = 1,
@@ -57,33 +143,6 @@ async function advancePhaseWeek(user) {
   }
 
   const newWeek = phase_week + 1;
-
-  const skipRestWeek =
-    (current_phase === "anatomical_adaptation" ||
-      current_phase === "muscle_definition") &&
-    newWeek === 7;
-
-  if (skipRestWeek) {
-    const newPhase = nextPhase(current_phase, user.phase_cycle);
-    await pool.query(
-      `UPDATE users
-       SET current_phase = $1, current_block = 1, phase_week = 1,
-           phase_start_date = CURRENT_DATE
-       WHERE id = $2`,
-      [newPhase, id],
-    );
-    console.log(
-      `✓ Skipping rest week for ${current_phase} — advanced to new phase: ${newPhase}`,
-    );
-    await triggerBlockGeneration({
-      ...user,
-      current_phase: newPhase,
-      current_block: 1,
-      phase_week: 1,
-    });
-    return;
-  }
-
   await pool.query(`UPDATE users SET phase_week = $1 WHERE id = $2`, [
     newWeek,
     id,
@@ -128,6 +187,10 @@ async function triggerBlockGeneration(user) {
 }
 
 // ─── Rest week session creation ───────────────────────────────────────────────
+// Copies Week 6 exercises at reduced load for the rest week.
+// Rest week target = current target_weight × (rest% / current_phase%)
+// This keeps rest week weights proportional to the current training target
+// rather than using a hardcoded 45% multiplier against the raw weight.
 
 async function createRestWeekSessions(user) {
   console.log(`Creating rest week sessions for user ${user.id}`);
@@ -161,6 +224,14 @@ async function createRestWeekSessions(user) {
       return;
     }
 
+    const currentPhaseConfig = PHASE_CONFIG[user.current_phase];
+    const restPhaseConfig = PHASE_CONFIG.rest;
+
+    // Ratio of rest week percentage to current phase percentage
+    // e.g. Hypertrophy (75%) → rest (45%) = 0.45 / 0.75 = 0.60
+    const restRatio =
+      restPhaseConfig.percentage / (currentPhaseConfig?.percentage || 0.75);
+
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -178,29 +249,55 @@ async function createRestWeekSessions(user) {
           ],
         );
         const sessionId = sessionResult.rows[0].id;
+
         for (const ex of week6Session.exercises) {
+          // Use current target_weight from exercises table if available,
+          // fall back to planned weight from week 6 session
           const exResult = await client.query(
-            `SELECT target_weight_kg FROM exercises
+            `SELECT target_weight FROM exercises
              WHERE user_id = $1 AND exercise = $2 LIMIT 1`,
             [user.id, ex.exercise_name],
           );
-          const targetWeight =
-            exResult.rows.length > 0 && exResult.rows[0].target_weight_kg
-              ? Math.round(
-                  parseFloat(exResult.rows[0].target_weight_kg) * 0.45 * 2,
-                ) / 2
-              : Math.round(parseFloat(ex.target_weight) * 0.45 * 2) / 2;
+
+          const baseWeight =
+            exResult.rows.length > 0 && exResult.rows[0].target_weight
+              ? parseFloat(exResult.rows[0].target_weight)
+              : parseFloat(ex.target_weight);
+
+          // Derive rest week weight from the ratio, then snap to valid equipment weight
+          const rawRestWeight = Math.round(baseWeight * restRatio * 100) / 100;
+
+          // Look up the exercise id for snapToValidWeight
+          const exIdResult = await client.query(
+            `SELECT id FROM exercises WHERE user_id = $1 AND exercise = $2 LIMIT 1`,
+            [user.id, ex.exercise_name],
+          );
+
+          let targetWeight;
+          if (exIdResult.rows.length > 0) {
+            targetWeight = await snapToValidWeight(
+              rawRestWeight,
+              exIdResult.rows[0].id,
+              user.id,
+            );
+          } else {
+            // No exercise record — fall back to simple rounding
+            targetWeight = Math.round(rawRestWeight * 2) / 2;
+          }
+
           await client.query(
             `INSERT INTO planned_exercises
                (session_id, exercise_name, muscles_primary, sub_component,
                 order_index, target_sets, target_reps, target_weight)
-             VALUES ($1, $2, $3, $4, $5, 3, 12, $6)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
             [
               sessionId,
               ex.exercise_name,
               ex.muscles_primary,
               ex.sub_component,
               ex.order_index,
+              restPhaseConfig.sets,
+              restPhaseConfig.targetReps,
               targetWeight,
             ],
           );

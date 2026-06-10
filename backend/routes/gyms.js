@@ -128,13 +128,8 @@ router.get("/:gymId/equipment", requireAuth, async (req, res) => {
 
 // POST /gyms/:gymId/equipment
 router.post("/:gymId/equipment", requireAuth, async (req, res) => {
-  const {
-    equipment_name,
-    type,
-    unladen_weight_kg,
-    increment_kg,
-    max_weight_kg,
-  } = req.body;
+  const { equipment_name, type, unladen_weight, increment, max_weight, unit } =
+    req.body;
   if (!equipment_name || !type) {
     return res
       .status(400)
@@ -151,17 +146,18 @@ router.post("/:gymId/equipment", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `INSERT INTO equipment
-         (user_id, gym_id, equipment_name, type, unladen_weight_kg, increment_kg, max_weight_kg)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (user_id, gym_id, equipment_name, type, unladen_weight, increment, max_weight, unit)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         req.userId,
         req.params.gymId,
         equipment_name,
         type,
-        unladen_weight_kg || null,
-        increment_kg || null,
-        max_weight_kg || null,
+        unladen_weight || null,
+        increment || null,
+        max_weight || null,
+        unit || "kg",
       ],
     );
     res.status(201).json(result.rows[0]);
@@ -173,29 +169,26 @@ router.post("/:gymId/equipment", requireAuth, async (req, res) => {
 
 // PATCH /gyms/:gymId/equipment/:id
 router.patch("/:gymId/equipment/:id", requireAuth, async (req, res) => {
-  const {
-    equipment_name,
-    type,
-    unladen_weight_kg,
-    increment_kg,
-    max_weight_kg,
-  } = req.body;
+  const { equipment_name, type, unladen_weight, increment, max_weight, unit } =
+    req.body;
   try {
     const result = await pool.query(
       `UPDATE equipment
-       SET equipment_name    = COALESCE($1, equipment_name),
-           type              = COALESCE($2, type),
-           unladen_weight_kg = COALESCE($3, unladen_weight_kg),
-           increment_kg      = COALESCE($4, increment_kg),
-           max_weight_kg     = COALESCE($5, max_weight_kg)
-       WHERE id = $6 AND gym_id = $7 AND user_id = $8
+       SET equipment_name = COALESCE($1, equipment_name),
+           type           = COALESCE($2, type),
+           unladen_weight = COALESCE($3, unladen_weight),
+           increment      = COALESCE($4, increment),
+           max_weight     = COALESCE($5, max_weight),
+           unit           = COALESCE($6, unit)
+       WHERE id = $7 AND gym_id = $8 AND user_id = $9
        RETURNING *`,
       [
         equipment_name,
         type,
-        unladen_weight_kg,
-        increment_kg,
-        max_weight_kg,
+        unladen_weight,
+        increment,
+        max_weight,
+        unit,
         req.params.id,
         req.params.gymId,
         req.userId,
@@ -242,7 +235,7 @@ router.get("/:gymId/plates", requireAuth, async (req, res) => {
     const result = await pool.query(
       `SELECT * FROM plates
        WHERE gym_id = $1 AND user_id = $2
-       ORDER BY weight_kg ASC`,
+       ORDER BY weight ASC`,
       [req.params.gymId, req.userId],
     );
     res.json(result.rows);
@@ -254,20 +247,18 @@ router.get("/:gymId/plates", requireAuth, async (req, res) => {
 
 // POST /gyms/:gymId/plates — add a plate size
 router.post("/:gymId/plates", requireAuth, async (req, res) => {
-  const { weight_kg, quantity } = req.body;
+  const { weight, quantity } = req.body;
 
-  if (!weight_kg || quantity === undefined) {
-    return res
-      .status(400)
-      .json({ error: "weight_kg and quantity are required" });
+  if (!weight || quantity === undefined) {
+    return res.status(400).json({ error: "weight and quantity are required" });
   }
 
   try {
     const result = await pool.query(
-      `INSERT INTO plates (user_id, gym_id, weight_kg, quantity)
+      `INSERT INTO plates (user_id, gym_id, weight, quantity)
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [req.userId, req.params.gymId, weight_kg, quantity],
+      [req.userId, req.params.gymId, weight, quantity],
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -396,7 +387,8 @@ router.get("/:gymId/exercises", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT id, exercise, muscles_primary, muscles_secondary, type,
-              equipment_type, sub_component, emg_score, target_weight_kg, active
+              equipment_type, sub_component, emg_score, target_weight,
+              active, equipment_id
        FROM exercises
        WHERE user_id = $1 AND gym_id = $2
        ORDER BY type ASC, muscles_primary ASC, emg_score DESC`,
@@ -411,8 +403,15 @@ router.get("/:gymId/exercises", requireAuth, async (req, res) => {
 
 // PATCH /gyms/:gymId/exercises/:id — toggle active or update fields
 router.patch("/:gymId/exercises/:id", requireAuth, async (req, res) => {
-  const { active, exercise, muscles_primary, sub_component, type, emg_score } =
-    req.body;
+  const {
+    active,
+    exercise,
+    muscles_primary,
+    sub_component,
+    type,
+    emg_score,
+    equipment_id,
+  } = req.body;
 
   try {
     const result = await pool.query(
@@ -422,8 +421,9 @@ router.patch("/:gymId/exercises/:id", requireAuth, async (req, res) => {
            muscles_primary = COALESCE($3, muscles_primary),
            sub_component   = COALESCE($4, sub_component),
            type            = COALESCE($5, type),
-           emg_score       = COALESCE($6, emg_score)
-       WHERE id = $7 AND user_id = $8 AND gym_id = $9
+           emg_score       = COALESCE($6, emg_score),
+           equipment_id    = COALESCE($7, equipment_id)
+       WHERE id = $8 AND user_id = $9 AND gym_id = $10
        RETURNING *`,
       [
         active,
@@ -432,6 +432,7 @@ router.patch("/:gymId/exercises/:id", requireAuth, async (req, res) => {
         sub_component,
         type,
         emg_score,
+        equipment_id,
         req.params.id,
         req.userId,
         req.params.gymId,

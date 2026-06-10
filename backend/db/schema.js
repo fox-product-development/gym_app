@@ -68,7 +68,6 @@ async function createTables() {
     console.log("✓ users table ready");
 
     // ─── Approved emails ─────────────────────────────────────────────────────
-    // Controls who can register. Admin manages this list via settings screen.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS approved_emails (
         id         SERIAL PRIMARY KEY,
@@ -80,7 +79,6 @@ async function createTables() {
     console.log("✓ approved_emails table ready");
 
     // ─── Gyms ────────────────────────────────────────────────────────────────
-    // User-scoped gym definitions. is_default drives block generation.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS gyms (
         id          SERIAL PRIMARY KEY,
@@ -95,6 +93,7 @@ async function createTables() {
     // ─── Equipment ───────────────────────────────────────────────────────────
     // Equipment per gym. type drives weight calculation logic.
     // loadable: uses plate pool. fixed/machine: uses increment. apparatus: no weight.
+    // unit: 'kg' or 'lbs' — determines display suffix and increment unit.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS equipment (
         id                  SERIAL PRIMARY KEY,
@@ -103,8 +102,11 @@ async function createTables() {
         equipment_name      TEXT NOT NULL,
         type                TEXT NOT NULL
           CHECK (type IN ('loadable', 'fixed', 'machine', 'apparatus')),
-        unladen_weight_kg   NUMERIC(5,2),
-        increment_kg        NUMERIC(5,2),
+        unladen_weight      NUMERIC(5,2),
+        increment           NUMERIC(5,2),
+        max_weight          NUMERIC(6,2),
+        unit                TEXT NOT NULL DEFAULT 'kg'
+          CHECK (unit IN ('kg', 'lbs')),
         created_at          TIMESTAMP DEFAULT NOW()
       );
     `);
@@ -117,7 +119,7 @@ async function createTables() {
         id          SERIAL PRIMARY KEY,
         user_id     INTEGER REFERENCES users(id),
         gym_id      INTEGER REFERENCES gyms(id),
-        weight_kg   NUMERIC(5,3) NOT NULL,
+        weight      NUMERIC(5,3) NOT NULL,
         quantity    INTEGER NOT NULL DEFAULT 0,
         created_at  TIMESTAMP DEFAULT NOW()
       );
@@ -240,7 +242,7 @@ async function createTables() {
         sub_component     TEXT,
         emg_score         INTEGER,
         active            BOOLEAN NOT NULL DEFAULT TRUE,
-        target_weight_kg  NUMERIC(6,2) DEFAULT NULL,
+        target_weight     NUMERIC(6,2) DEFAULT NULL,
         one_rep_max       NUMERIC(6,2) DEFAULT NULL,
         gym               TEXT,
         created_at        TIMESTAMP DEFAULT NOW(),
@@ -250,7 +252,6 @@ async function createTables() {
     console.log("✓ exercises table ready");
 
     // ─── Diet logs ───────────────────────────────────────────────────────────
-    // Full macro breakdown per day. Populated via Nutra Check screenshot extraction.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS diet_logs (
         id                SERIAL PRIMARY KEY,
@@ -273,7 +274,6 @@ async function createTables() {
     console.log("✓ diet_logs table ready");
 
     // ─── Mood logs ───────────────────────────────────────────────────────────
-    // Daily mood and energy ratings. One entry per user per day.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS mood_logs (
         id          SERIAL PRIMARY KEY,
@@ -289,9 +289,6 @@ async function createTables() {
     console.log("✓ mood_logs table ready");
 
     // ─── Cardio logs ─────────────────────────────────────────────────────────
-    // Non-gym cardio activity logging from the week screen.
-    // avg_pace_seconds is always stored as seconds per km regardless of activity type.
-    // For cycling, the UI converts to km/h for display (3600 / avg_pace_seconds).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS cardio_logs (
         id               SERIAL PRIMARY KEY,

@@ -5,6 +5,7 @@ const express = require("express");
 const pool = require("../db");
 const requireAuth = require("../middleware");
 const { getNextValidWeight } = require("../weightCalc");
+const { PHASE_CONFIG } = require("../phaseConfig");
 
 const router = express.Router();
 
@@ -222,21 +223,16 @@ router.patch("/:id/start", requireAuth, async (req, res) => {
 //   - On set_number = 1 only: calculate 1RM via Epley and store in one_rep_max_history
 //
 // After logging, check for progressive overload (PO):
+//   - PO only fires for phases where poEnabled = true (Hypertrophy, Max Strength)
 //   - Get the planned_exercises row for this exercise in this session
-//   - Get the current phase to determine max reps for this phase
-//   - If all planned sets have been logged AND every logged set hit target_reps:
+//   - If all planned sets have been logged AND every logged set hit phase targetReps:
 //       - Set range_exceeded = true on the planned_exercises row
-//       - Calculate next valid weight using equipment constraints (weightCalc.js)
-//       - Update target_weight_kg in exercises table for this exercise
-//         and user_id (both gyms)
-
-// Phase max reps lookup
-const PHASE_MAX_REPS = {
-  anatomical_adaptation: 20,
-  hypertrophy: 12,
-  maximum_strength: 6,
-  muscle_definition: 40,
-};
+//       - Calculate next valid weight for the triggering exercise (weightCalc.js)
+//       - Update target_weight for the triggering exercise in the exercises table
+//       - Cascade: update target_weight for all other active exercises sharing
+//         the same muscles_primary for this user (each uses its own equipment increment)
+//       - Cascade: update planned_exercises.target_weight for all planned sessions
+//         for every affected exercise
 
 router.post("/:id/sets", requireAuth, async (req, res) => {
   const { id } = req.params;
@@ -270,7 +266,7 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     );
 
     // 2. Calculate 1RM on the first set only (not drops, not high-rep sets)
-    // Only fires when set_number = 1, drop_number = 0, and reps <= 12
+    // Informational only — writes to one_rep_max_history, not to exercises table
     if (set_number === 1 && drop_number === 0 && reps <= 12) {
       const estimated1RM = weight * (1 + reps / 30);
       await client.query(
@@ -282,10 +278,10 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     }
 
     // 3. Check for progressive overload
-    // Get the planned exercise row for this session, including set_style
+    // Get the planned exercise row for this session, including set_style and muscles_primary
     const plannedResult = await client.query(
       `SELECT pe.id, pe.target_sets, pe.target_reps, pe.range_exceeded,
-              pe.set_style, s.gym_id
+              pe.set_style, pe.muscles_primary, s.gym_id
        FROM planned_exercises pe
        JOIN sessions s ON s.id = pe.session_id
        WHERE pe.session_id = $1
@@ -298,6 +294,20 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
 
       // Only check PO if range_exceeded not already set
       if (!planned.range_exceeded) {
+        // Gate: PO only fires for phases where it is enabled
+        const userResult = await client.query(
+          `SELECT current_phase FROM users WHERE id = $1`,
+          [req.userId],
+        );
+        const phase = userResult.rows[0]?.current_phase;
+        const phaseConfig = PHASE_CONFIG[phase];
+
+        if (!phaseConfig || !phaseConfig.poEnabled) {
+          // PO disabled for this phase — commit and return early
+          await client.query("COMMIT");
+          return res.status(201).json(setResult.rows[0]);
+        }
+
         let rangeExceeded = false;
 
         if (planned.set_style === "drop") {
@@ -310,7 +320,7 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             rangeExceeded = true;
           }
         } else {
-          // Standard set PO: all planned sets logged and every set hit max reps
+          // Standard set PO: all planned sets logged and every set hit phase max reps
           const loggedResult = await client.query(
             `SELECT reps FROM logged_sets
              WHERE session_id = $1 AND exercise_name = $2
@@ -321,18 +331,13 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
           const loggedSets = loggedResult.rows;
 
           if (loggedSets.length >= planned.target_sets) {
-            const userResult = await client.query(
-              `SELECT current_phase FROM users WHERE id = $1`,
-              [req.userId],
-            );
-            const phase = userResult.rows[0]?.current_phase;
-            const maxReps = PHASE_MAX_REPS[phase] || planned.target_reps;
+            const maxReps = phaseConfig.targetReps;
             rangeExceeded = loggedSets.every((s) => s.reps >= maxReps);
           }
         }
 
         if (rangeExceeded) {
-          // Set range_exceeded flag
+          // Step 1 — Flag the triggering planned_exercises row
           await client.query(
             `UPDATE planned_exercises
              SET range_exceeded = TRUE
@@ -340,9 +345,9 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             [planned.id],
           );
 
-          // Look up the exercise record using gym_id
-          const exerciseResult = await client.query(
-            `SELECT id, target_weight_kg
+          // Step 2 — Increment the triggering exercise
+          const triggerExResult = await client.query(
+            `SELECT id, target_weight
              FROM exercises
              WHERE user_id = $1
                AND gym_id = $2
@@ -350,26 +355,83 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             [req.userId, planned.gym_id, exercise_name],
           );
 
-          if (
-            exerciseResult.rows.length > 0 &&
-            exerciseResult.rows[0].target_weight_kg !== null
-          ) {
-            const ex = exerciseResult.rows[0];
+          // Track all exercises that get updated so we can cascade to planned sessions
+          const updatedExercises = [];
 
-            // Calculate the next achievable weight based on equipment constraints
-            const newWeight = await getNextValidWeight(ex.id, req.userId);
+          if (
+            triggerExResult.rows.length > 0 &&
+            triggerExResult.rows[0].target_weight !== null
+          ) {
+            const triggerEx = triggerExResult.rows[0];
+            const newWeight = await getNextValidWeight(
+              triggerEx.id,
+              req.userId,
+            );
 
             if (
               newWeight !== null &&
-              newWeight !== parseFloat(ex.target_weight_kg)
+              newWeight !== parseFloat(triggerEx.target_weight)
             ) {
               await client.query(
-                `UPDATE exercises
-                 SET target_weight_kg = $1
-                 WHERE id = $2`,
-                [newWeight, ex.id],
+                `UPDATE exercises SET target_weight = $1 WHERE id = $2`,
+                [newWeight, triggerEx.id],
               );
+              updatedExercises.push({ name: exercise_name, weight: newWeight });
             }
+          }
+
+          // Step 3 — Cascade to all other active exercises sharing the same muscles_primary
+          // Skips exercises with NULL target_weight (no baseline to increment from)
+          if (
+            planned.muscles_primary &&
+            planned.muscles_primary !== "Conditioning"
+          ) {
+            const siblingResult = await client.query(
+              `SELECT e.id, e.exercise, e.target_weight
+               FROM exercises e
+               WHERE e.user_id = $1
+                 AND e.muscles_primary = $2
+                 AND e.exercise != $3
+                 AND e.target_weight IS NOT NULL
+                 AND e.active = TRUE`,
+              [req.userId, planned.muscles_primary, exercise_name],
+            );
+
+            for (const sibling of siblingResult.rows) {
+              const siblingNewWeight = await getNextValidWeight(
+                sibling.id,
+                req.userId,
+              );
+
+              if (
+                siblingNewWeight !== null &&
+                siblingNewWeight !== parseFloat(sibling.target_weight)
+              ) {
+                await client.query(
+                  `UPDATE exercises SET target_weight = $1 WHERE id = $2`,
+                  [siblingNewWeight, sibling.id],
+                );
+                updatedExercises.push({
+                  name: sibling.exercise,
+                  weight: siblingNewWeight,
+                });
+              }
+            }
+          }
+
+          // Step 4 — Cascade all updates to planned sessions
+          // Updates planned_exercises.target_weight for any session with status = 'planned'
+          for (const updated of updatedExercises) {
+            await client.query(
+              `UPDATE planned_exercises pe
+               SET target_weight = $1
+               FROM sessions s
+               WHERE pe.session_id = s.id
+                 AND s.status = 'planned'
+                 AND s.user_id = $2
+                 AND pe.exercise_name = $3`,
+              [updated.weight, req.userId, updated.name],
+            );
           }
         }
       }
