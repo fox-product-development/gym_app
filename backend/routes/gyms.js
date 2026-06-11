@@ -9,7 +9,6 @@ const router = express.Router();
 
 // ─── Gyms ─────────────────────────────────────────────────────────────────────
 
-// GET /gyms — get all gyms for the user
 router.get("/", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
@@ -23,7 +22,6 @@ router.get("/", requireAuth, async (req, res) => {
   }
 });
 
-// POST /gyms — create a new gym
 router.post("/", requireAuth, async (req, res) => {
   const { gym_name, is_default = false } = req.body;
 
@@ -32,7 +30,6 @@ router.post("/", requireAuth, async (req, res) => {
   }
 
   try {
-    // If this is the default, unset any existing default
     if (is_default) {
       await pool.query(
         `UPDATE gyms SET is_default = FALSE WHERE user_id = $1`,
@@ -54,7 +51,6 @@ router.post("/", requireAuth, async (req, res) => {
   }
 });
 
-// PATCH /gyms/:id — update gym name or default status
 router.patch("/:id", requireAuth, async (req, res) => {
   const { gym_name, is_default } = req.body;
 
@@ -68,7 +64,7 @@ router.patch("/:id", requireAuth, async (req, res) => {
 
     const result = await pool.query(
       `UPDATE gyms
-       SET gym_name  = COALESCE($1, gym_name),
+       SET gym_name   = COALESCE($1, gym_name),
            is_default = COALESCE($2, is_default)
        WHERE id = $3 AND user_id = $4
        RETURNING *`,
@@ -86,7 +82,6 @@ router.patch("/:id", requireAuth, async (req, res) => {
   }
 });
 
-// DELETE /gyms/:id — delete a gym and all its equipment and plates
 router.delete("/:id", requireAuth, async (req, res) => {
   try {
     await pool.query(`DELETE FROM plates WHERE gym_id = $1 AND user_id = $2`, [
@@ -110,7 +105,6 @@ router.delete("/:id", requireAuth, async (req, res) => {
 
 // ─── Equipment ────────────────────────────────────────────────────────────────
 
-// GET /gyms/:gymId/equipment
 router.get("/:gymId/equipment", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
@@ -126,7 +120,6 @@ router.get("/:gymId/equipment", requireAuth, async (req, res) => {
   }
 });
 
-// POST /gyms/:gymId/equipment
 router.post("/:gymId/equipment", requireAuth, async (req, res) => {
   const { equipment_name, type, unladen_weight, increment, max_weight, unit } =
     req.body;
@@ -167,7 +160,6 @@ router.post("/:gymId/equipment", requireAuth, async (req, res) => {
   }
 });
 
-// PATCH /gyms/:gymId/equipment/:id
 router.patch("/:gymId/equipment/:id", requireAuth, async (req, res) => {
   const { equipment_name, type, unladen_weight, increment, max_weight, unit } =
     req.body;
@@ -206,7 +198,6 @@ router.patch("/:gymId/equipment/:id", requireAuth, async (req, res) => {
   }
 });
 
-// DELETE /gyms/:gymId/equipment/:id
 router.delete("/:gymId/equipment/:id", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
@@ -229,7 +220,6 @@ router.delete("/:gymId/equipment/:id", requireAuth, async (req, res) => {
 
 // ─── Plates ───────────────────────────────────────────────────────────────────
 
-// GET /gyms/:gymId/plates
 router.get("/:gymId/plates", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
@@ -245,7 +235,6 @@ router.get("/:gymId/plates", requireAuth, async (req, res) => {
   }
 });
 
-// POST /gyms/:gymId/plates — add a plate size
 router.post("/:gymId/plates", requireAuth, async (req, res) => {
   const { weight, quantity } = req.body;
 
@@ -267,7 +256,6 @@ router.post("/:gymId/plates", requireAuth, async (req, res) => {
   }
 });
 
-// PATCH /gyms/:gymId/plates — save all plate quantities in one call
 router.patch("/:gymId/plates", requireAuth, async (req, res) => {
   const { plates } = req.body;
 
@@ -296,7 +284,6 @@ router.patch("/:gymId/plates", requireAuth, async (req, res) => {
   }
 });
 
-// DELETE /gyms/:gymId/plates/:id
 router.delete("/:gymId/plates/:id", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
@@ -319,7 +306,6 @@ router.delete("/:gymId/plates/:id", requireAuth, async (req, res) => {
 
 // ─── Approved emails (admin only) ─────────────────────────────────────────────
 
-// GET /gyms/admin/approved-emails
 router.get("/admin/approved-emails", requireAuth, async (req, res) => {
   try {
     const adminCheck = await pool.query(
@@ -341,7 +327,6 @@ router.get("/admin/approved-emails", requireAuth, async (req, res) => {
   }
 });
 
-// POST /gyms/admin/approved-emails
 router.post("/admin/approved-emails", requireAuth, async (req, res) => {
   const { email } = req.body;
 
@@ -387,7 +372,7 @@ router.get("/:gymId/exercises", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT id, exercise, muscles_primary, muscles_secondary, type,
-              equipment_type, sub_component, emg_score, target_weight,
+              sub_component, emg_score, target_weight,
               active, equipment_id
        FROM exercises
        WHERE user_id = $1 AND gym_id = $2
@@ -457,7 +442,6 @@ router.post("/:gymId/exercises", requireAuth, async (req, res) => {
     muscles_primary,
     muscles_secondary,
     type,
-    equipment_type,
     sub_component,
     emg_score,
     equipment_id,
@@ -471,7 +455,7 @@ router.post("/:gymId/exercises", requireAuth, async (req, res) => {
 
   try {
     const gymResult = await pool.query(
-      `SELECT gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
+      `SELECT id FROM gyms WHERE id = $1 AND user_id = $2`,
       [req.params.gymId, req.userId],
     );
 
@@ -479,25 +463,19 @@ router.post("/:gymId/exercises", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Gym not found" });
     }
 
-    const gymText = gymResult.rows[0].gym_name.toLowerCase().includes("home")
-      ? "home"
-      : "work";
-
     const result = await pool.query(
       `INSERT INTO exercises
-         (user_id, gym_id, gym, exercise, muscles_primary, muscles_secondary,
-          type, equipment_type, sub_component, emg_score, equipment_id, active)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE)
+         (user_id, gym_id, exercise, muscles_primary, muscles_secondary,
+          type, sub_component, emg_score, equipment_id, active)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
        RETURNING *`,
       [
         req.userId,
         req.params.gymId,
-        gymText,
         exercise,
         muscles_primary,
         muscles_secondary || null,
         type,
-        equipment_type || null,
         sub_component || null,
         emg_score || 3,
         equipment_id || null,
@@ -512,7 +490,6 @@ router.post("/:gymId/exercises", requireAuth, async (req, res) => {
 });
 
 // DELETE /gyms/:gymId/exercises/:id
-// Permanently deletes exercise and all associated logged sets and 1RM history
 router.delete("/:gymId/exercises/:id", requireAuth, async (req, res) => {
   try {
     const exResult = await pool.query(

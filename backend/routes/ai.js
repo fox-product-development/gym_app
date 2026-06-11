@@ -19,7 +19,8 @@ function cleanJSON(text) {
 async function getSessionHistory(userId) {
   const result = await pool.query(
     `SELECT
-       s.id, s.session_type, s.occurrence, s.week_number, s.gym,
+       s.id, s.session_type, s.occurrence, s.week_number,
+       g.gym_name AS gym,
        s.status, s.notes, s.completed_at,
        json_agg(
          json_build_object(
@@ -41,11 +42,12 @@ async function getSessionHistory(userId) {
          ) ORDER BY ls.exercise_name, ls.set_number
        ) FILTER (WHERE ls.id IS NOT NULL) AS logged_sets
      FROM sessions s
+     LEFT JOIN gyms g ON g.id = s.gym_id
      LEFT JOIN planned_exercises pe ON pe.session_id = s.id
      LEFT JOIN logged_sets ls ON ls.session_id = s.id
      WHERE s.user_id = $1
        AND s.completed_at >= NOW() - INTERVAL '4 weeks'
-     GROUP BY s.id
+     GROUP BY s.id, g.gym_name
      ORDER BY s.completed_at DESC`,
     [userId],
   );
@@ -131,7 +133,6 @@ async function getPreviousBlockExercises(userId, phase, blockNumber) {
 
 // Fetches conditioning exercises for a given gym and returns a lookup map:
 // exercise name (lowercase) → { target, metric, sets, category }
-// Used both to build the CSV for the AI prompt and to enrich AI responses.
 async function getConditioningLookup(gymId) {
   const result = await pool.query(
     `SELECT exercise, category, metric, target, sets
@@ -233,9 +234,9 @@ async function buildEquipmentSummary(gymId, userId) {
         (eq.type === "fixed" || eq.type === "machine") &&
         eq.increment
       ) {
-        const max = eq.max_weight ? ` — max ${eq.max_weight}kg` : "";
+        const max = eq.max_weight ? ` — max ${eq.max_weight}` : "";
         sections.push(
-          `${eq.equipment_name} (${eq.type}): increments of ${eq.increment}kg${max}`,
+          `${eq.equipment_name} (${eq.type}): increments of ${eq.increment}${max}`,
         );
       }
     }
@@ -517,7 +518,7 @@ Return ONLY this exact JSON structure, nothing else:
 }
 
 ${compoundInstruction} Then ${conditioningCount} conditioning exercises appended after.
-Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after.${current_phase === "muscle_definition" ? " IMPORTANT: This is Muscle Definition phase — every weight exercise in both sessions must have equipment_type = 'machine'. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction." : ""} No extra fields. No explanation. No markdown.`;
+Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after.${current_phase === "muscle_definition" ? " IMPORTANT: This is Muscle Definition phase — every weight exercise in both sessions must use machine-type equipment only. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction." : ""} No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -616,8 +617,9 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         }
 
         const comp1 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 1, $3, $4, $5) RETURNING id`,
-          [req.userId, programmeId, week, gymId, gymName],
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
+           VALUES ($1, $2, 'compound', 1, $3, $4) RETURNING id`,
+          [req.userId, programmeId, week, gymId],
         );
         await insertSessionExercises(
           comp1.rows[0].id,
@@ -626,8 +628,9 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         );
 
         const comp2 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 2, $3, $4, $5) RETURNING id`,
-          [req.userId, programmeId, week, gymId, gymName],
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
+           VALUES ($1, $2, 'compound', 2, $3, $4) RETURNING id`,
+          [req.userId, programmeId, week, gymId],
         );
         await insertSessionExercises(
           comp2.rows[0].id,
@@ -636,8 +639,9 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         );
 
         const iso = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'isolation', 1, $3, $4, $5) RETURNING id`,
-          [req.userId, programmeId, week, gymId, gymName],
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
+           VALUES ($1, $2, 'isolation', 1, $3, $4) RETURNING id`,
+          [req.userId, programmeId, week, gymId],
         );
         await insertSessionExercises(
           iso.rows[0].id,
@@ -1062,7 +1066,7 @@ Return ONLY this exact JSON structure, nothing else:
 }
 
 Compound: ${compoundInstruction} Then ${conditioningCount} conditioning exercises.
-Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises.${current_phase === "muscle_definition" ? " IMPORTANT: Muscle Definition phase — weight exercises must use equipment_type = 'machine' only. Conditioning exercises are exempt." : ""} No extra fields. No explanation. No markdown.`;
+Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises.${current_phase === "muscle_definition" ? " IMPORTANT: Muscle Definition phase — weight exercises must use machine-type equipment only. Conditioning exercises are exempt." : ""} No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -1148,8 +1152,9 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         }
 
         const comp1 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 1, $3, $4, $5) RETURNING id`,
-          [req.userId, programme_id, week, gymId, gymName],
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
+           VALUES ($1, $2, 'compound', 1, $3, $4) RETURNING id`,
+          [req.userId, programme_id, week, gymId],
         );
         await insertSessionExercises(
           comp1.rows[0].id,
@@ -1158,8 +1163,9 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         );
 
         const comp2 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'compound', 2, $3, $4, $5) RETURNING id`,
-          [req.userId, programme_id, week, gymId, gymName],
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
+           VALUES ($1, $2, 'compound', 2, $3, $4) RETURNING id`,
+          [req.userId, programme_id, week, gymId],
         );
         await insertSessionExercises(
           comp2.rows[0].id,
@@ -1168,8 +1174,9 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         );
 
         const iso = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym) VALUES ($1, $2, 'isolation', 1, $3, $4, $5) RETURNING id`,
-          [req.userId, programme_id, week, gymId, gymName],
+          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
+           VALUES ($1, $2, 'isolation', 1, $3, $4) RETURNING id`,
+          [req.userId, programme_id, week, gymId],
         );
         await insertSessionExercises(
           iso.rows[0].id,
@@ -1363,8 +1370,9 @@ Exactly ${weightExercises} weight exercises and ${conditioningCount} conditionin
       await client.query("BEGIN");
 
       const sessionResult = await client.query(
-        `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, gym, status, started_at) VALUES ($1, $2, 'extra', 1, $3, $4, $5, 'in_progress', NOW()) RETURNING id`,
-        [req.userId, programmeId, phase_week, gymId, gymName],
+        `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, status, started_at)
+         VALUES ($1, $2, 'extra', 1, $3, $4, 'in_progress', NOW()) RETURNING id`,
+        [req.userId, programmeId, phase_week, gymId],
       );
 
       const sessionId = sessionResult.rows[0].id;
@@ -1522,8 +1530,7 @@ Return ONLY this exact JSON structure, nothing else:
       "muscles_secondary": "<secondary muscles or null>",
       "type": "<Compound or Isolation>",
       "sub_component": "<specific sub-component>",
-      "emg_score": <integer 1-5>,
-      "equipment_type": "<barbell, dumbbells, single dumbbell, machine, none>"
+      "emg_score": <integer 1-5>
     }
   ]
 }
@@ -1570,7 +1577,7 @@ async function buildGymCSV(gymId, userId) {
   try {
     const result = await pool.query(
       `SELECT e.exercise, e.muscles_primary, e.muscles_secondary, e.type,
-              e.equipment_type, e.sub_component, e.emg_score, e.target_weight,
+              e.sub_component, e.emg_score, e.target_weight,
               eq.equipment_name, eq.increment, eq.max_weight
        FROM exercises e
        LEFT JOIN equipment eq ON eq.id = e.equipment_id
@@ -1586,7 +1593,7 @@ async function buildGymCSV(gymId, userId) {
 
     const rows = result.rows.map(
       (e) =>
-        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? e.equipment_type ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight ?? "null"},${e.increment ?? "null"},${e.max_weight ?? "null"}`,
+        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight ?? "null"},${e.increment ?? "null"},${e.max_weight ?? "null"}`,
     );
     return [header, ...rows].join("\n");
   } catch (err) {
@@ -1637,7 +1644,7 @@ WEIGHT RULES
   - Muscle Definition: 55% of 1RM
 - For loadable equipment (where increment and max_weight are null): use the valid weights from the WEIGHT GUIDANCE section in the user prompt
 
-You must only suggest weights that are valid for the exercise's equipment_type. The user prompt includes the full valid weight list — pick the closest valid value that does not exceed the calculated target.
+You must only suggest weights that are valid for the exercise's equipment. The user prompt includes the full valid weight list — pick the closest valid value that does not exceed the calculated target.
 
 DUMBBELL CONVENTION
 weight for any dumbbell exercise is the weight of ONE dumbbell. Do not double it for pair exercises.
@@ -1648,8 +1655,8 @@ PHASE SCHEMES
 - Maximum Strength: 5 sets x 5 reps target (min 3)
 - Muscle Definition: 1 set x 40 reps target (min 30) — DROP SET STYLE (Work Gym only)
 
-MUSCLE DEFINITION — CABLE MACHINE RESTRICTION
-When the phase is 'muscle_definition', weight exercises must only use equipment_type = 'machine'. Conditioning exercises are exempt from this restriction.
+MUSCLE DEFINITION — MACHINE EQUIPMENT RESTRICTION
+When the phase is 'muscle_definition', weight exercises must only use machine-type equipment. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction.
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 

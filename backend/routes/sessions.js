@@ -42,19 +42,20 @@ router.get("/week", requireAuth, async (req, res) => {
 
     const programmeId = progResult.rows[0].id;
 
-    // Filter to current phase_week only
     const result = await pool.query(
       `SELECT
          s.*,
+         g.gym_name,
          json_agg(
            pe.* ORDER BY pe.order_index
          ) FILTER (WHERE pe.id IS NOT NULL) AS planned_exercises
        FROM sessions s
+       LEFT JOIN gyms g ON g.id = s.gym_id
        LEFT JOIN planned_exercises pe ON pe.session_id = s.id
        WHERE s.programme_id = $1
          AND s.user_id = $2
          AND s.week_number = $3
-       GROUP BY s.id
+       GROUP BY s.id, g.gym_name
        ORDER BY s.session_type ASC, s.occurrence ASC`,
       [programmeId, req.userId, phase_week],
     );
@@ -68,13 +69,21 @@ router.get("/week", requireAuth, async (req, res) => {
 
 // ─── Get a single session ─────────────────────────────────────────────────────
 // GET /sessions/:id
+//
+// Returns the session with:
+//   - gym_name from the gyms table (via gym_id FK)
+//   - equipment_unit per planned exercise (via exercises → equipment JOIN)
+//     Used by the frontend to show kg or lbs suffixes correctly.
 
 router.get("/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
 
   try {
     const sessionResult = await pool.query(
-      `SELECT * FROM sessions WHERE id = $1 AND user_id = $2`,
+      `SELECT s.*, g.gym_name
+       FROM sessions s
+       LEFT JOIN gyms g ON g.id = s.gym_id
+       WHERE s.id = $1 AND s.user_id = $2`,
       [id, req.userId],
     );
 
@@ -84,11 +93,21 @@ router.get("/:id", requireAuth, async (req, res) => {
 
     const session = sessionResult.rows[0];
 
+    // Fetch planned exercises, joining through exercises → equipment to get
+    // the unit (kg / lbs) for each exercise so the session screen can display
+    // the correct weight suffix.
     const plannedResult = await pool.query(
-      `SELECT * FROM planned_exercises
-       WHERE session_id = $1
-       ORDER BY order_index ASC`,
-      [id],
+      `SELECT pe.*,
+              COALESCE(eq.unit, 'kg') AS equipment_unit
+       FROM planned_exercises pe
+       LEFT JOIN exercises ex
+         ON ex.exercise = pe.exercise_name
+         AND ex.gym_id = $2
+         AND ex.user_id = $3
+       LEFT JOIN equipment eq ON eq.id = ex.equipment_id
+       WHERE pe.session_id = $1
+       ORDER BY pe.order_index ASC`,
+      [id, session.gym_id, req.userId],
     );
 
     const loggedResult = await pool.query(
@@ -118,7 +137,7 @@ router.post("/", requireAuth, async (req, res) => {
     session_type,
     occurrence,
     week_number,
-    gym,
+    gym_id,
     exercises,
   } = req.body;
 
@@ -126,13 +145,11 @@ router.post("/", requireAuth, async (req, res) => {
     !session_type ||
     !occurrence ||
     !week_number ||
-    !gym ||
     !exercises ||
     exercises.length === 0
   ) {
     return res.status(400).json({
-      error:
-        "session_type, occurrence, week_number, gym and exercises are required",
+      error: "session_type, occurrence, week_number and exercises are required",
     });
   }
 
@@ -143,7 +160,7 @@ router.post("/", requireAuth, async (req, res) => {
 
     const sessionResult = await client.query(
       `INSERT INTO sessions
-         (user_id, programme_id, session_type, occurrence, week_number, gym)
+         (user_id, programme_id, session_type, occurrence, week_number, gym_id)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [
@@ -152,7 +169,7 @@ router.post("/", requireAuth, async (req, res) => {
         session_type,
         occurrence,
         week_number,
-        gym,
+        gym_id || null,
       ],
     );
 
@@ -278,7 +295,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     }
 
     // 3. Check for progressive overload
-    // Get the planned exercise row for this session, including set_style and muscles_primary
     const plannedResult = await client.query(
       `SELECT pe.id, pe.target_sets, pe.target_reps, pe.range_exceeded,
               pe.set_style, pe.muscles_primary, s.gym_id
@@ -292,9 +308,7 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     if (plannedResult.rows.length > 0) {
       const planned = plannedResult.rows[0];
 
-      // Only check PO if range_exceeded not already set
       if (!planned.range_exceeded) {
-        // Gate: PO only fires for phases where it is enabled
         const userResult = await client.query(
           `SELECT current_phase FROM users WHERE id = $1`,
           [req.userId],
@@ -303,7 +317,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
         const phaseConfig = PHASE_CONFIG[phase];
 
         if (!phaseConfig || !phaseConfig.poEnabled) {
-          // PO disabled for this phase — commit and return early
           await client.query("COMMIT");
           return res.status(201).json(setResult.rows[0]);
         }
@@ -311,7 +324,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
         let rangeExceeded = false;
 
         if (planned.set_style === "drop") {
-          // Drop set PO: fire only on the opening set (set 1, drop 0) hitting full target reps
           if (
             set_number === 1 &&
             drop_number === 0 &&
@@ -320,7 +332,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             rangeExceeded = true;
           }
         } else {
-          // Standard set PO: all planned sets logged and every set hit phase max reps
           const loggedResult = await client.query(
             `SELECT reps FROM logged_sets
              WHERE session_id = $1 AND exercise_name = $2
@@ -337,25 +348,18 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
         }
 
         if (rangeExceeded) {
-          // Step 1 — Flag the triggering planned_exercises row
           await client.query(
-            `UPDATE planned_exercises
-             SET range_exceeded = TRUE
-             WHERE id = $1`,
+            `UPDATE planned_exercises SET range_exceeded = TRUE WHERE id = $1`,
             [planned.id],
           );
 
-          // Step 2 — Increment the triggering exercise
           const triggerExResult = await client.query(
             `SELECT id, target_weight
              FROM exercises
-             WHERE user_id = $1
-               AND gym_id = $2
-               AND exercise = $3`,
+             WHERE user_id = $1 AND gym_id = $2 AND exercise = $3`,
             [req.userId, planned.gym_id, exercise_name],
           );
 
-          // Track all exercises that get updated so we can cascade to planned sessions
           const updatedExercises = [];
 
           if (
@@ -380,8 +384,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             }
           }
 
-          // Step 3 — Cascade to all other active exercises sharing the same muscles_primary
-          // Skips exercises with NULL target_weight (no baseline to increment from)
           if (
             planned.muscles_primary &&
             planned.muscles_primary !== "Conditioning"
@@ -419,8 +421,6 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
             }
           }
 
-          // Step 4 — Cascade all updates to planned sessions
-          // Updates planned_exercises.target_weight for any session with status = 'planned'
           for (const updated of updatedExercises) {
             await client.query(
               `UPDATE planned_exercises pe
