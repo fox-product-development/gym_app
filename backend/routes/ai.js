@@ -68,7 +68,7 @@ async function getOneRepMaxHistory(userId) {
 
 async function getBodyCompHistory(userId) {
   const result = await pool.query(
-    `SELECT weight, muscle_mass, logged_at
+    `SELECT weight_kg, muscle_mass_kg, logged_at
      FROM body_composition
      WHERE user_id = $1
        AND logged_at >= NOW() - INTERVAL '4 weeks'
