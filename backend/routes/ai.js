@@ -1660,4 +1660,126 @@ When the phase is 'muscle_definition', weight exercises must only use machine-ty
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 
+// ─── Propose cycle ────────────────────────────────────────────────────────────
+// POST /ai/propose-cycle
+// Takes the user's star ratings and training history and returns a proposed
+// phase sequence with reasoning. Called before the cycle editor is shown.
+//
+// Returns:
+// {
+//   duration_weeks: number,
+//   phases: [{ phase: string, reason: string }]
+// }
+
+router.post("/propose-cycle", requireAuth, async (req, res) => {
+  try {
+    const userResult = await pool.query(
+      `SELECT goal_size, goal_strength, goal_definition, goal_fitness,
+              training_level, goal_description, current_phase
+       FROM users WHERE id = $1`,
+      [req.userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = userResult.rows[0];
+
+    // Get previous cycles to inform the proposal
+    const cycleHistoryResult = await pool.query(
+      `SELECT phase, status, duration_weeks, created_at
+       FROM cycles
+       WHERE user_id = $1
+       ORDER BY phase_order ASC`,
+      [req.userId],
+    );
+
+    // Get recent body comp for context
+    const bodyCompResult = await pool.query(
+      `SELECT weight_kg, muscle_mass_kg, body_fat_pct, logged_at
+       FROM body_composition
+       WHERE user_id = $1
+         AND logged_at >= NOW() - INTERVAL '12 weeks'
+       ORDER BY logged_at DESC
+       LIMIT 4`,
+      [req.userId],
+    );
+
+    const goals = {
+      size: user.goal_size,
+      strength: user.goal_strength,
+      definition: user.goal_definition,
+      fitness: user.goal_fitness,
+    };
+
+    const dominantGoal = Object.entries(goals).sort((a, b) => b[1] - a[1])[0];
+
+    const userPrompt = `You are a periodisation coach. Based on this athlete's goals and history, propose a training cycle.
+
+ATHLETE GOALS (1–5 stars)
+- Size (muscle growth): ${user.goal_size ?? "not set"}★
+- Strength: ${user.goal_strength ?? "not set"}★
+- Definition (fat loss): ${user.goal_definition ?? "not set"}★
+- General fitness: ${user.goal_fitness ?? "not set"}★
+- Dominant goal: ${dominantGoal[0]} (${dominantGoal[1]}★)
+
+TRAINING LEVEL
+${user.training_level ?? "not specified"}
+
+ATHLETE NOTES
+${user.goal_description || "None"}
+
+PREVIOUS CYCLE HISTORY
+${cycleHistoryResult.rows.length > 0 ? JSON.stringify(cycleHistoryResult.rows, null, 2) : "No previous cycles — this is a new athlete"}
+
+RECENT BODY COMPOSITION
+${bodyCompResult.rows.length > 0 ? JSON.stringify(bodyCompResult.rows, null, 2) : "No body composition data available"}
+
+AVAILABLE PHASES
+- anatomical_adaptation: Foundation phase. Conditions joints and tendons. 3 sets × 20 reps. Always recommended for new athletes or after a long break.
+- hypertrophy: Muscle growth. 4 sets × 10 reps @ 75% 1RM. Best when size is a priority.
+- maximum_strength: Neural strength adaptation. 5 sets × 5 reps @ 85% 1RM. Best when strength is a priority.
+- muscle_definition: Metabolic endurance. 1 set × 40 reps (drop sets). Best when definition is a priority.
+
+PHASE RULES
+- A cycle must start with anatomical_adaptation if the athlete is new or has no previous cycle.
+- Duplicate phases are allowed (e.g. two consecutive hypertrophy phases for extended focus).
+- Recommend 3–5 phases per cycle. More than 6 is unusual.
+- Suggest duration_weeks of 4, 6, or 8 based on training level and goals. 6 is standard. 8 suits serious/professional athletes who want deeper adaptation. 4 suits those who want variety.
+
+Return ONLY this exact JSON structure, nothing else:
+{
+  "duration_weeks": <4|6|8>,
+  "phases": [
+    { "phase": "<phase_name>", "reason": "<one sentence explanation>" }
+  ]
+}
+
+No explanation. No markdown. Valid JSON only.`;
+
+    const message = await anthropic.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 512,
+      messages: [{ role: "user", content: userPrompt }],
+    });
+
+    const rawText = message.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+
+    const proposal = JSON.parse(cleanJSON(rawText));
+
+    if (!proposal.phases || !Array.isArray(proposal.phases)) {
+      throw new Error("Invalid proposal structure from Claude");
+    }
+
+    res.json(proposal);
+  } catch (err) {
+    console.error("Propose cycle error:", err.message);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 module.exports = router;

@@ -66,6 +66,9 @@ app.use("/cardio", cardioRoutes);
 const gymRoutes = require("./routes/gyms");
 app.use("/gyms", gymRoutes);
 
+const cyclesRouter = require("./routes/cycles");
+app.use("/cycles", cyclesRouter);
+
 // ─── Scheduled jobs ───────────────────────────────────────────────────────────
 
 // Sunday at 8PM — generate weekly coaching report and advance phase week

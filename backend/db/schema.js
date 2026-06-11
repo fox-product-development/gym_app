@@ -13,6 +13,7 @@ async function dropTables() {
   await pool.query("DROP TABLE IF EXISTS planned_exercises CASCADE");
   await pool.query("DROP TABLE IF EXISTS sessions CASCADE");
   await pool.query("DROP TABLE IF EXISTS programmes CASCADE");
+  await pool.query("DROP TABLE IF EXISTS cycles CASCADE");
   await pool.query("DROP TABLE IF EXISTS exercises CASCADE");
   await pool.query("DROP TABLE IF EXISTS cardio_logs CASCADE");
   await pool.query("DROP TABLE IF EXISTS mood_logs CASCADE");
@@ -50,7 +51,7 @@ async function createTables() {
         current_block     INTEGER NOT NULL DEFAULT 1
           CHECK (current_block IN (1, 2)),
         phase_week        INTEGER NOT NULL DEFAULT 1
-          CHECK (phase_week BETWEEN 1 AND 7),
+          CHECK (phase_week BETWEEN 1 AND 8),
         phase_start_date  DATE NOT NULL DEFAULT CURRENT_DATE,
         phase_cycle       JSONB,
         agent_tone        TEXT NOT NULL DEFAULT 'neutral'
@@ -62,6 +63,8 @@ async function createTables() {
         training_level    TEXT CHECK (training_level IN ('new', 'amateur', 'serious', 'professional')),
         weekly_sessions   INTEGER CHECK (weekly_sessions BETWEEN 1 AND 14),
         goal_description  TEXT,
+        weight_exercises_per_session        INTEGER,
+        conditioning_exercises_per_session  INTEGER,
         created_at        TIMESTAMP DEFAULT NOW()
       );
     `);
@@ -126,6 +129,31 @@ async function createTables() {
     `);
     console.log("✓ plates table ready");
 
+    // ─── Cycles ──────────────────────────────────────────────────────────────
+    // One row per phase per user. A full cycle is 4 rows (or more if duplicate
+    // phases are added). The cron reads these to determine phase advancement
+    // instead of using a hardcoded sequence.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cycles (
+        id             SERIAL PRIMARY KEY,
+        user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        phase          TEXT NOT NULL
+          CHECK (phase IN (
+            'anatomical_adaptation',
+            'hypertrophy',
+            'maximum_strength',
+            'muscle_definition'
+          )),
+        phase_order    INTEGER NOT NULL,
+        status         TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'in_progress', 'complete')),
+        duration_weeks INTEGER NOT NULL DEFAULT 6
+          CHECK (duration_weeks IN (4, 6, 8)),
+        created_at     TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("✓ cycles table ready");
+
     // ─── Programmes ──────────────────────────────────────────────────────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS programmes (
@@ -150,7 +178,6 @@ async function createTables() {
           CHECK (session_type IN ('compound', 'isolation', 'extra')),
         occurrence     INTEGER NOT NULL DEFAULT 1,
         week_number    INTEGER NOT NULL,
-        gym            TEXT,
         status         TEXT NOT NULL DEFAULT 'planned'
           CHECK (status IN ('planned', 'in_progress', 'complete')),
         notes          TEXT,
@@ -175,6 +202,7 @@ async function createTables() {
         target_weight   NUMERIC(6,2) NOT NULL,
         set_style       TEXT NOT NULL DEFAULT 'standard'
           CHECK (set_style IN ('standard', 'drop')),
+        metric          TEXT,
         range_exceeded  BOOLEAN DEFAULT FALSE,
         created_at      TIMESTAMP DEFAULT NOW()
       );
@@ -238,13 +266,10 @@ async function createTables() {
         muscles_primary   TEXT NOT NULL,
         muscles_secondary TEXT,
         type              TEXT NOT NULL CHECK (type IN ('Compound', 'Isolation')),
-        equipment_type    TEXT,
         sub_component     TEXT,
         emg_score         INTEGER,
         active            BOOLEAN NOT NULL DEFAULT TRUE,
         target_weight     NUMERIC(6,2) DEFAULT NULL,
-        one_rep_max       NUMERIC(6,2) DEFAULT NULL,
-        gym               TEXT,
         created_at        TIMESTAMP DEFAULT NOW(),
         UNIQUE (user_id, gym_id, exercise)
       );

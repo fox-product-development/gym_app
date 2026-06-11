@@ -1,7 +1,7 @@
 // app/onboarding.tsx
 // Onboarding flow — shown once after registration, or when redefining goals from settings.
-// Mode: "onboarding" (default) navigates to tabs on finish.
-// Mode: "redefine" navigates back to settings on finish.
+// Mode: "onboarding" (default) — navigates to cycle-editor on finish.
+// Mode: "redefine" — navigates to cycle-editor on finish (star rating change).
 
 import { useState, useEffect } from "react";
 import {
@@ -178,7 +178,6 @@ export default function OnboardingScreen() {
   const [conditioningExercises, setConditioningExercises] = useState(3);
   const [goalDescription, setGoalDescription] = useState("");
 
-  // Default suggestions by training level
   const suggestedSessions: Record<string, number> = {
     new: 3,
     amateur: 3,
@@ -200,7 +199,6 @@ export default function OnboardingScreen() {
     professional: 3,
   };
 
-  // Prefill existing values when in redefine mode
   useEffect(() => {
     if (isRedefine) {
       loadExistingProfile();
@@ -251,11 +249,12 @@ export default function OnboardingScreen() {
         conditioning_exercises_per_session: conditioningExercises,
         goal_description: goalDescription || undefined,
       });
-      if (isRedefine) {
-        router.back();
-      } else {
-        router.replace("/(tabs)");
-      }
+
+      // Both onboarding and redefine continue to the cycle editor.
+      // The mode param tells the editor what context it's in.
+      router.replace(
+        `/cycle-editor?mode=${isRedefine ? "redefine" : "onboarding"}`,
+      );
     } catch (err: any) {
       setError(err.message || "Something went wrong");
       setLoading(false);
@@ -463,7 +462,6 @@ export default function OnboardingScreen() {
       {/* Step 3 — Session structure */}
       {step === 3 && (
         <View style={{ paddingHorizontal: 24, marginTop: 32 }}>
-          {/* Sessions per week */}
           <View style={{ alignItems: "center", marginBottom: 32 }}>
             <Stepper
               label="Sessions per week"
@@ -474,7 +472,6 @@ export default function OnboardingScreen() {
             />
           </View>
 
-          {/* Weight and conditioning side by side */}
           <View style={{ flexDirection: "row", gap: 16 }}>
             <Stepper
               label="Weight exercises"
@@ -508,7 +505,7 @@ export default function OnboardingScreen() {
         </View>
       )}
 
-      {/* Step 4 — Free text (was step 4, now step 4 of 5) */}
+      {/* Step 4 — Free text */}
       {step === 4 && (
         <View style={{ paddingHorizontal: 24, marginTop: 24 }}>
           <TextInput
@@ -589,20 +586,9 @@ export default function OnboardingScreen() {
                   color: Colors.accentInk,
                 }}
               >
-                {isRedefine ? "Save changes" : "Finish setup"}
+                Continue to cycle planning
               </Text>
             )}
-          </Pressable>
-        )}
-
-        {step === TOTAL_STEPS && !isRedefine && (
-          <Pressable
-            onPress={() => router.replace("/(tabs)")}
-            style={{ alignItems: "center", paddingTop: 4 }}
-          >
-            <Text style={{ fontSize: 13, color: Colors.ter }}>
-              Skip for now
-            </Text>
           </Pressable>
         )}
 

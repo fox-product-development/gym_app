@@ -166,6 +166,10 @@ export async function completeSession(id: number, notes?: string) {
   return request(`/sessions/${id}/complete`, "PATCH", { notes });
 }
 
+export async function replanSessions() {
+  return request("/sessions/replan", "POST", {});
+}
+
 // ─── Body composition ─────────────────────────────────────────────────────────
 
 export async function logBodyComp(data: {
@@ -211,10 +215,6 @@ export async function generateGymSession(session_id: number, gym_id: number) {
   return request("/ai/generate-gym-session", "POST", { session_id, gym_id });
 }
 
-export async function replanSessions() {
-  return request("/sessions/replan", "POST", {});
-}
-
 export async function generateExtraSession(gym_id: number) {
   return request("/ai/extra-session", "POST", { gym_id });
 }
@@ -226,9 +226,7 @@ export async function getWeeklyFeedback() {
 export async function generateWeeklyReport() {
   const today = new Date();
   const dayOfWeek = today.getDay();
-
   let reportDate: string;
-
   if (dayOfWeek === 0) {
     reportDate = today.toISOString().split("T")[0];
   } else {
@@ -236,8 +234,28 @@ export async function generateWeeklyReport() {
     lastSunday.setDate(today.getDate() - dayOfWeek);
     reportDate = lastSunday.toISOString().split("T")[0];
   }
-
   return request("/report/generate", "POST", { week_start_date: reportDate });
+}
+
+// ─── Cycles ───────────────────────────────────────────────────────────────────
+
+export async function getCycles() {
+  return request("/cycles");
+}
+
+export async function saveCycle(data: {
+  phases: { phase: string }[];
+  duration_weeks: number;
+}) {
+  return request("/cycles", "POST", data);
+}
+
+export async function deleteCycle() {
+  return request("/cycles", "DELETE");
+}
+
+export async function proposeCycle() {
+  return request("/ai/propose-cycle", "POST", {});
 }
 
 // ─── Diet ─────────────────────────────────────────────────────────────────────
