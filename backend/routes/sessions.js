@@ -67,6 +67,262 @@ router.get("/week", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Replan sessions ──────────────────────────────────────────────────────────
+// POST /sessions/replan
+//
+// Deletes all planned sessions for the current programme, then regenerates
+// only the missing session slots via /ai/generate-missing.
+//
+// Use case: user has changed exercises, equipment, session count, or goal
+// notes and wants upcoming sessions to reflect those changes. Completed
+// and in-progress sessions are never touched.
+
+router.post("/replan", requireAuth, async (req, res) => {
+  try {
+    // 1. Get user state and current programme
+    const userResult = await pool.query(
+      `SELECT current_phase, current_block, phase_week FROM users WHERE id = $1`,
+      [req.userId],
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const { current_phase, current_block } = userResult.rows[0];
+
+    const progResult = await pool.query(
+      `SELECT id FROM programmes
+       WHERE user_id = $1
+         AND phase = $2
+         AND block_number = $3
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [req.userId, current_phase, current_block],
+    );
+
+    if (progResult.rows.length === 0) {
+      return res.status(400).json({ error: "No active programme found" });
+    }
+
+    const programmeId = progResult.rows[0].id;
+
+    // 2. Determine block weeks
+    const blockWeeks = current_block === 1 ? [1, 2, 3] : [4, 5, 6];
+
+    // 3. Capture the existing exercise plan from planned sessions as a baseline.
+    //    The AI will use this to keep the same exercises unless settings changes
+    //    require substitution. All weeks share the same plan so we deduplicate.
+    const existingPlanResult = await pool.query(
+      `SELECT s.session_type, pe.exercise_name, pe.muscles_primary,
+              pe.sub_component, pe.target_sets, pe.target_reps,
+              pe.target_weight, pe.order_index, pe.metric
+       FROM planned_exercises pe
+       JOIN sessions s ON s.id = pe.session_id
+       WHERE s.programme_id = $1
+         AND s.user_id = $2
+         AND s.status = 'planned'
+       ORDER BY s.session_type, pe.order_index`,
+      [programmeId, req.userId],
+    );
+
+    let existingPlan = null;
+    if (existingPlanResult.rows.length > 0) {
+      function buildSessionPlan(rows, sessionType) {
+        const typeRows = rows.filter((r) => r.session_type === sessionType);
+        const weightRows = typeRows.filter(
+          (r) => r.muscles_primary !== "Conditioning",
+        );
+        const condRows = typeRows.filter(
+          (r) => r.muscles_primary === "Conditioning",
+        );
+
+        // Deduplicate by exercise name (same plan across all weeks)
+        const seenWeight = new Set();
+        const exercises = [];
+        for (const r of weightRows) {
+          if (!seenWeight.has(r.exercise_name)) {
+            seenWeight.add(r.exercise_name);
+            exercises.push({
+              exercise: r.exercise_name,
+              muscles_primary: r.muscles_primary,
+              sub_component: r.sub_component,
+              sets: r.target_sets,
+              target_reps: r.target_reps,
+              weight: r.target_weight ? parseFloat(r.target_weight) : 0,
+            });
+          }
+        }
+
+        const seenCond = new Set();
+        const conditioning = [];
+        for (const r of condRows) {
+          if (!seenCond.has(r.exercise_name)) {
+            seenCond.add(r.exercise_name);
+            conditioning.push({
+              exercise: r.exercise_name,
+              sets: r.target_sets,
+            });
+          }
+        }
+
+        return { exercises, conditioning };
+      }
+
+      const compoundPlan = buildSessionPlan(
+        existingPlanResult.rows,
+        "compound",
+      );
+      const isolationPlan = buildSessionPlan(
+        existingPlanResult.rows,
+        "isolation",
+      );
+
+      if (
+        compoundPlan.exercises.length > 0 ||
+        isolationPlan.exercises.length > 0
+      ) {
+        existingPlan = {
+          compound_session: compoundPlan,
+          isolation_session: isolationPlan,
+        };
+      }
+    }
+
+    // 4. Delete all planned sessions and their exercises
+    const plannedSessionsResult = await pool.query(
+      `SELECT id FROM sessions
+       WHERE programme_id = $1
+         AND user_id = $2
+         AND status = 'planned'`,
+      [programmeId, req.userId],
+    );
+
+    const plannedIds = plannedSessionsResult.rows.map((r) => r.id);
+
+    if (plannedIds.length > 0) {
+      await pool.query(
+        `DELETE FROM planned_exercises WHERE session_id = ANY($1)`,
+        [plannedIds],
+      );
+      await pool.query(`DELETE FROM sessions WHERE id = ANY($1)`, [plannedIds]);
+    }
+
+    // 5. Check which weeks have missing session slots.
+    //    Each week expects 3 sessions: compound occ 1, compound occ 2, isolation occ 1.
+    const EXPECTED_SLOTS = [
+      { session_type: "compound", occurrence: 1 },
+      { session_type: "compound", occurrence: 2 },
+      { session_type: "isolation", occurrence: 1 },
+    ];
+
+    const remainingResult = await pool.query(
+      `SELECT week_number, session_type, occurrence
+       FROM sessions
+       WHERE programme_id = $1
+         AND user_id = $2
+         AND status IN ('in_progress', 'complete')`,
+      [programmeId, req.userId],
+    );
+
+    const filledSlots = new Set(
+      remainingResult.rows.map(
+        (r) => `${r.week_number}-${r.session_type}-${r.occurrence}`,
+      ),
+    );
+
+    const weeksNeeded = [];
+    for (const week of blockWeeks) {
+      const hasMissing = EXPECTED_SLOTS.some(
+        (slot) =>
+          !filledSlots.has(`${week}-${slot.session_type}-${slot.occurrence}`),
+      );
+      if (hasMissing) weeksNeeded.push(week);
+    }
+
+    if (weeksNeeded.length === 0) {
+      return res.json({
+        message:
+          "No sessions to regenerate — all sessions in this block are complete or in progress.",
+        weeks_regenerated: [],
+      });
+    }
+
+    // 6. Call /ai/generate-missing internally
+    const port = process.env.PORT || 3000;
+    const internalUrl = `http://localhost:${port}/ai/generate-missing`;
+
+    const genResponse = await fetch(internalUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-cron-secret": process.env.CRON_SECRET,
+      },
+      body: JSON.stringify({
+        user_id: req.userId,
+        programme_id: programmeId,
+        weeks_needed: weeksNeeded,
+        existing_plan: existingPlan,
+      }),
+    });
+
+    if (!genResponse.ok) {
+      const errorData = await genResponse.json().catch(() => ({}));
+      throw new Error(
+        errorData.detail || errorData.error || "Session generation failed",
+      );
+    }
+
+    // 7. Cleanup: generate-missing creates all 3 session types per week,
+    //    but some slots may already be filled by complete/in_progress sessions.
+    //    Delete any newly-created planned duplicates.
+    await pool.query(
+      `DELETE FROM planned_exercises
+       WHERE session_id IN (
+         SELECT s1.id FROM sessions s1
+         WHERE s1.programme_id = $1
+           AND s1.user_id = $2
+           AND s1.status = 'planned'
+           AND EXISTS (
+             SELECT 1 FROM sessions s2
+             WHERE s2.programme_id = s1.programme_id
+               AND s2.user_id = s1.user_id
+               AND s2.week_number = s1.week_number
+               AND s2.session_type = s1.session_type
+               AND s2.occurrence = s1.occurrence
+               AND s2.id != s1.id
+               AND s2.status IN ('in_progress', 'complete')
+           )
+       )`,
+      [programmeId, req.userId],
+    );
+
+    await pool.query(
+      `DELETE FROM sessions s1
+       USING sessions s2
+       WHERE s1.programme_id = $1
+         AND s1.user_id = $2
+         AND s1.status = 'planned'
+         AND s2.programme_id = s1.programme_id
+         AND s2.user_id = s1.user_id
+         AND s2.week_number = s1.week_number
+         AND s2.session_type = s1.session_type
+         AND s2.occurrence = s1.occurrence
+         AND s2.id != s1.id
+         AND s2.status IN ('in_progress', 'complete')`,
+      [programmeId, req.userId],
+    );
+
+    res.json({
+      message: "Sessions replanned successfully",
+      weeks_regenerated: weeksNeeded,
+    });
+  } catch (err) {
+    console.error("Replan sessions error:", err.message);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 // ─── Get a single session ─────────────────────────────────────────────────────
 // GET /sessions/:id
 //
@@ -93,9 +349,6 @@ router.get("/:id", requireAuth, async (req, res) => {
 
     const session = sessionResult.rows[0];
 
-    // Fetch planned exercises, joining through exercises → equipment to get
-    // the unit (kg / lbs) for each exercise so the session screen can display
-    // the correct weight suffix.
     const plannedResult = await pool.query(
       `SELECT pe.*,
               COALESCE(eq.unit, 'kg') AS equipment_unit
