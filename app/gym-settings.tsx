@@ -46,14 +46,15 @@ interface Equipment {
   id: number;
   equipment_name: string;
   type: string;
-  unladen_weight_kg: string | null;
-  increment_kg: string | null;
-  max_weight_kg: string | null;
+  unladen_weight: string | null;
+  increment: string | null;
+  max_weight: string | null;
+  unit: string;
 }
 
 interface Plate {
   id: number;
-  weight_kg: string;
+  weight: string;
   quantity: number;
 }
 
@@ -177,6 +178,7 @@ function AddEquipmentModal({
   const [unladenWeight, setUnladenWeight] = useState("");
   const [increment, setIncrement] = useState("");
   const [maxWeight, setMaxWeight] = useState("");
+  const [unit, setUnit] = useState("kg");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -186,6 +188,7 @@ function AddEquipmentModal({
     setUnladenWeight("");
     setIncrement("");
     setMaxWeight("");
+    setUnit("kg");
     setError("");
     onClose();
   }
@@ -201,11 +204,10 @@ function AddEquipmentModal({
       await createEquipment(gymId, {
         equipment_name: name.trim(),
         type,
-        unladen_weight_kg: unladenWeight
-          ? parseFloat(unladenWeight)
-          : undefined,
-        increment_kg: increment ? parseFloat(increment) : undefined,
-        max_weight_kg: maxWeight ? parseFloat(maxWeight) : undefined,
+        unladen_weight: unladenWeight ? parseFloat(unladenWeight) : undefined,
+        increment: increment ? parseFloat(increment) : undefined,
+        max_weight: maxWeight ? parseFloat(maxWeight) : undefined,
+        unit: type === "fixed" || type === "machine" ? unit : "kg",
       });
       onSaved();
       handleClose();
@@ -332,21 +334,56 @@ function AddEquipmentModal({
 
             {(type === "fixed" || type === "machine") && (
               <>
-                <Text style={labelStyle}>Increment (kg)</Text>
+                <Text style={labelStyle}>Unit</Text>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    gap: 8,
+                    marginBottom: 12,
+                  }}
+                >
+                  {["kg", "lbs"].map((u) => (
+                    <Pressable
+                      key={u}
+                      onPress={() => setUnit(u)}
+                      style={{
+                        paddingHorizontal: 20,
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        backgroundColor:
+                          unit === u ? Colors.accentDim : Colors.card2,
+                        borderWidth: unit === u ? 1 : 0,
+                        borderColor: Colors.accent,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 13,
+                          color: unit === u ? Colors.accent : Colors.sec,
+                          fontWeight: unit === u ? "600" : "400",
+                        }}
+                      >
+                        {u}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <Text style={labelStyle}>Increment</Text>
                 <TextInput
                   value={increment}
                   onChangeText={setIncrement}
                   keyboardType="decimal-pad"
-                  placeholder="e.g. 2.5"
+                  placeholder={unit === "lbs" ? "e.g. 5" : "e.g. 2.5"}
                   placeholderTextColor={Colors.ter}
                   style={inputStyle}
                 />
-                <Text style={labelStyle}>Max weight (kg)</Text>
+                <Text style={labelStyle}>Max weight</Text>
                 <TextInput
                   value={maxWeight}
                   onChangeText={setMaxWeight}
                   keyboardType="decimal-pad"
-                  placeholder="e.g. 100"
+                  placeholder={unit === "lbs" ? "e.g. 200" : "e.g. 100"}
                   placeholderTextColor={Colors.ter}
                   style={inputStyle}
                 />
@@ -447,7 +484,7 @@ function AddPlateModal({
     setSaving(true);
     setError("");
     try {
-      await createPlate(gymId, { weight_kg: w, quantity: q });
+      await createPlate(gymId, { weight: w, quantity: q });
       onSaved();
       handleClose();
     } catch (err: any) {
@@ -856,7 +893,6 @@ function AddExerciseModal({
                 </View>
               </View>
 
-              {/* Equipment picker */}
               <Text
                 style={{
                   fontFamily: "Courier",
@@ -1085,7 +1121,6 @@ function SuggestExercisesModal({
     }
   }
 
-  // Group by type then muscle
   const compound = suggestions.filter((e) => e.type === "Compound");
   const isolation = suggestions.filter((e) => e.type === "Isolation");
 
@@ -1234,7 +1269,6 @@ function SuggestExercisesModal({
             height: "90%",
           }}
         >
-          {/* Header */}
           <View
             style={{
               padding: 20,
@@ -1258,7 +1292,6 @@ function SuggestExercisesModal({
             </Pressable>
           </View>
 
-          {/* Content */}
           {loading ? (
             <View
               style={{
@@ -1308,7 +1341,6 @@ function SuggestExercisesModal({
             </ScrollView>
           )}
 
-          {/* Footer */}
           {!loading && suggestions.length > 0 && (
             <View
               style={{
@@ -1365,13 +1397,13 @@ function SuggestExercisesModal({
 }
 
 // ─── Exercises tab ────────────────────────────────────────────────────────────
+
 interface Exercise {
   id: number;
   exercise: string;
   muscles_primary: string;
   muscles_secondary: string | null;
   type: string;
-  equipment_type: string | null;
   sub_component: string | null;
   emg_score: number;
   active: boolean;
@@ -1886,7 +1918,6 @@ function ExercisesTab({
     }
   }
 
-  // Group by type then muscle
   const compound = exercises.filter((e) => e.type === "Compound");
   const isolation = exercises.filter((e) => e.type === "Isolation");
 
@@ -1948,7 +1979,6 @@ function ExercisesTab({
                       gap: 10,
                     }}
                   >
-                    {/* Checkbox */}
                     <Pressable
                       onPress={() => handleToggleActive(ex)}
                       style={{
@@ -1980,7 +2010,6 @@ function ExercisesTab({
                       )}
                     </Pressable>
 
-                    {/* Name and meta */}
                     <View style={{ flex: 1 }}>
                       <Text
                         style={{
@@ -2005,7 +2034,6 @@ function ExercisesTab({
                       )}
                     </View>
 
-                    {/* EMG dots */}
                     <View style={{ alignItems: "flex-end", gap: 3 }}>
                       <Text
                         style={{
@@ -2019,7 +2047,6 @@ function ExercisesTab({
                       <EmgDots score={ex.emg_score} />
                     </View>
 
-                    {/* Kebab */}
                     <View style={{ position: "relative" }}>
                       <Pressable
                         onPress={() =>
@@ -2155,7 +2182,6 @@ function ExercisesTab({
   );
 }
 
-// ─── Main screen ──────────────────────────────────────────────────────────────
 // ─── Edit equipment modal ─────────────────────────────────────────────────────
 
 function EditEquipmentModal({
@@ -2174,6 +2200,7 @@ function EditEquipmentModal({
   const [name, setName] = useState("");
   const [increment, setIncrement] = useState("");
   const [maxWeight, setMaxWeight] = useState("");
+  const [unit, setUnit] = useState("kg");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -2181,15 +2208,12 @@ function EditEquipmentModal({
     if (equipment) {
       setName(equipment.equipment_name);
       setIncrement(
-        equipment.increment_kg
-          ? String(parseFloat(equipment.increment_kg))
-          : "",
+        equipment.increment ? String(parseFloat(equipment.increment)) : "",
       );
       setMaxWeight(
-        equipment.max_weight_kg
-          ? String(parseFloat(equipment.max_weight_kg))
-          : "",
+        equipment.max_weight ? String(parseFloat(equipment.max_weight)) : "",
       );
+      setUnit(equipment.unit || "kg");
       setError("");
     }
   }, [equipment]);
@@ -2206,8 +2230,9 @@ function EditEquipmentModal({
     try {
       await updateEquipment(gymId, equipment.id, {
         equipment_name: name.trim() || undefined,
-        increment_kg: increment ? parseFloat(increment) : undefined,
-        max_weight_kg: maxWeight ? parseFloat(maxWeight) : undefined,
+        increment: increment ? parseFloat(increment) : undefined,
+        max_weight: maxWeight ? parseFloat(maxWeight) : undefined,
+        unit,
       });
       onSaved();
       handleClose();
@@ -2295,21 +2320,56 @@ function EditEquipmentModal({
 
             {showIncrementFields && (
               <>
-                <Text style={labelStyle}>Increment (kg)</Text>
+                <Text style={labelStyle}>Unit</Text>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    gap: 8,
+                    marginBottom: 12,
+                  }}
+                >
+                  {["kg", "lbs"].map((u) => (
+                    <Pressable
+                      key={u}
+                      onPress={() => setUnit(u)}
+                      style={{
+                        paddingHorizontal: 20,
+                        paddingVertical: 8,
+                        borderRadius: 8,
+                        backgroundColor:
+                          unit === u ? Colors.accentDim : Colors.card2,
+                        borderWidth: unit === u ? 1 : 0,
+                        borderColor: Colors.accent,
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 13,
+                          color: unit === u ? Colors.accent : Colors.sec,
+                          fontWeight: unit === u ? "600" : "400",
+                        }}
+                      >
+                        {u}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+
+                <Text style={labelStyle}>Increment</Text>
                 <TextInput
                   value={increment}
                   onChangeText={setIncrement}
                   keyboardType="decimal-pad"
-                  placeholder="e.g. 2.5"
+                  placeholder={unit === "lbs" ? "e.g. 5" : "e.g. 2.5"}
                   placeholderTextColor={Colors.ter}
                   style={inputStyle}
                 />
-                <Text style={labelStyle}>Max weight (kg)</Text>
+                <Text style={labelStyle}>Max weight</Text>
                 <TextInput
                   value={maxWeight}
                   onChangeText={setMaxWeight}
                   keyboardType="decimal-pad"
-                  placeholder="e.g. 100"
+                  placeholder={unit === "lbs" ? "e.g. 200" : "e.g. 100"}
                   placeholderTextColor={Colors.ter}
                   style={inputStyle}
                 />
@@ -2370,6 +2430,8 @@ function EditEquipmentModal({
     </Modal>
   );
 }
+
+// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function GymSettingsScreen() {
   const [gyms, setGyms] = useState<Gym[]>([]);
@@ -2819,7 +2881,7 @@ export default function GymSettingsScreen() {
                             {item.equipment_name}
                           </Text>
                           <TypeBadge type={item.type} />
-                          {item.unladen_weight_kg && (
+                          {item.unladen_weight && (
                             <Text
                               style={{
                                 fontSize: 12,
@@ -2827,10 +2889,10 @@ export default function GymSettingsScreen() {
                                 fontFamily: "Courier",
                               }}
                             >
-                              {parseFloat(item.unladen_weight_kg)}kg
+                              {parseFloat(item.unladen_weight)}kg
                             </Text>
                           )}
-                          {item.increment_kg && (
+                          {item.increment && (
                             <Text
                               style={{
                                 fontSize: 12,
@@ -2838,7 +2900,8 @@ export default function GymSettingsScreen() {
                                 fontFamily: "Courier",
                               }}
                             >
-                              +{parseFloat(item.increment_kg)}kg
+                              +{parseFloat(item.increment)}
+                              {item.unit || "kg"}
                             </Text>
                           )}
                           <Pressable
@@ -2911,7 +2974,7 @@ export default function GymSettingsScreen() {
                               fontFamily: "Courier",
                             }}
                           >
-                            {parseFloat(plate.weight_kg)}kg
+                            {parseFloat(plate.weight)}kg
                           </Text>
                           <View
                             style={{

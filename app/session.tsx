@@ -29,6 +29,7 @@ interface PlannedExercise {
   range_exceeded: boolean;
   set_style: "standard" | "drop";
   metric: string | null;
+  equipment_unit: string | null;
 }
 
 interface LoggedSet {
@@ -44,7 +45,7 @@ interface SessionData {
   id: number;
   session_type: string;
   occurrence: number;
-  gym: string;
+  gym_name: string;
   status: string;
   notes: string | null;
   planned_exercises: PlannedExercise[];
@@ -64,9 +65,10 @@ function isDumbbellExercise(exerciseName: string): boolean {
 function weightUnit(weight: number, exercise: PlannedExercise): string {
   if (exercise.metric === "time") return `${exercise.target_reps} secs`;
   if (exercise.metric === "reps") return `${exercise.target_reps} reps`;
+  const unit = exercise.equipment_unit ?? "kg";
   if (isDumbbellExercise(exercise.exercise_name))
-    return `${weight} kg per dumbbell`;
-  return `${weight} kg`;
+    return `${weight} ${unit} per dumbbell`;
+  return `${weight} ${unit}`;
 }
 
 // ─── Rep entry modal ──────────────────────────────────────────────────────────
@@ -78,6 +80,7 @@ function RepEntryModal({
   exerciseName,
   musclesPrimary,
   metric,
+  equipmentUnit,
   onConfirm,
   onClose,
 }: {
@@ -87,6 +90,7 @@ function RepEntryModal({
   exerciseName: string;
   musclesPrimary: string;
   metric: string | null;
+  equipmentUnit: string | null;
   onConfirm: (reps: number) => void;
   onClose: () => void;
 }) {
@@ -101,6 +105,7 @@ function RepEntryModal({
   }, [visible, targetReps]);
 
   const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"];
+  const unit = equipmentUnit ?? "kg";
 
   function handleKey(key: string) {
     if (key === "⌫") {
@@ -124,8 +129,8 @@ function RepEntryModal({
       : metric === "reps"
         ? `${targetReps} reps`
         : isDumbbellExercise(exerciseName)
-          ? `${weight} kg per dumbbell`
-          : `${weight} kg`;
+          ? `${weight} ${unit} per dumbbell`
+          : `${weight} ${unit}`;
 
   return (
     <Modal
@@ -288,6 +293,7 @@ function ExerciseBlock({
   const isDropSet = exercise.set_style === "drop";
   const isDumbbell = isDumbbellExercise(exercise.exercise_name);
   const rangeExceeded = exercise.range_exceeded === true;
+  const unit = exercise.equipment_unit ?? "kg";
 
   // For standard sets: done when logged rows >= target_sets
   // For drop sets: done when total logged reps >= target_reps, or next weight would be <= 0
@@ -426,7 +432,7 @@ function ExerciseBlock({
             }}
           >
             {isDropSet
-              ? `Drop set · ${exercise.target_reps} reps @ ${exercise.target_weight} kg${allDone ? "" : `  ·  ${totalLoggedReps}/${exercise.target_reps} reps`}`
+              ? `Drop set · ${exercise.target_reps} reps @ ${exercise.target_weight} ${unit}${allDone ? "" : `  ·  ${totalLoggedReps}/${exercise.target_reps} reps`}`
               : `${exercise.target_sets} × ${exercise.target_reps} @ ${weightUnit(exercise.target_weight, exercise)}${completedSets > 0 && !allDone ? `  ·  ${completedSets}/${totalSets} done` : ""}`}
             {rangeExceeded ? "  ·  ↑ weight next session" : ""}
           </Text>
@@ -529,7 +535,9 @@ function ExerciseBlock({
                     >
                       {logged.weight}
                     </Text>
-                    <Text style={{ fontSize: 11, color: Colors.ter }}>kg</Text>
+                    <Text style={{ fontSize: 11, color: Colors.ter }}>
+                      {unit}
+                    </Text>
                     <View
                       style={{
                         marginLeft: "auto",
@@ -605,7 +613,9 @@ function ExerciseBlock({
                     >
                       {Math.max(nextWeight, DROP_DECREMENT).toFixed(1)}
                     </Text>
-                    <Text style={{ fontSize: 11, color: Colors.ter }}>kg</Text>
+                    <Text style={{ fontSize: 11, color: Colors.ter }}>
+                      {unit}
+                    </Text>
                     <View
                       style={{
                         marginLeft: "auto",
@@ -734,8 +744,8 @@ function ExerciseBlock({
                           : exercise.metric === "reps"
                             ? "reps"
                             : isDumbbell
-                              ? "kg ea"
-                              : "kg"}
+                              ? `${unit} ea`
+                              : unit}
                       </Text>
 
                       <View
@@ -822,6 +832,7 @@ function ExerciseBlock({
         exerciseName={exercise.exercise_name}
         musclesPrimary={exercise.muscles_primary}
         metric={exercise.metric}
+        equipmentUnit={exercise.equipment_unit}
         onConfirm={handleRepConfirm}
         onClose={() => {
           setRepModalOpen(false);
@@ -983,7 +994,7 @@ export default function ActiveSessionScreen() {
     session.session_type === "compound"
       ? `Compound · Session ${session.occurrence}`
       : "Isolation";
-  const gymLabel = session.gym || "Gym";
+  const gymLabel = session.gym_name || "Gym";
 
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>

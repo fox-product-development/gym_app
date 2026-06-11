@@ -8,8 +8,6 @@
 const BASE_URL = "https://gymapp-production-bdf6.up.railway.app";
 
 // ─── Token storage ────────────────────────────────────────────────────────────
-// Uses localStorage for web — token persists across browser sessions.
-// Falls back to in-memory if localStorage is not available.
 
 const TOKEN_KEY = "gymapp_auth_token";
 let authToken: string | null = null;
@@ -132,7 +130,7 @@ export async function createSession(data: {
   session_type: "compound" | "isolation" | "extra";
   occurrence: number;
   week_number: number;
-  gym: string;
+  gym_id?: number;
   exercises: {
     exercise_name: string;
     muscles_primary?: string;
@@ -212,6 +210,7 @@ export async function generateBlock() {
 export async function generateGymSession(session_id: number, gym_id: number) {
   return request("/ai/generate-gym-session", "POST", { session_id, gym_id });
 }
+
 export async function replanSessions() {
   return request("/sessions/replan", "POST", {});
 }
@@ -231,10 +230,8 @@ export async function generateWeeklyReport() {
   let reportDate: string;
 
   if (dayOfWeek === 0) {
-    // Sunday — generate for today
     reportDate = today.toISOString().split("T")[0];
   } else {
-    // Any other day — find last Sunday
     const lastSunday = new Date(today);
     lastSunday.setDate(today.getDate() - dayOfWeek);
     reportDate = lastSunday.toISOString().split("T")[0];
@@ -370,9 +367,10 @@ export async function createEquipment(
   data: {
     equipment_name: string;
     type: string;
-    unladen_weight_kg?: number;
-    increment_kg?: number;
-    max_weight_kg?: number;
+    unladen_weight?: number;
+    increment?: number;
+    max_weight?: number;
+    unit?: string;
   },
 ) {
   return request(`/gyms/${gymId}/equipment`, "POST", data);
@@ -384,9 +382,10 @@ export async function updateEquipment(
   data: {
     equipment_name?: string;
     type?: string;
-    unladen_weight_kg?: number;
-    increment_kg?: number;
-    max_weight_kg?: number;
+    unladen_weight?: number;
+    increment?: number;
+    max_weight?: number;
+    unit?: string;
   },
 ) {
   return request(`/gyms/${gymId}/equipment/${id}`, "PATCH", data);
@@ -404,7 +403,7 @@ export async function getPlates(gymId: number) {
 
 export async function createPlate(
   gymId: number,
-  data: { weight_kg: number; quantity: number },
+  data: { weight: number; quantity: number },
 ) {
   return request(`/gyms/${gymId}/plates`, "POST", data);
 }
@@ -469,7 +468,6 @@ export async function createExercise(
     muscles_primary: string;
     muscles_secondary?: string;
     type: string;
-    equipment_type?: string;
     sub_component?: string;
     emg_score?: number;
     equipment_id?: number;
