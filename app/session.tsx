@@ -30,6 +30,7 @@ interface PlannedExercise {
   set_style: "standard" | "drop";
   metric: string | null;
   equipment_unit: string | null;
+  equipment_increment: number | null;
 }
 
 interface LoggedSet {
@@ -258,8 +259,7 @@ function RepEntryModal({
 
 // ─── Exercise block ───────────────────────────────────────────────────────────
 
-// Drop set weight decrement — cable machines use 2.2kg increments
-const DROP_DECREMENT = 2.2;
+// ─── Exercise block ───────────────────────────────────────────────────────
 
 function ExerciseBlock({
   exercise,
@@ -294,6 +294,10 @@ function ExerciseBlock({
   const isDumbbell = isDumbbellExercise(exercise.exercise_name);
   const rangeExceeded = exercise.range_exceeded === true;
   const unit = exercise.equipment_unit ?? "kg";
+  // Drop decrement uses the equipment increment if available, falls back to 2.2
+  const dropDecrement = exercise.equipment_increment
+    ? parseFloat(String(exercise.equipment_increment))
+    : 2.2;
 
   // For standard sets: done when logged rows >= target_sets
   // For drop sets: done when total logged reps >= target_reps, or next weight would be <= 0
@@ -305,7 +309,7 @@ function ExerciseBlock({
     ? totalLoggedReps >= exercise.target_reps ||
       (loggedSetsForExercise.length > 0 &&
         loggedSetsForExercise[loggedSetsForExercise.length - 1].weight -
-          DROP_DECREMENT <=
+          dropDecrement <=
           0)
     : loggedSetsForExercise.filter((s) => s.drop_number === 0).length >=
       exercise.target_sets;
@@ -318,7 +322,7 @@ function ExerciseBlock({
 
   // Next drop state — what set/drop/weight to log next
   const nextDropNumber = loggedSetsForExercise.length; // 0 = opening set, 1 = first drop, etc.
-  const nextWeight = exercise.target_weight - nextDropNumber * DROP_DECREMENT;
+  const nextWeight = exercise.target_weight - nextDropNumber * dropDecrement;
   const remainingReps = exercise.target_reps - totalLoggedReps;
 
   function handleOpenSetPress() {
@@ -327,7 +331,7 @@ function ExerciseBlock({
       // Always opens the next drop in sequence
       setActiveSetNumber(1);
       setActiveDropNumber(nextDropNumber);
-      setActiveWeight(Math.max(nextWeight, DROP_DECREMENT));
+      setActiveWeight(Math.max(nextWeight, dropDecrement));
       setRepModalOpen(true);
     } else {
       // Standard: find which set to open
@@ -611,7 +615,7 @@ function ExerciseBlock({
                         color: Colors.accent,
                       }}
                     >
-                      {Math.max(nextWeight, DROP_DECREMENT).toFixed(1)}
+                      {Math.max(nextWeight, dropDecrement).toFixed(1)}
                     </Text>
                     <Text style={{ fontSize: 11, color: Colors.ter }}>
                       {unit}
@@ -925,8 +929,11 @@ export default function ActiveSessionScreen() {
       if (exercise.set_style === "drop") {
         const totalReps = exerciseLogs.reduce((sum, s) => sum + s.reps, 0);
         const lastWeight = weight;
+        const decrement = exercise.equipment_increment
+          ? parseFloat(String(exercise.equipment_increment))
+          : 2.2;
         exerciseDone =
-          totalReps >= exercise.target_reps || lastWeight - 2.2 <= 0;
+          totalReps >= exercise.target_reps || lastWeight - decrement <= 0;
       } else {
         exerciseDone =
           exerciseLogs.filter((s) => s.drop_number === 0).length >=

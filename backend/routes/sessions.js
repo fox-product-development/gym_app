@@ -60,7 +60,8 @@ router.get("/week", requireAuth, async (req, res) => {
              'set_style', pe.set_style,
              'metric', pe.metric,
              'range_exceeded', pe.range_exceeded,
-             'equipment_unit', COALESCE(eq.unit, 'kg')
+             'equipment_unit', COALESCE(eq.unit, 'kg'),
+             'equipment_increment', eq.increment
            ) ORDER BY pe.order_index
          ) FILTER (WHERE pe.id IS NOT NULL) AS planned_exercises
        FROM sessions s
@@ -370,7 +371,8 @@ router.get("/:id", requireAuth, async (req, res) => {
 
     const plannedResult = await pool.query(
       `SELECT pe.*,
-              COALESCE(eq.unit, 'kg') AS equipment_unit
+              COALESCE(eq.unit, 'kg') AS equipment_unit,
+              eq.increment AS equipment_increment
        FROM planned_exercises pe
        LEFT JOIN exercises ex
          ON ex.exercise = pe.exercise_name
