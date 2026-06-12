@@ -2507,6 +2507,8 @@ export default function GymSettingsScreen() {
       setGyms((prev) => [...prev, result]);
       setNewGymName("");
       setAddGymVisible(false);
+      // Auto-select the new gym and load its data
+      await handleGymSelect(result);
     } catch (err) {
       console.error("Failed to create gym:", err);
     } finally {
