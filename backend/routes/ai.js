@@ -68,7 +68,7 @@ async function getOneRepMaxHistory(userId) {
 
 async function getBodyCompHistory(userId) {
   const result = await pool.query(
-    `SELECT weight_kg, muscle_mass_kg, logged_at
+    `SELECT weight, muscle_mass, logged_at
      FROM body_composition
      WHERE user_id = $1
        AND logged_at >= NOW() - INTERVAL '4 weeks'
@@ -1491,7 +1491,7 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
     const gymName = gymResult.rows[0].gym_name;
 
     const equipmentResult = await pool.query(
-      `SELECT equipment_name, type, unladen_weight, increment FROM equipment WHERE gym_id = $1 AND user_id = $2 ORDER BY type ASC, equipment_name ASC`,
+      `SELECT id, equipment_name, type, unladen_weight, increment FROM equipment WHERE gym_id = $1 AND user_id = $2 ORDER BY type ASC, equipment_name ASC`,
       [gym_id, req.userId],
     );
     const existingResult = await pool.query(
@@ -1505,6 +1505,12 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
             .map((e) => `${e.equipment_name} (${e.type})`)
             .join(", ")
         : "General gym equipment";
+
+    // Build equipment lookup for resolving equipment_name → equipment_id
+    const equipLookup = {};
+    for (const eq of equipmentResult.rows) {
+      equipLookup[eq.equipment_name.toLowerCase()] = eq.id;
+    }
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -1521,6 +1527,7 @@ EXERCISES ALREADY IN THEIR LIBRARY (exclude these)
 ${existingNames.length > 0 ? existingNames.join(", ") : "None"}
 
 Suggest 15 exercises appropriate for this equipment. Cover all major muscle groups. Do not suggest any exercise already in their library.
+For each exercise, include the equipment_name exactly as it appears in the AVAILABLE EQUIPMENT list above. Use null for bodyweight exercises with no equipment.
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
@@ -1530,7 +1537,8 @@ Return ONLY this exact JSON structure, nothing else:
       "muscles_secondary": "<secondary muscles or null>",
       "type": "<Compound or Isolation>",
       "sub_component": "<specific sub-component>",
-      "emg_score": <integer 1-5>
+      "emg_score": <integer 1-5>,
+      "equipment_name": "<name from AVAILABLE EQUIPMENT list, or null>"
     }
   ]
 }
@@ -1545,6 +1553,16 @@ Group logically but return as a flat array. No explanation. No markdown. Valid J
       .map((b) => b.text)
       .join("");
     const result = JSON.parse(cleanJSON(rawText));
+
+    // Resolve equipment_name to equipment_id for each exercise
+    for (const ex of result.exercises || []) {
+      if (ex.equipment_name) {
+        ex.equipment_id = equipLookup[ex.equipment_name.toLowerCase()] || null;
+      } else {
+        ex.equipment_id = null;
+      }
+    }
+
     res.json(result);
   } catch (err) {
     console.error("Suggest exercises error:", err.message);
@@ -1659,127 +1677,5 @@ MUSCLE DEFINITION — MACHINE EQUIPMENT RESTRICTION
 When the phase is 'muscle_definition', weight exercises must only use machine-type equipment. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction.
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
-
-// ─── Propose cycle ────────────────────────────────────────────────────────────
-// POST /ai/propose-cycle
-// Takes the user's star ratings and training history and returns a proposed
-// phase sequence with reasoning. Called before the cycle editor is shown.
-//
-// Returns:
-// {
-//   duration_weeks: number,
-//   phases: [{ phase: string, reason: string }]
-// }
-
-router.post("/propose-cycle", requireAuth, async (req, res) => {
-  try {
-    const userResult = await pool.query(
-      `SELECT goal_size, goal_strength, goal_definition, goal_fitness,
-              training_level, goal_description, current_phase
-       FROM users WHERE id = $1`,
-      [req.userId],
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const user = userResult.rows[0];
-
-    // Get previous cycles to inform the proposal
-    const cycleHistoryResult = await pool.query(
-      `SELECT phase, status, duration_weeks, created_at
-       FROM cycles
-       WHERE user_id = $1
-       ORDER BY phase_order ASC`,
-      [req.userId],
-    );
-
-    // Get recent body comp for context
-    const bodyCompResult = await pool.query(
-      `SELECT weight_kg, muscle_mass_kg, body_fat_pct, logged_at
-       FROM body_composition
-       WHERE user_id = $1
-         AND logged_at >= NOW() - INTERVAL '12 weeks'
-       ORDER BY logged_at DESC
-       LIMIT 4`,
-      [req.userId],
-    );
-
-    const goals = {
-      size: user.goal_size,
-      strength: user.goal_strength,
-      definition: user.goal_definition,
-      fitness: user.goal_fitness,
-    };
-
-    const dominantGoal = Object.entries(goals).sort((a, b) => b[1] - a[1])[0];
-
-    const userPrompt = `You are a periodisation coach. Based on this athlete's goals and history, propose a training cycle.
-
-ATHLETE GOALS (1–5 stars)
-- Size (muscle growth): ${user.goal_size ?? "not set"}★
-- Strength: ${user.goal_strength ?? "not set"}★
-- Definition (fat loss): ${user.goal_definition ?? "not set"}★
-- General fitness: ${user.goal_fitness ?? "not set"}★
-- Dominant goal: ${dominantGoal[0]} (${dominantGoal[1]}★)
-
-TRAINING LEVEL
-${user.training_level ?? "not specified"}
-
-ATHLETE NOTES
-${user.goal_description || "None"}
-
-PREVIOUS CYCLE HISTORY
-${cycleHistoryResult.rows.length > 0 ? JSON.stringify(cycleHistoryResult.rows, null, 2) : "No previous cycles — this is a new athlete"}
-
-RECENT BODY COMPOSITION
-${bodyCompResult.rows.length > 0 ? JSON.stringify(bodyCompResult.rows, null, 2) : "No body composition data available"}
-
-AVAILABLE PHASES
-- anatomical_adaptation: Foundation phase. Conditions joints and tendons. 3 sets × 20 reps. Always recommended for new athletes or after a long break.
-- hypertrophy: Muscle growth. 4 sets × 10 reps @ 75% 1RM. Best when size is a priority.
-- maximum_strength: Neural strength adaptation. 5 sets × 5 reps @ 85% 1RM. Best when strength is a priority.
-- muscle_definition: Metabolic endurance. 1 set × 40 reps (drop sets). Best when definition is a priority.
-
-PHASE RULES
-- A cycle must start with anatomical_adaptation if the athlete is new or has no previous cycle.
-- Duplicate phases are allowed (e.g. two consecutive hypertrophy phases for extended focus).
-- Recommend 3–5 phases per cycle. More than 6 is unusual.
-- Suggest duration_weeks of 4, 6, or 8 based on training level and goals. 6 is standard. 8 suits serious/professional athletes who want deeper adaptation. 4 suits those who want variety.
-
-Return ONLY this exact JSON structure, nothing else:
-{
-  "duration_weeks": <4|6|8>,
-  "phases": [
-    { "phase": "<phase_name>", "reason": "<one sentence explanation>" }
-  ]
-}
-
-No explanation. No markdown. Valid JSON only.`;
-
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 512,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-
-    const rawText = message.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-
-    const proposal = JSON.parse(cleanJSON(rawText));
-
-    if (!proposal.phases || !Array.isArray(proposal.phases)) {
-      throw new Error("Invalid proposal structure from Claude");
-    }
-
-    res.json(proposal);
-  } catch (err) {
-    console.error("Propose cycle error:", err.message);
-    res.status(500).json({ error: "Server error", detail: err.message });
-  }
-});
 
 module.exports = router;

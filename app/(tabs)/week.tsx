@@ -40,6 +40,7 @@ interface PlannedExercise {
   target_reps: number;
   target_weight: number;
   metric: string | null;
+  equipment_unit: string | null;
 }
 
 interface Session {
@@ -124,8 +125,6 @@ function Divider({ inset = 0 }: { inset?: number }) {
 }
 
 // ─── Start session modal ──────────────────────────────────────────────────────
-// Step 1: Choose gym from user's gym list
-// Step 2 (non-default gym): Confirm exercise regeneration
 
 type ModalStep = "choose" | "confirm_swap";
 
@@ -244,7 +243,6 @@ function StartSessionModal({
                   : "Isolation"}
               </Text>
 
-              {/* Default gym — primary button */}
               {defaultGym && (
                 <Pressable
                   onPress={handleStartDefault}
@@ -285,7 +283,6 @@ function StartSessionModal({
                 </Pressable>
               )}
 
-              {/* Other gyms — secondary buttons */}
               {otherGyms.map((gym) => (
                 <Pressable
                   key={gym.id}
@@ -438,8 +435,6 @@ function StartSessionModal({
 }
 
 // ─── Extra session modal ──────────────────────────────────────────────────────
-// Step 1: Choose Work Gym or Home Gym
-// Step 2: Confirm generation
 
 type ExtraModalStep = "choose" | "confirm";
 
@@ -771,7 +766,6 @@ function SessionCard({
           padding: 14,
         }}
       >
-        {/* session badge */}
         <View
           style={{
             width: 44,
@@ -815,7 +809,6 @@ function SessionCard({
           </Text>
         </View>
 
-        {/* label + status */}
         <View style={{ flex: 1 }}>
           <Text
             style={{
@@ -849,7 +842,6 @@ function SessionCard({
           </View>
         </View>
 
-        {/* action button */}
         {!isDone && (
           <Pressable
             onPress={() => !isDone && onStartPress(session)}
@@ -879,59 +871,62 @@ function SessionCard({
 
       {/* exercise list */}
       <View style={{ paddingHorizontal: 16, paddingTop: 4, paddingBottom: 12 }}>
-        {exercises.map((ex, j) => (
-          <View
-            key={j}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 12,
-              paddingVertical: 7,
-              opacity: isDone ? 0.45 : 1,
-            }}
-          >
-            <Text
+        {exercises.map((ex, j) => {
+          const unit = ex.equipment_unit ?? "kg";
+          return (
+            <View
+              key={j}
               style={{
-                width: 14,
-                fontFamily: "Courier",
-                fontSize: 10,
-                color: Colors.ter,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 12,
+                paddingVertical: 7,
+                opacity: isDone ? 0.45 : 1,
               }}
             >
-              {j + 1}
-            </Text>
-            <Text style={{ flex: 1, fontSize: 13.5, color: Colors.text }}>
-              {ex.exercise_name}
-            </Text>
-            <Text
-              style={{
-                fontFamily: "Courier",
-                fontSize: 11,
-                color: Colors.sec,
-                width: 50,
-                textAlign: "right",
-              }}
-            >
-              {ex.target_sets} × {ex.target_reps}
-            </Text>
-            <Text
-              style={{
-                fontFamily: "Courier",
-                fontSize: 11,
-                fontWeight: "600",
-                color: Colors.text,
-                width: 56,
-                textAlign: "right",
-              }}
-            >
-              {ex.metric === "time"
-                ? `${ex.target_reps}s`
-                : ex.metric === "reps"
-                  ? `${ex.target_reps} reps`
-                  : `${ex.target_weight} kg`}
-            </Text>
-          </View>
-        ))}
+              <Text
+                style={{
+                  width: 14,
+                  fontFamily: "Courier",
+                  fontSize: 10,
+                  color: Colors.ter,
+                }}
+              >
+                {j + 1}
+              </Text>
+              <Text style={{ flex: 1, fontSize: 13.5, color: Colors.text }}>
+                {ex.exercise_name}
+              </Text>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 11,
+                  color: Colors.sec,
+                  width: 50,
+                  textAlign: "right",
+                }}
+              >
+                {ex.target_sets} × {ex.target_reps}
+              </Text>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 11,
+                  fontWeight: "600",
+                  color: Colors.text,
+                  width: 56,
+                  textAlign: "right",
+                }}
+              >
+                {ex.metric === "time"
+                  ? `${ex.target_reps}s`
+                  : ex.metric === "reps"
+                    ? `${ex.target_reps} reps`
+                    : `${ex.target_weight} ${unit}`}
+              </Text>
+            </View>
+          );
+        })}
       </View>
     </View>
   );
@@ -1225,7 +1220,6 @@ function CardioModal({
               {isEditing ? "Edit activity" : "What did you do?"}
             </Text>
 
-            {/* Strava screenshot button — only shown when creating */}
             {!isEditing && (
               <Pressable
                 onPress={handleStravaUpload}
@@ -1263,7 +1257,6 @@ function CardioModal({
               </Pressable>
             )}
 
-            {/* Activity type picker */}
             <Text style={labelStyle}>Activity</Text>
             <View
               style={{
@@ -1451,6 +1444,7 @@ function CardioModal({
 }
 
 // ─── Phase label helper ───────────────────────────────────────────────────────
+
 const PHASE_LABELS: Record<string, string> = {
   anatomical_adaptation: "Anatomical Adaptation",
   hypertrophy: "Hypertrophy",
@@ -1501,13 +1495,10 @@ export default function WeekScreen() {
   }
 
   function handleStartPress(session: Session) {
-    // If session is already in progress, go straight to active session
-    // (navigation to active session screen will be wired up next)
     if (session.status === "in_progress") {
       router.push(`/session?id=${session.id}`);
       return;
     }
-    // Otherwise show the gym choice modal
     setModalSession(session);
     setModalVisible(true);
   }
@@ -1518,7 +1509,6 @@ export default function WeekScreen() {
   }
 
   function handleSessionStarted() {
-    // Reload sessions to reflect new status
     loadData();
   }
 
@@ -1610,7 +1600,6 @@ export default function WeekScreen() {
           total={orderedSessions.length || 3}
         />
 
-        {/* session cards */}
         {loading ? (
           <ActivityIndicator color={Colors.accent} style={{ marginTop: 40 }} />
         ) : orderedSessions.length === 0 ? (
@@ -1917,7 +1906,6 @@ export default function WeekScreen() {
         </View>
       </ScrollView>
 
-      {/* Start session modal */}
       <StartSessionModal
         session={modalSession}
         visible={modalVisible}
@@ -1926,7 +1914,6 @@ export default function WeekScreen() {
         gyms={gyms}
       />
 
-      {/* Extra session modal */}
       <ExtraSessionModal
         visible={extraModalVisible}
         onClose={() => setExtraModalVisible(false)}
@@ -1934,7 +1921,6 @@ export default function WeekScreen() {
         gyms={gyms}
       />
 
-      {/* Cardio modal */}
       <CardioModal
         visible={cardioModalVisible}
         onClose={() => {

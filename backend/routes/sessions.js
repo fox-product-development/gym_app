@@ -47,11 +47,30 @@ router.get("/week", requireAuth, async (req, res) => {
          s.*,
          g.gym_name,
          json_agg(
-           pe.* ORDER BY pe.order_index
+           json_build_object(
+             'id', pe.id,
+             'session_id', pe.session_id,
+             'exercise_name', pe.exercise_name,
+             'muscles_primary', pe.muscles_primary,
+             'sub_component', pe.sub_component,
+             'order_index', pe.order_index,
+             'target_sets', pe.target_sets,
+             'target_reps', pe.target_reps,
+             'target_weight', pe.target_weight,
+             'set_style', pe.set_style,
+             'metric', pe.metric,
+             'range_exceeded', pe.range_exceeded,
+             'equipment_unit', COALESCE(eq.unit, 'kg')
+           ) ORDER BY pe.order_index
          ) FILTER (WHERE pe.id IS NOT NULL) AS planned_exercises
        FROM sessions s
        LEFT JOIN gyms g ON g.id = s.gym_id
        LEFT JOIN planned_exercises pe ON pe.session_id = s.id
+       LEFT JOIN exercises ex
+         ON ex.exercise = pe.exercise_name
+         AND ex.gym_id = s.gym_id
+         AND ex.user_id = s.user_id
+       LEFT JOIN equipment eq ON eq.id = ex.equipment_id
        WHERE s.programme_id = $1
          AND s.user_id = $2
          AND s.week_number = $3
