@@ -7,7 +7,6 @@ const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("../db");
 const requireAuth = require("../middleware");
-const { getValidWeightsForEquipment } = require("../weightCalc");
 
 const router = express.Router();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -37,12 +36,11 @@ router.get("/exercises", requireAuth, async (req, res) => {
   if (!gym_id) return res.status(400).json({ error: "gym_id is required" });
 
   try {
-    // Fetch all active exercises for this gym with equipment info
     const result = await pool.query(
       `SELECT e.id, e.exercise, e.muscles_primary, e.muscles_secondary,
-              e.sub_component, e.emg_score, e.equipment_id,
+              e.sub_component, e.emg_score,
               eq.type AS equipment_type, eq.equipment_name,
-              eq.unit AS equipment_unit, eq.id AS eq_id
+              eq.unit AS equipment_unit
        FROM exercises e
        LEFT JOIN equipment eq ON eq.id = e.equipment_id
        WHERE e.user_id = $1 AND e.gym_id = $2 AND e.active = TRUE
@@ -65,7 +63,6 @@ router.get("/exercises", requireAuth, async (req, res) => {
     );
     const exerciseCSV = [header, ...rows].join("\n");
 
-    // Ask Claude to pick 5–7 exercises covering all major muscle groups
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 512,
@@ -113,33 +110,22 @@ No explanation. No markdown. Valid JSON only.`,
       throw new Error("AI returned no exercises");
     }
 
-    // Enrich each selected exercise with valid weights
-    const enriched = [];
-    for (const selected of aiResult.exercises) {
-      // Find the full exercise row from our DB result
-      const ex = exercises.find((e) => e.id === selected.id);
-      if (!ex) continue;
-
-      let validWeights = [];
-      if (ex.eq_id) {
-        validWeights = await getValidWeightsForEquipment(
-          ex.eq_id,
-          parseInt(gym_id),
-          req.userId,
-        );
-      }
-
-      enriched.push({
-        exercise_id: ex.id,
-        exercise_name: ex.exercise,
-        muscles_primary: ex.muscles_primary,
-        muscles_secondary: ex.muscles_secondary || null,
-        sub_component: ex.sub_component || null,
-        equipment_name: ex.equipment_name || null,
-        equipment_unit: ex.equipment_unit || "kg",
-        valid_weights: validWeights,
-      });
-    }
+    // Enrich each selected exercise with metadata from DB result
+    const enriched = aiResult.exercises
+      .map((selected) => {
+        const ex = exercises.find((e) => e.id === selected.id);
+        if (!ex) return null;
+        return {
+          exercise_id: ex.id,
+          exercise_name: ex.exercise,
+          muscles_primary: ex.muscles_primary,
+          muscles_secondary: ex.muscles_secondary || null,
+          sub_component: ex.sub_component || null,
+          equipment_name: ex.equipment_name || null,
+          equipment_unit: ex.equipment_unit || "kg",
+        };
+      })
+      .filter(Boolean);
 
     res.json({ exercises: enriched });
   } catch (err) {
@@ -165,8 +151,8 @@ router.post("/complete", requireAuth, async (req, res) => {
 
   try {
     const now = new Date();
-    const calibrated1RMs = {}; // muscles_primary → estimated_1rm
-    const directlyCalibrated = new Set(); // exercise names already written
+    const calibrated1RMs = {};
+    const directlyCalibrated = new Set();
 
     // ── Step 1: Calculate 1RM for each calibrated exercise ─────────────────
     for (const r of results) {

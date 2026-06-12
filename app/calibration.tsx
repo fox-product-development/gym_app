@@ -10,7 +10,7 @@ import {
   ScrollView,
   Pressable,
   ActivityIndicator,
-  Modal,
+  TextInput,
 } from "react-native";
 import { router } from "expo-router";
 import { Colors } from "../constants/theme";
@@ -30,7 +30,6 @@ interface CalibrationExercise {
   sub_component: string | null;
   equipment_name: string | null;
   equipment_unit: string;
-  valid_weights: number[];
 }
 
 interface CalibrationResult {
@@ -46,295 +45,58 @@ function isDumbbellExercise(name: string): boolean {
   return name.toLowerCase().includes("dumbbell");
 }
 
-function weightLabel(
-  weight: number,
-  unit: string,
-  exerciseName: string,
-): string {
-  if (isDumbbellExercise(exerciseName)) return `${weight} ${unit} per dumbbell`;
-  return `${weight} ${unit}`;
-}
-
 function epley1RM(weight: number, reps: number): number {
   return Math.round(weight * (1 + reps / 30) * 10) / 10;
 }
 
-// ─── Weight picker modal ──────────────────────────────────────────────────────
+// ─── Rep entry numpad ─────────────────────────────────────────────────────────
 
-function WeightPickerModal({
-  visible,
-  validWeights,
-  unit,
-  exerciseName,
-  currentWeight,
-  onSelect,
-  onClose,
+function Numpad({
+  value,
+  onChange,
 }: {
-  visible: boolean;
-  validWeights: number[];
-  unit: string;
-  exerciseName: string;
-  currentWeight: number | null;
-  onSelect: (weight: number) => void;
-  onClose: () => void;
+  value: string;
+  onChange: (val: string) => void;
 }) {
-  return (
-    <Modal visible={visible} transparent animationType="slide">
-      <Pressable
-        style={{
-          flex: 1,
-          backgroundColor: "rgba(0,0,0,0.7)",
-          justifyContent: "flex-end",
-        }}
-        onPress={onClose}
-      >
-        <Pressable
-          style={{
-            backgroundColor: Colors.card,
-            borderTopLeftRadius: 24,
-            borderTopRightRadius: 24,
-            maxHeight: "60%",
-          }}
-          onPress={() => {}}
-        >
-          <View style={{ padding: 20, paddingBottom: 8 }}>
-            <Text
-              style={{
-                fontSize: 16,
-                fontWeight: "700",
-                color: Colors.text,
-                marginBottom: 4,
-              }}
-            >
-              Select weight
-            </Text>
-            <Text
-              style={{ fontSize: 12, color: Colors.sec, fontFamily: "Courier" }}
-            >
-              {isDumbbellExercise(exerciseName)
-                ? `Per dumbbell · ${unit}`
-                : unit}
-            </Text>
-          </View>
-          <ScrollView
-            contentContainerStyle={{ padding: 16, paddingTop: 8, gap: 8 }}
-          >
-            {validWeights.length === 0 ? (
-              <Text
-                style={{
-                  fontSize: 13,
-                  color: Colors.ter,
-                  textAlign: "center",
-                  padding: 20,
-                }}
-              >
-                No valid weights found for this equipment
-              </Text>
-            ) : (
-              validWeights.map((w) => (
-                <Pressable
-                  key={w}
-                  onPress={() => {
-                    onSelect(w);
-                    onClose();
-                  }}
-                  style={{
-                    padding: 14,
-                    borderRadius: 10,
-                    backgroundColor:
-                      currentWeight === w ? Colors.accentDim : Colors.card2,
-                    borderWidth: currentWeight === w ? 1 : 0.5,
-                    borderColor:
-                      currentWeight === w ? Colors.accent : Colors.line,
-                    alignItems: "center",
-                  }}
-                >
-                  <Text
-                    style={{
-                      fontFamily: "Courier",
-                      fontSize: 16,
-                      fontWeight: "600",
-                      color: currentWeight === w ? Colors.accent : Colors.text,
-                    }}
-                  >
-                    {weightLabel(w, unit, exerciseName)}
-                  </Text>
-                </Pressable>
-              ))
-            )}
-          </ScrollView>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-// ─── Rep entry modal ──────────────────────────────────────────────────────────
-
-function RepEntryModal({
-  visible,
-  weight,
-  unit,
-  exerciseName,
-  onConfirm,
-  onClose,
-}: {
-  visible: boolean;
-  weight: number;
-  unit: string;
-  exerciseName: string;
-  onConfirm: (reps: number) => void;
-  onClose: () => void;
-}) {
-  const [value, setValue] = useState("");
-  const [isFresh, setIsFresh] = useState(true);
-
-  useEffect(() => {
-    if (visible) {
-      setValue("");
-      setIsFresh(true);
-    }
-  }, [visible]);
-
   const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"];
 
   function handleKey(key: string) {
     if (key === "⌫") {
-      setIsFresh(false);
-      setValue((v) => v.slice(0, -1));
+      onChange(value.slice(0, -1));
     } else if (key === "") {
       return;
     } else {
-      if (isFresh) {
-        setValue(key);
-        setIsFresh(false);
-      } else {
-        setValue((v) => (v.length < 3 ? v + key : v));
-      }
+      onChange(value.length < 3 ? value + key : value);
     }
   }
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <Pressable
-        style={{
-          flex: 1,
-          backgroundColor: "rgba(0,0,0,0.7)",
-          justifyContent: "flex-end",
-        }}
-        onPress={onClose}
-      >
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+      {keys.map((k, i) => (
         <Pressable
+          key={i}
+          onPress={() => handleKey(k)}
           style={{
-            backgroundColor: Colors.card,
-            borderTopLeftRadius: 24,
-            borderTopRightRadius: 24,
-            padding: 24,
-            paddingBottom: 40,
+            width: "30%",
+            paddingVertical: 14,
+            alignItems: "center",
+            backgroundColor: k === "" ? "transparent" : Colors.card2,
+            borderRadius: 10,
           }}
-          onPress={() => {}}
         >
           <Text
             style={{
               fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-              marginBottom: 4,
+              fontSize: 20,
+              fontWeight: "600",
+              color: k === "⌫" ? Colors.sec : Colors.text,
             }}
           >
-            Reps completed
+            {k}
           </Text>
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 11,
-              color: Colors.sec,
-              marginBottom: 16,
-            }}
-          >
-            {weightLabel(weight, unit, exerciseName)}
-          </Text>
-
-          <View style={{ alignItems: "center", marginBottom: 20 }}>
-            <Text
-              style={{
-                fontSize: 64,
-                fontWeight: "700",
-                color: Colors.text,
-                fontFamily: "Courier",
-                letterSpacing: -2,
-              }}
-            >
-              {value || "—"}
-            </Text>
-          </View>
-
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              gap: 8,
-              marginBottom: 16,
-            }}
-          >
-            {keys.map((k, i) => (
-              <Pressable
-                key={i}
-                onPress={() => handleKey(k)}
-                style={{
-                  width: "30%",
-                  paddingVertical: 14,
-                  alignItems: "center",
-                  backgroundColor: k === "" ? "transparent" : Colors.card2,
-                  borderRadius: 10,
-                }}
-              >
-                <Text
-                  style={{
-                    fontFamily: "Courier",
-                    fontSize: 20,
-                    fontWeight: "600",
-                    color: k === "⌫" ? Colors.sec : Colors.text,
-                  }}
-                >
-                  {k}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-
-          <Pressable
-            onPress={() => {
-              const reps = parseInt(value);
-              if (reps > 0) onConfirm(reps);
-            }}
-            style={{
-              backgroundColor: Colors.accent,
-              borderRadius: 14,
-              padding: 16,
-              alignItems: "center",
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 16,
-                fontWeight: "700",
-                color: Colors.accentInk,
-              }}
-            >
-              Log Reps
-            </Text>
-          </Pressable>
         </Pressable>
-      </Pressable>
-    </Modal>
+      ))}
+    </View>
   );
 }
 
@@ -343,23 +105,47 @@ function RepEntryModal({
 function ExerciseCard({
   exercise,
   attemptNumber,
-  selectedWeight,
-  onSelectWeight,
-  onLogReps,
   attempts,
+  onLogReps,
 }: {
   exercise: CalibrationExercise;
   attemptNumber: number;
-  selectedWeight: number | null;
-  onSelectWeight: (weight: number) => void;
-  onLogReps: (weight: number, reps: number) => void;
   attempts: { weight: number; reps: number }[];
+  onLogReps: (weight: number, reps: number) => void;
 }) {
-  const [weightPickerOpen, setWeightPickerOpen] = useState(false);
-  const [repModalOpen, setRepModalOpen] = useState(false);
+  const [weightInput, setWeightInput] = useState("");
+  const [repInput, setRepInput] = useState("");
+  const [activeField, setActiveField] = useState<"weight" | "reps">("weight");
+
   const unit = exercise.equipment_unit || "kg";
   const maxAttempts = 4;
   const canAttemptMore = attempts.length < maxAttempts;
+  const lastAttempt = attempts[attempts.length - 1] ?? null;
+  const suggestHeavier =
+    lastAttempt && lastAttempt.reps >= 10 && canAttemptMore;
+
+  const weightValid = parseFloat(weightInput) > 0;
+  const repsValid = parseInt(repInput) > 0;
+  const canLog = weightValid && repsValid;
+
+  function handleLog() {
+    if (!canLog) return;
+    onLogReps(parseFloat(weightInput), parseInt(repInput));
+    setWeightInput("");
+    setRepInput("");
+    setActiveField("weight");
+  }
+
+  const activeValue = activeField === "weight" ? weightInput : repInput;
+
+  function handleNumpad(val: string) {
+    if (activeField === "weight") setWeightInput(val);
+    else setRepInput(val);
+  }
+
+  const weightSuffix = isDumbbellExercise(exercise.exercise_name)
+    ? `${unit} per dumbbell`
+    : unit;
 
   return (
     <View
@@ -480,8 +266,7 @@ function ExerciseCard({
                     flex: 1,
                   }}
                 >
-                  {weightLabel(a.weight, unit, exercise.exercise_name)} ×{" "}
-                  {a.reps} reps
+                  {a.weight} {weightSuffix} × {a.reps} reps
                 </Text>
                 <Text
                   style={{
@@ -490,7 +275,7 @@ function ExerciseCard({
                     color: Colors.ter,
                   }}
                 >
-                  ~{orm}kg 1RM
+                  ~{orm} 1RM
                 </Text>
               </View>
             );
@@ -498,89 +283,129 @@ function ExerciseCard({
         </View>
       )}
 
-      {/* Prompt to go heavier after 10+ reps */}
-      {attempts.length > 0 &&
-        attempts[attempts.length - 1].reps >= 10 &&
-        canAttemptMore && (
-          <View
-            style={{
-              marginHorizontal: 16,
-              marginBottom: 12,
-              backgroundColor: "rgba(255,119,99,0.08)",
-              borderRadius: 10,
-              padding: 12,
-              borderWidth: 0.5,
-              borderColor: Colors.accent,
-            }}
+      {/* Prompt to go heavier */}
+      {suggestHeavier && (
+        <View
+          style={{
+            marginHorizontal: 16,
+            marginBottom: 12,
+            backgroundColor: "rgba(255,119,99,0.08)",
+            borderRadius: 10,
+            padding: 12,
+            borderWidth: 0.5,
+            borderColor: Colors.accent,
+          }}
+        >
+          <Text
+            style={{ fontSize: 13, color: Colors.accent, fontWeight: "600" }}
           >
-            <Text
-              style={{ fontSize: 13, color: Colors.accent, fontWeight: "600" }}
-            >
-              Great effort — try a heavier weight for a better estimate.
-            </Text>
-          </View>
-        )}
+            Great effort — try a heavier weight for a better estimate.
+          </Text>
+        </View>
+      )}
 
-      {/* Weight selector and log button */}
+      {/* Weight and rep entry */}
       {canAttemptMore && (
-        <View style={{ padding: 16, paddingTop: 0, gap: 10 }}>
-          <Pressable
-            onPress={() => setWeightPickerOpen(true)}
-            style={{
-              backgroundColor: Colors.card2,
-              borderRadius: 12,
-              padding: 14,
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "space-between",
-              borderWidth: 0.5,
-              borderColor: Colors.line,
-            }}
-          >
-            <Text
+        <View style={{ padding: 16, paddingTop: 0, gap: 12 }}>
+          {/* Field selectors */}
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Pressable
+              onPress={() => setActiveField("weight")}
               style={{
-                fontFamily: "Courier",
-                fontSize: 10,
-                color: Colors.ter,
-                letterSpacing: 0.6,
-                textTransform: "uppercase",
+                flex: 1,
+                backgroundColor:
+                  activeField === "weight" ? Colors.card2 : "transparent",
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor:
+                  activeField === "weight" ? Colors.accent : Colors.line,
+                padding: 14,
+                alignItems: "center",
+                gap: 4,
               }}
             >
-              Weight
-            </Text>
-            <Text
-              style={{
-                fontFamily: "Courier",
-                fontSize: 16,
-                fontWeight: "600",
-                color: selectedWeight !== null ? Colors.text : Colors.ter,
-              }}
-            >
-              {selectedWeight !== null
-                ? weightLabel(selectedWeight, unit, exercise.exercise_name)
-                : "Select weight →"}
-            </Text>
-          </Pressable>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 9,
+                  color: Colors.ter,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                }}
+              >
+                Weight ({weightSuffix})
+              </Text>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 22,
+                  fontWeight: "700",
+                  color: weightInput ? Colors.text : Colors.ter,
+                }}
+              >
+                {weightInput || "—"}
+              </Text>
+            </Pressable>
 
+            <Pressable
+              onPress={() => setActiveField("reps")}
+              style={{
+                flex: 1,
+                backgroundColor:
+                  activeField === "reps" ? Colors.card2 : "transparent",
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor:
+                  activeField === "reps" ? Colors.accent : Colors.line,
+                padding: 14,
+                alignItems: "center",
+                gap: 4,
+              }}
+            >
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 9,
+                  color: Colors.ter,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                }}
+              >
+                Reps
+              </Text>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 22,
+                  fontWeight: "700",
+                  color: repInput ? Colors.text : Colors.ter,
+                }}
+              >
+                {repInput || "—"}
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* Shared numpad */}
+          <Numpad value={activeValue} onChange={handleNumpad} />
+
+          {/* Log button */}
           <Pressable
-            onPress={() => {
-              if (selectedWeight !== null) setRepModalOpen(true);
-            }}
-            disabled={selectedWeight === null}
+            onPress={handleLog}
+            disabled={!canLog}
             style={{
-              backgroundColor:
-                selectedWeight !== null ? Colors.accent : Colors.card2,
+              backgroundColor: canLog ? Colors.accent : Colors.card2,
               borderRadius: 12,
               padding: 14,
               alignItems: "center",
-              opacity: selectedWeight === null ? 0.5 : 1,
+              opacity: canLog ? 1 : 0.5,
             }}
           >
             <Text
               style={{
                 fontSize: 15,
                 fontWeight: "700",
-                color: selectedWeight !== null ? Colors.accentInk : Colors.ter,
+                color: canLog ? Colors.accentInk : Colors.ter,
               }}
             >
               Log attempt {attemptNumber}
@@ -588,28 +413,6 @@ function ExerciseCard({
           </Pressable>
         </View>
       )}
-
-      <WeightPickerModal
-        visible={weightPickerOpen}
-        validWeights={exercise.valid_weights}
-        unit={unit}
-        exerciseName={exercise.exercise_name}
-        currentWeight={selectedWeight}
-        onSelect={onSelectWeight}
-        onClose={() => setWeightPickerOpen(false)}
-      />
-
-      <RepEntryModal
-        visible={repModalOpen}
-        weight={selectedWeight!}
-        unit={unit}
-        exerciseName={exercise.exercise_name}
-        onConfirm={(reps) => {
-          setRepModalOpen(false);
-          onLogReps(selectedWeight!, reps);
-        }}
-        onClose={() => setRepModalOpen(false)}
-      />
     </View>
   );
 }
@@ -621,9 +424,6 @@ export default function CalibrationScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [selectedWeights, setSelectedWeights] = useState<
-    Record<number, number | null>
-  >({});
   const [attempts, setAttempts] = useState<
     Record<number, { weight: number; reps: number }[]>
   >({});
@@ -656,10 +456,6 @@ export default function CalibrationScreen() {
     }
   }
 
-  function handleSelectWeight(exerciseIndex: number, weight: number) {
-    setSelectedWeights((prev) => ({ ...prev, [exerciseIndex]: weight }));
-  }
-
   function handleLogReps(exerciseIndex: number, weight: number, reps: number) {
     const exercise = exercises[exerciseIndex];
     const exerciseAttempts = attempts[exerciseIndex] || [];
@@ -667,15 +463,15 @@ export default function CalibrationScreen() {
 
     setAttempts((prev) => ({ ...prev, [exerciseIndex]: newAttempts }));
 
-    // If reps < 10 or max attempts reached, this exercise is done
-    // Use the attempt with the highest estimated 1RM as the result
     const isDone = reps < 10 || newAttempts.length >= 4;
+
     if (isDone) {
-      const best = newAttempts.reduce((best, a) => {
-        return epley1RM(a.weight, a.reps) > epley1RM(best.weight, best.reps)
+      // Pick the attempt with the highest estimated 1RM
+      const best = newAttempts.reduce((best, a) =>
+        epley1RM(a.weight, a.reps) > epley1RM(best.weight, best.reps)
           ? a
-          : best;
-      });
+          : best,
+      );
 
       setResults((prev) => [
         ...prev.filter((r) => r.exercise_name !== exercise.exercise_name),
@@ -687,7 +483,6 @@ export default function CalibrationScreen() {
         },
       ]);
 
-      // Auto-advance to next exercise
       if (exerciseIndex < exercises.length - 1) {
         setCurrentIndex(exerciseIndex + 1);
       } else {
@@ -696,17 +491,16 @@ export default function CalibrationScreen() {
     }
   }
 
-  function handleSkipExercise() {
-    // If the user has at least one attempt, save the best result and move on
+  function handleDoneWithExercise() {
     const exerciseAttempts = attempts[currentIndex] || [];
     const exercise = exercises[currentIndex];
 
     if (exerciseAttempts.length > 0) {
-      const best = exerciseAttempts.reduce((best, a) => {
-        return epley1RM(a.weight, a.reps) > epley1RM(best.weight, best.reps)
+      const best = exerciseAttempts.reduce((best, a) =>
+        epley1RM(a.weight, a.reps) > epley1RM(best.weight, best.reps)
           ? a
-          : best;
-      });
+          : best,
+      );
       setResults((prev) => [
         ...prev.filter((r) => r.exercise_name !== exercise.exercise_name),
         {
@@ -765,7 +559,7 @@ export default function CalibrationScreen() {
     );
   }
 
-  if (error) {
+  if (error && exercises.length === 0) {
     return (
       <View
         style={{
@@ -781,7 +575,7 @@ export default function CalibrationScreen() {
           {error}
         </Text>
         <Pressable
-          onPress={() => router.back()}
+          onPress={() => router.replace("/(tabs)")}
           style={{
             backgroundColor: Colors.card2,
             borderRadius: 12,
@@ -977,7 +771,6 @@ export default function CalibrationScreen() {
   const exercise = exercises[currentIndex];
   const exerciseAttempts = attempts[currentIndex] || [];
   const attemptNumber = exerciseAttempts.length + 1;
-  const selectedWeight = selectedWeights[currentIndex] ?? null;
   const exerciseIsDone = results.some(
     (r) => r.exercise_name === exercise?.exercise_name,
   );
@@ -1058,30 +851,28 @@ export default function CalibrationScreen() {
           <ExerciseCard
             exercise={exercise}
             attemptNumber={attemptNumber}
-            selectedWeight={selectedWeight}
-            onSelectWeight={(w) => handleSelectWeight(currentIndex, w)}
-            onLogReps={(w, r) => handleLogReps(currentIndex, w, r)}
             attempts={exerciseAttempts}
+            onLogReps={(w, r) => handleLogReps(currentIndex, w, r)}
           />
         )}
 
-        {/* Skip / Done button */}
-        <Pressable
-          onPress={handleSkipExercise}
-          style={{
-            borderWidth: 0.5,
-            borderColor: Colors.line,
-            borderRadius: 12,
-            padding: 14,
-            alignItems: "center",
-          }}
-        >
-          <Text style={{ fontSize: 14, color: Colors.sec }}>
-            {exerciseAttempts.length > 0
-              ? "Done with this exercise →"
-              : "Skip this exercise"}
-          </Text>
-        </Pressable>
+        {/* Done with this exercise — only shown after at least one attempt */}
+        {exerciseAttempts.length > 0 && (
+          <Pressable
+            onPress={handleDoneWithExercise}
+            style={{
+              borderWidth: 0.5,
+              borderColor: Colors.line,
+              borderRadius: 12,
+              padding: 14,
+              alignItems: "center",
+            }}
+          >
+            <Text style={{ fontSize: 14, color: Colors.sec }}>
+              Done with this exercise →
+            </Text>
+          </Pressable>
+        )}
       </ScrollView>
     </View>
   );
