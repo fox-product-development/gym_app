@@ -1866,7 +1866,6 @@ function ExercisesTab({
 }) {
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [loading, setLoading] = useState(true);
-  const [kebabOpen, setKebabOpen] = useState<number | null>(null);
   const [editTarget, setEditTarget] = useState<Exercise | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Exercise | null>(null);
   const [deleteStep, setDeleteStep] = useState<1 | 2>(1);
@@ -1962,10 +1961,7 @@ function ExercisesTab({
               }}
             >
               {grouped[muscle].map((ex, i) => (
-                <View
-                  key={ex.id}
-                  style={{ zIndex: kebabOpen === ex.id ? 10 : 0 }}
-                >
+                <View key={ex.id}>
                   {i > 0 && (
                     <View
                       style={{ height: 0.5, backgroundColor: Colors.line }}
@@ -2047,63 +2043,24 @@ function ExercisesTab({
                       <EmgDots score={ex.emg_score} />
                     </View>
 
-                    <View style={{ position: "relative" }}>
-                      <Pressable
-                        onPress={() =>
-                          setKebabOpen(kebabOpen === ex.id ? null : ex.id)
-                        }
-                        style={{ padding: 4 }}
-                      >
-                        <Text style={{ fontSize: 18, color: Colors.ter }}>
-                          ⋮
-                        </Text>
-                      </Pressable>
+                    <Pressable
+                      onPress={() => setEditTarget(ex)}
+                      style={{ paddingLeft: 8 }}
+                    >
+                      <Text style={{ fontSize: 13, color: Colors.accent }}>
+                        Edit
+                      </Text>
+                    </Pressable>
 
-                      {kebabOpen === ex.id && (
-                        <View
-                          style={{
-                            position: "absolute",
-                            right: 0,
-                            top: 28,
-                            backgroundColor: Colors.card2,
-                            borderRadius: 10,
-                            borderWidth: 0.5,
-                            borderColor: Colors.line,
-                            overflow: "hidden",
-                            minWidth: 140,
-                            zIndex: 20,
-                          }}
-                        >
-                          <Pressable
-                            onPress={() => {
-                              setKebabOpen(null);
-                              setEditTarget(ex);
-                            }}
-                            style={{
-                              padding: 13,
-                              borderBottomWidth: 0.5,
-                              borderBottomColor: Colors.line,
-                            }}
-                          >
-                            <Text style={{ fontSize: 14, color: Colors.text }}>
-                              Edit
-                            </Text>
-                          </Pressable>
-                          <Pressable
-                            onPress={() => {
-                              setKebabOpen(null);
-                              setDeleteTarget(ex);
-                              setDeleteStep(1);
-                            }}
-                            style={{ padding: 13 }}
-                          >
-                            <Text style={{ fontSize: 14, color: "#E05555" }}>
-                              Remove
-                            </Text>
-                          </Pressable>
-                        </View>
-                      )}
-                    </View>
+                    <Pressable
+                      onPress={() => {
+                        setDeleteTarget(ex);
+                        setDeleteStep(1);
+                      }}
+                      style={{ paddingLeft: 4 }}
+                    >
+                      <Text style={{ fontSize: 18, color: Colors.ter }}>×</Text>
+                    </Pressable>
                   </View>
                 </View>
               ))}
@@ -2122,10 +2079,7 @@ function ExercisesTab({
 
   return (
     <>
-      <ScrollView
-        contentContainerStyle={{ padding: 20, paddingBottom: 40 }}
-        onScrollBeginDrag={() => setKebabOpen(null)}
-      >
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
         {compound.length > 0 && renderGroup("Compound", compound)}
         {isolation.length > 0 && renderGroup("Isolation", isolation)}
 
