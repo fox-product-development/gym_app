@@ -68,7 +68,7 @@ async function getOneRepMaxHistory(userId) {
 
 async function getBodyCompHistory(userId) {
   const result = await pool.query(
-    `SELECT weight, muscle_mass, logged_at
+    `SELECT weight_kg, muscle_mass_kg, logged_at
      FROM body_composition
      WHERE user_id = $1
        AND logged_at >= NOW() - INTERVAL '4 weeks'
@@ -170,8 +170,8 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
     const equipMap = {};
     for (const row of result.rows) {
       equipMap[row.exercise.toLowerCase()] = {
-        increment_: row.increment ? parseFloat(row.increment) : null,
-        max_weight_: row.max_weight ? parseFloat(row.max_weight) : null,
+        increment: row.increment ? parseFloat(row.increment) : null,
+        max_weight: row.max_weight ? parseFloat(row.max_weight) : null,
       };
     }
 
