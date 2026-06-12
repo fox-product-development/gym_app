@@ -17,12 +17,7 @@ import {
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { Colors } from "../constants/theme";
-import {
-  proposeCycle,
-  saveCycle,
-  generateBlock,
-  replanSessions,
-} from "../services/api";
+import { proposeCycle, saveCycle } from "../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -282,28 +277,18 @@ export default function CycleEditorScreen() {
 
     try {
       // Save the cycle — this also resets users.current_phase, current_block,
-      // and phase_week to the start of the new cycle
+      // and phase_week to the start of the new cycle.
+      // Block generation is NOT triggered here — it fires automatically when
+      // the user sets a default gym in Gym Settings. This allows new users to
+      // set up their gym after confirming their cycle.
       await saveCycle({
         phases: phases.map((p) => ({ phase: p.phase })),
         duration_weeks: durationWeeks,
       });
 
-      // If this is a redefine (star rating change), clean up old planned sessions
-      // before generating the new block
-      if (mode === "redefine") {
-        await replanSessions();
-      }
-
-      // Trigger block generation for the first phase
-      await generateBlock();
-
-      // Navigate to the appropriate destination
-      if (mode === "onboarding") {
-        router.replace("/(tabs)");
-      } else {
-        // redefine or recovery — go to dashboard
-        router.replace("/(tabs)");
-      }
+      // Navigate to dashboard — if no default gym exists, the dashboard
+      // will show a "Set up your gym" prompt
+      router.replace("/(tabs)");
     } catch (err: any) {
       setError(err.message || "Something went wrong. Please try again.");
       setSaving(false);

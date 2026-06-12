@@ -76,6 +76,53 @@ router.patch("/:id", requireAuth, async (req, res) => {
     }
 
     res.json(result.rows[0]);
+
+    // ─── Auto-trigger block generation ────────────────────────────────────
+    // If a default gym was just set and the user has an in_progress cycle
+    // but no sessions yet, trigger block generation in the background.
+    // Fire-and-forget — does not affect the gym update response.
+    if (is_default) {
+      try {
+        const cycleCheck = await pool.query(
+          `SELECT id FROM cycles
+           WHERE user_id = $1 AND status = 'in_progress'
+           LIMIT 1`,
+          [req.userId],
+        );
+
+        if (cycleCheck.rows.length > 0) {
+          const sessionCheck = await pool.query(
+            `SELECT id FROM sessions
+             WHERE user_id = $1
+             LIMIT 1`,
+            [req.userId],
+          );
+
+          if (sessionCheck.rows.length === 0) {
+            // User has a cycle but no sessions — trigger block generation
+            const port = process.env.PORT || 3000;
+            fetch(`http://localhost:${port}/ai/generate-block`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-cron-secret": process.env.CRON_SECRET,
+              },
+              body: JSON.stringify({ user_id: req.userId }),
+            }).catch((err) => {
+              console.error("Auto block generation failed:", err.message);
+            });
+            console.log(
+              `Triggered auto block generation for user ${req.userId} after default gym set`,
+            );
+          }
+        }
+      } catch (triggerErr) {
+        console.error(
+          "Block generation trigger check failed:",
+          triggerErr.message,
+        );
+      }
+    }
   } catch (err) {
     console.error("Update gym error:", err.message);
     res.status(500).json({ error: "Server error" });

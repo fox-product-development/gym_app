@@ -19,6 +19,7 @@ import {
   getWeekSessions,
   getWeeklyFeedback,
   generateWeeklyReport,
+  getGyms,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1201,6 +1202,7 @@ export default function DashboardScreen() {
   const [bodyComp, setBodyComp] = useState<BodyCompEntry[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [feedback, setFeedback] = useState<WeeklyFeedback | null>(null);
+  const [hasDefaultGym, setHasDefaultGym] = useState(true);
   const [loading, setLoading] = useState(true);
 
   useFocusEffect(
@@ -1212,17 +1214,21 @@ export default function DashboardScreen() {
   async function loadData() {
     setLoading(true);
     try {
-      const [profileData, bodyCompData, sessionData, feedbackData] =
+      const [profileData, bodyCompData, sessionData, feedbackData, gymsData] =
         await Promise.all([
           getProfile(),
           getBodyComp(4),
           getWeekSessions(),
           getWeeklyFeedback(),
+          getGyms(),
         ]);
       setProfile(profileData);
       setBodyComp(bodyCompData);
       setSessions(sessionData);
       setFeedback(feedbackData);
+      setHasDefaultGym(
+        Array.isArray(gymsData) && gymsData.some((g: any) => g.is_default),
+      );
     } catch (err) {
       console.error("Dashboard load error:", err);
     } finally {
@@ -1276,11 +1282,80 @@ export default function DashboardScreen() {
           </Text>
         </View>
 
-        {profile && <PhaseBadge profile={profile} />}
-        <StartSessionButton sessions={sessions} />
-        <BodyCompCards entries={bodyComp} />
-        <AIReportCard feedback={feedback} onReportGenerated={loadData} />
-        <RecentSessions sessions={sessions} />
+        {!hasDefaultGym ? (
+          <View
+            style={{
+              marginHorizontal: 20,
+              marginTop: 32,
+              alignItems: "center",
+              gap: 16,
+            }}
+          >
+            <View
+              style={{
+                width: 64,
+                height: 64,
+                borderRadius: 20,
+                backgroundColor: Colors.accentDim,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ fontSize: 28 }}>🏋️</Text>
+            </View>
+            <Text
+              style={{
+                fontSize: 20,
+                fontWeight: "700",
+                color: Colors.text,
+                textAlign: "center",
+                letterSpacing: -0.3,
+              }}
+            >
+              Set up your gym to get started
+            </Text>
+            <Text
+              style={{
+                fontSize: 14,
+                color: Colors.sec,
+                textAlign: "center",
+                lineHeight: 20,
+                paddingHorizontal: 12,
+              }}
+            >
+              Add your gym, equipment, and exercises so we can build your first
+              training block.
+            </Text>
+            <Pressable
+              onPress={() => router.push("/gym-settings")}
+              style={{
+                backgroundColor: Colors.accent,
+                borderRadius: 14,
+                paddingVertical: 16,
+                paddingHorizontal: 32,
+                marginTop: 8,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "700",
+                  color: Colors.accentInk,
+                }}
+              >
+                Go to Gym Settings
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            {profile && <PhaseBadge profile={profile} />}
+            <StartSessionButton sessions={sessions} />
+            <BodyCompCards entries={bodyComp} />
+            <AIReportCard feedback={feedback} onReportGenerated={loadData} />
+            <RecentSessions sessions={sessions} />
+          </>
+        )}
       </ScrollView>
     </View>
   );
