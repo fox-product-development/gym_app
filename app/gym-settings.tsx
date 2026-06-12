@@ -2608,11 +2608,6 @@ export default function GymSettingsScreen() {
         >
           Gym Settings
         </Text>
-        <Pressable onPress={() => setAddGymVisible(true)}>
-          <Text style={{ fontSize: 22, color: Colors.accent, lineHeight: 26 }}>
-            +
-          </Text>
-        </Pressable>
       </View>
 
       {loading ? (
@@ -2731,6 +2726,31 @@ export default function GymSettingsScreen() {
                     </Pressable>
                   </View>
                 ))}
+                {/* Add gym row */}
+                <View style={{ height: 0.5, backgroundColor: Colors.line }} />
+                <Pressable
+                  onPress={() => {
+                    setGymDropdownOpen(false);
+                    setAddGymVisible(true);
+                  }}
+                  style={{
+                    padding: 14,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 14,
+                      fontWeight: "500",
+                      color: Colors.accent,
+                    }}
+                  >
+                    + Add gym
+                  </Text>
+                </Pressable>
               </View>
             )}
           </View>

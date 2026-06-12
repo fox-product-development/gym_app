@@ -20,6 +20,9 @@ import {
   getWeeklyFeedback,
   generateWeeklyReport,
   getGyms,
+  getExercises,
+  getCycles,
+  generateBlock,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1203,6 +1206,7 @@ export default function DashboardScreen() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [feedback, setFeedback] = useState<WeeklyFeedback | null>(null);
   const [hasDefaultGym, setHasDefaultGym] = useState(true);
+  const [generating, setGenerating] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useFocusEffect(
@@ -1226,9 +1230,48 @@ export default function DashboardScreen() {
       setBodyComp(bodyCompData);
       setSessions(sessionData);
       setFeedback(feedbackData);
-      setHasDefaultGym(
-        Array.isArray(gymsData) && gymsData.some((g: any) => g.is_default),
-      );
+
+      const defaultGym = Array.isArray(gymsData)
+        ? gymsData.find((g: any) => g.is_default)
+        : null;
+      setHasDefaultGym(!!defaultGym);
+
+      // ─── Auto-trigger block generation ────────────────────────────────
+      // If all conditions are met (default gym with exercises, active cycle,
+      // no sessions yet), trigger block generation automatically.
+      // This is order-independent — fires whenever the user has finished
+      // setting up goals, cycle, gym, and exercises in any order.
+      if (defaultGym && sessionData.length === 0 && !generating) {
+        try {
+          const [exerciseData, cyclesData] = await Promise.all([
+            getExercises(defaultGym.id),
+            getCycles(),
+          ]);
+
+          const hasExercises =
+            Array.isArray(exerciseData) && exerciseData.length > 0;
+          const hasActiveCycle =
+            Array.isArray(cyclesData) &&
+            cyclesData.some((c: any) => c.status === "in_progress");
+
+          if (hasExercises && hasActiveCycle) {
+            setGenerating(true);
+            console.log("Auto-triggering block generation...");
+            await generateBlock();
+            // Reload data to pick up the new sessions
+            const [newSessions, newFeedback] = await Promise.all([
+              getWeekSessions(),
+              getWeeklyFeedback(),
+            ]);
+            setSessions(newSessions);
+            setFeedback(newFeedback);
+            setGenerating(false);
+          }
+        } catch (genErr) {
+          console.error("Auto block generation failed:", genErr);
+          setGenerating(false);
+        }
+      }
     } catch (err) {
       console.error("Dashboard load error:", err);
     } finally {
@@ -1346,6 +1389,27 @@ export default function DashboardScreen() {
                 Go to Gym Settings
               </Text>
             </Pressable>
+          </View>
+        ) : generating ? (
+          <View
+            style={{
+              marginHorizontal: 20,
+              marginTop: 40,
+              alignItems: "center",
+              gap: 16,
+            }}
+          >
+            <ActivityIndicator color={Colors.accent} size="large" />
+            <Text
+              style={{
+                fontFamily: "Courier",
+                fontSize: 12,
+                color: Colors.sec,
+                letterSpacing: 0.4,
+              }}
+            >
+              Building your first training block...
+            </Text>
           </View>
         ) : (
           <>
