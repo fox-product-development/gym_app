@@ -23,6 +23,8 @@ import {
   getExercises,
   getCycles,
   generateBlock,
+  getCalibrationExercises,
+  getAllOneRepMax,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1207,6 +1209,7 @@ export default function DashboardScreen() {
   const [feedback, setFeedback] = useState<WeeklyFeedback | null>(null);
   const [hasDefaultGym, setHasDefaultGym] = useState(true);
   const [generating, setGenerating] = useState(false);
+  const [needsCalibration, setNeedsCalibration] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useFocusEffect(
@@ -1255,17 +1258,31 @@ export default function DashboardScreen() {
             cyclesData.some((c: any) => c.status === "in_progress");
 
           if (hasExercises && hasActiveCycle) {
-            setGenerating(true);
-            console.log("Auto-triggering block generation...");
-            await generateBlock();
-            // Reload data to pick up the new sessions
-            const [newSessions, newFeedback] = await Promise.all([
-              getWeekSessions(),
-              getWeeklyFeedback(),
-            ]);
-            setSessions(newSessions);
-            setFeedback(newFeedback);
-            setGenerating(false);
+            // Check whether calibration has been done — look for any
+            // 1RM history entry for this user
+            let has1RM = false;
+            try {
+              const orm = await getAllOneRepMax();
+              has1RM = Array.isArray(orm) && orm.length > 0;
+            } catch {
+              has1RM = false;
+            }
+
+            if (!has1RM) {
+              // No 1RM data — route to calibration before block generation
+              setNeedsCalibration(true);
+            } else {
+              setGenerating(true);
+              console.log("Auto-triggering block generation...");
+              await generateBlock();
+              const [newSessions, newFeedback] = await Promise.all([
+                getWeekSessions(),
+                getWeeklyFeedback(),
+              ]);
+              setSessions(newSessions);
+              setFeedback(newFeedback);
+              setGenerating(false);
+            }
           }
         } catch (genErr) {
           console.error("Auto block generation failed:", genErr);
@@ -1387,6 +1404,72 @@ export default function DashboardScreen() {
                 }}
               >
                 Go to Gym Settings
+              </Text>
+            </Pressable>
+          </View>
+        ) : needsCalibration ? (
+          <View
+            style={{
+              marginHorizontal: 20,
+              marginTop: 32,
+              alignItems: "center",
+              gap: 16,
+            }}
+          >
+            <View
+              style={{
+                width: 64,
+                height: 64,
+                borderRadius: 20,
+                backgroundColor: Colors.accentDim,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ fontSize: 28 }}>⚡</Text>
+            </View>
+            <Text
+              style={{
+                fontSize: 20,
+                fontWeight: "700",
+                color: Colors.text,
+                textAlign: "center",
+                letterSpacing: -0.3,
+              }}
+            >
+              Let's establish your baseline
+            </Text>
+            <Text
+              style={{
+                fontSize: 14,
+                color: Colors.sec,
+                textAlign: "center",
+                lineHeight: 20,
+                paddingHorizontal: 12,
+              }}
+            >
+              Before we build your first training block, we need to gauge your
+              current strength across the major muscle groups. This takes around
+              20–30 minutes.
+            </Text>
+            <Pressable
+              onPress={() => router.push("/calibration")}
+              style={{
+                backgroundColor: Colors.accent,
+                borderRadius: 14,
+                paddingVertical: 16,
+                paddingHorizontal: 32,
+                marginTop: 8,
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "700",
+                  color: Colors.accentInk,
+                }}
+              >
+                Start Calibration →
               </Text>
             </Pressable>
           </View>

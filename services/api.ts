@@ -223,6 +223,23 @@ export async function getWeeklyFeedback() {
   return request("/ai/weekly-feedback");
 }
 
+// ─── Calibration ──────────────────────────────────────────────────────────────
+
+export async function getCalibrationExercises(gym_id: number) {
+  return request(`/calibration/exercises?gym_id=${gym_id}`);
+}
+
+export async function completeCalibration(data: {
+  results: {
+    exercise_name: string;
+    muscles_primary: string;
+    weight: number;
+    reps: number;
+  }[];
+}) {
+  return request("/calibration/complete", "POST", data);
+}
+
 export async function generateWeeklyReport() {
   const today = new Date();
   const dayOfWeek = today.getDay();
