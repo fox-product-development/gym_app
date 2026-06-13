@@ -166,6 +166,10 @@ export async function completeSession(id: number, notes?: string) {
   return request(`/sessions/${id}/complete`, "PATCH", { notes });
 }
 
+export async function reopenSession(id: number) {
+  return request(`/sessions/${id}/reopen`, "PATCH");
+}
+
 export async function replanSessions() {
   return request("/sessions/replan", "POST", {});
 }

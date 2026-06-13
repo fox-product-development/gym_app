@@ -21,6 +21,7 @@ import {
   startSession,
   generateGymSession,
   generateExtraSession,
+  reopenSession,
   logCardio,
   getCardio,
   updateCardio,
@@ -434,6 +435,160 @@ function StartSessionModal({
   );
 }
 
+// ─── Reopen session modal ─────────────────────────────────────────────────────
+
+function ReopenSessionModal({
+  session,
+  visible,
+  onClose,
+  onReopened,
+}: {
+  session: Session | null;
+  visible: boolean;
+  onClose: () => void;
+  onReopened: () => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleReopen() {
+    if (!session) return;
+    setLoading(true);
+    setError("");
+    try {
+      await reopenSession(session.id);
+      onClose();
+      onReopened();
+    } catch (err: any) {
+      setError("Failed to reopen session");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (!session) return null;
+
+  const sessionLabel =
+    session.session_type === "compound"
+      ? `Compound · Session ${session.occurrence}`
+      : session.session_type === "isolation"
+        ? "Isolation"
+        : "Extra Session";
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
+      <Pressable
+        style={{
+          flex: 1,
+          backgroundColor: "rgba(0,0,0,0.7)",
+          justifyContent: "flex-end",
+        }}
+        onPress={onClose}
+      >
+        <Pressable
+          style={{
+            backgroundColor: Colors.card,
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 24,
+            paddingBottom: 40,
+            borderTopWidth: 0.5,
+            borderColor: Colors.line,
+          }}
+          onPress={() => {}}
+        >
+          <Text
+            style={{
+              fontFamily: "Courier",
+              fontSize: 10,
+              color: Colors.warn,
+              letterSpacing: 0.6,
+              textTransform: "uppercase",
+              marginBottom: 6,
+            }}
+          >
+            Reopen Session
+          </Text>
+          <Text
+            style={{
+              fontSize: 22,
+              fontWeight: "700",
+              color: Colors.text,
+              letterSpacing: -0.4,
+              marginBottom: 10,
+            }}
+          >
+            {sessionLabel}
+          </Text>
+          <Text
+            style={{
+              fontSize: 14,
+              color: Colors.sec,
+              lineHeight: 22,
+              marginBottom: 24,
+            }}
+          >
+            This session has been marked as complete. Do you want to reopen it
+            and continue where you left off?
+          </Text>
+
+          <Pressable
+            onPress={handleReopen}
+            disabled={loading}
+            style={{
+              backgroundColor: Colors.accent,
+              borderRadius: 14,
+              padding: 16,
+              alignItems: "center",
+              marginBottom: 10,
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? (
+              <ActivityIndicator color={Colors.accentInk} />
+            ) : (
+              <Text
+                style={{
+                  fontSize: 16,
+                  fontWeight: "700",
+                  color: Colors.accentInk,
+                }}
+              >
+                Reopen Session
+              </Text>
+            )}
+          </Pressable>
+
+          {error ? (
+            <Text
+              style={{
+                fontSize: 12,
+                color: Colors.warn,
+                marginTop: 4,
+                textAlign: "center",
+              }}
+            >
+              {error}
+            </Text>
+          ) : null}
+
+          <Pressable
+            onPress={onClose}
+            style={{ marginTop: 8, alignItems: "center" }}
+          >
+            <Text style={{ fontSize: 14, color: Colors.ter }}>Cancel</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 // ─── Extra session modal ──────────────────────────────────────────────────────
 
 type ExtraModalStep = "choose" | "confirm";
@@ -530,7 +685,7 @@ function ExtraSessionModal({
                 Which gym?
               </Text>
 
-              {gyms.map((gym, i) => {
+              {gyms.map((gym) => {
                 const isDefault = gym.is_default;
                 return (
                   <Pressable
@@ -714,10 +869,12 @@ function SessionCard({
   session,
   index,
   onStartPress,
+  onReopenPress,
 }: {
   session: Session;
   index: number;
   onStartPress: (session: Session) => void;
+  onReopenPress: (session: Session) => void;
 }) {
   const isActive = session.status === "in_progress";
   const isDone = session.status === "complete";
@@ -844,7 +1001,7 @@ function SessionCard({
 
         {!isDone && (
           <Pressable
-            onPress={() => !isDone && onStartPress(session)}
+            onPress={() => onStartPress(session)}
             style={{
               backgroundColor: isActive ? Colors.text : "transparent",
               borderWidth: isActive ? 0 : 0.5,
@@ -862,6 +1019,30 @@ function SessionCard({
               }}
             >
               {isActive ? "Continue →" : "Start →"}
+            </Text>
+          </Pressable>
+        )}
+
+        {isDone && (
+          <Pressable
+            onPress={() => onReopenPress(session)}
+            style={{
+              backgroundColor: "transparent",
+              borderWidth: 0.5,
+              borderColor: Colors.line2,
+              borderRadius: 999,
+              paddingVertical: 7,
+              paddingHorizontal: 14,
+            }}
+          >
+            <Text
+              style={{
+                fontSize: 12,
+                fontWeight: "600",
+                color: Colors.sec,
+              }}
+            >
+              Reopen
             </Text>
           </Pressable>
         )}
@@ -1462,6 +1643,9 @@ export default function WeekScreen() {
   const [error, setError] = useState("");
   const [modalSession, setModalSession] = useState<Session | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [reopenSession_modal, setReopenSession_modal] =
+    useState<Session | null>(null);
+  const [reopenVisible, setReopenVisible] = useState(false);
   const [extraModalVisible, setExtraModalVisible] = useState(false);
   const [cardioModalVisible, setCardioModalVisible] = useState(false);
   const [cardioEntries, setCardioEntries] = useState<CardioEntry[]>([]);
@@ -1509,7 +1693,24 @@ export default function WeekScreen() {
   }
 
   function handleSessionStarted() {
+    const sessionId = modalSession?.id;
     loadData();
+    if (sessionId) {
+      router.push(`/session?id=${sessionId}`);
+    }
+  }
+
+  function handleReopenPress(session: Session) {
+    setReopenSession_modal(session);
+    setReopenVisible(true);
+  }
+
+  function handleReopened() {
+    const sessionId = reopenSession_modal?.id;
+    loadData();
+    if (sessionId) {
+      router.push(`/session?id=${sessionId}`);
+    }
   }
 
   function handleExtraGenerated(sessionId: number) {
@@ -1639,6 +1840,7 @@ export default function WeekScreen() {
                 session={session}
                 index={i}
                 onStartPress={handleStartPress}
+                onReopenPress={handleReopenPress}
               />
             ))}
           </View>
@@ -1912,6 +2114,16 @@ export default function WeekScreen() {
         onClose={handleModalClose}
         onStarted={handleSessionStarted}
         gyms={gyms}
+      />
+
+      <ReopenSessionModal
+        session={reopenSession_modal}
+        visible={reopenVisible}
+        onClose={() => {
+          setReopenVisible(false);
+          setReopenSession_modal(null);
+        }}
+        onReopened={handleReopened}
       />
 
       <ExtraSessionModal

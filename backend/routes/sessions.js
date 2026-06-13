@@ -787,4 +787,32 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Reopen a completed session ───────────────────────────────────────────────
+// PATCH /sessions/:id/reopen
+
+router.patch("/:id/reopen", requireAuth, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      `UPDATE sessions
+       SET status = 'in_progress', completed_at = NULL
+       WHERE id = $1 AND user_id = $2 AND status = 'complete'
+       RETURNING *`,
+      [id, req.userId],
+    );
+
+    if (result.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "Session not found or not complete" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Reopen session error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 module.exports = router;
