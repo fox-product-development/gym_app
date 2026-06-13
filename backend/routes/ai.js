@@ -694,7 +694,7 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
     const gymName = gymResult.rows[0].gym_name;
 
     const sessionResult = await pool.query(
-      `SELECT s.*, p.phase, p.block_number FROM sessions s JOIN programmes p ON p.id = s.programme_id WHERE s.id = $1 AND s.user_id = $2`,
+      `SELECT s.*, p.phase, p.block_number, u.phase_week FROM sessions s JOIN programmes p ON p.id = s.programme_id JOIN users u ON u.id = s.user_id WHERE s.id = $1 AND s.user_id = $2`,
       [session_id, req.userId],
     );
     if (sessionResult.rows.length === 0)

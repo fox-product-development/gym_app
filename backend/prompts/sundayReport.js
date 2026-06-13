@@ -115,7 +115,7 @@ STOP — things the data suggests are working against their goals. Each item mus
 START — new behaviours the data suggests would help. Each item must reference specific data from this week.
 CONTINUE — things that are clearly working and should be maintained. Each item must reference specific data from this week.
 
-Keep the entire report readable and direct. Short paragraphs, not bullet-point lists. It will be displayed in the app and emailed to the athlete.`;
+Keep the entire report readable and direct. Short paragraphs, not bullet-point lists. It will be displayed in the app and emailed to the athlete. Target 400 words total — be concise and specific, cut anything generic.`;
 }
 
 module.exports = { SYSTEM_PROMPT, TONE_GUIDE, buildUserPrompt };

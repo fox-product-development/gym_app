@@ -450,6 +450,7 @@ async function generateReportForUser(user, overrideWeekStartDate = null) {
          json_build_object(
            'exercise_name', pe.exercise_name,
            'muscles_primary', pe.muscles_primary,
+           'sub_component', pe.sub_component,
            'target_sets', pe.target_sets,
            'target_reps', pe.target_reps,
            'target_weight', pe.target_weight,
@@ -470,9 +471,9 @@ async function generateReportForUser(user, overrideWeekStartDate = null) {
      LEFT JOIN planned_exercises pe ON pe.session_id = s.id
      LEFT JOIN logged_sets ls ON ls.session_id = s.id
      WHERE s.user_id = $1
-       AND s.completed_at >= NOW() - INTERVAL '4 weeks'
+       AND s.created_at >= NOW() - INTERVAL '4 weeks'
      GROUP BY s.id, g.gym_name
-     ORDER BY s.completed_at DESC`,
+     ORDER BY s.created_at DESC`,
     [user.id],
   );
 
@@ -545,7 +546,7 @@ async function generateReportForUser(user, overrideWeekStartDate = null) {
 
   const message = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4000,
+    max_tokens: 1500,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: userPrompt }],
   });

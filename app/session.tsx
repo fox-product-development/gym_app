@@ -267,7 +267,6 @@ function ExerciseBlock({
   onToggle,
   loggedSetsForExercise,
   onLogSet,
-  sessionId,
 }: {
   exercise: PlannedExercise;
   isOpen: boolean;
@@ -279,7 +278,6 @@ function ExerciseBlock({
     weight: number,
     reps: number,
   ) => void;
-  sessionId: number;
 }) {
   const [repModalOpen, setRepModalOpen] = useState(false);
   const [activeSetNumber, setActiveSetNumber] = useState<number | null>(null);
@@ -287,8 +285,6 @@ function ExerciseBlock({
   const [activeWeight, setActiveWeight] = useState<number>(
     exercise.target_weight,
   );
-  const [note, setNote] = useState("");
-  const [showNote, setShowNote] = useState(false);
 
   const isDropSet = exercise.set_style === "drop";
   const isDumbbell = isDumbbellExercise(exercise.exercise_name);
@@ -786,45 +782,6 @@ function ExerciseBlock({
               </View>
             </View>
           )}
-
-          {/* note section */}
-          {showNote ? (
-            <TextInput
-              value={note}
-              onChangeText={setNote}
-              placeholder="Add a note for this exercise..."
-              placeholderTextColor={Colors.qua}
-              multiline
-              style={{
-                marginTop: 10,
-                backgroundColor: Colors.card2,
-                borderRadius: 8,
-                padding: 10,
-                fontSize: 13,
-                color: Colors.text,
-                borderLeftWidth: 2,
-                borderLeftColor: Colors.accent,
-                minHeight: 60,
-              }}
-            />
-          ) : (
-            <Pressable
-              onPress={() => setShowNote(true)}
-              style={{
-                marginTop: 10,
-                borderWidth: 0.5,
-                borderColor: Colors.line2,
-                borderStyle: "dashed",
-                borderRadius: 8,
-                padding: 8,
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ fontSize: 12, color: Colors.sec }}>
-                + Add note
-              </Text>
-            </Pressable>
-          )}
         </View>
       )}
 
@@ -1109,7 +1066,6 @@ export default function ActiveSessionScreen() {
             onLogSet={(setNumber, dropNumber, weight, reps) =>
               handleLogSet(ex, setNumber, dropNumber, weight, reps)
             }
-            sessionId={sessionId}
           />
         ))}
 
