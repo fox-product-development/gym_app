@@ -232,8 +232,8 @@ async function createTables() {
         user_id         INTEGER REFERENCES users(id),
         exercise_name   TEXT NOT NULL,
         estimated_1rm   NUMERIC(6,2) NOT NULL,
-        weight_used     NUMERIC(6,2) NOT NULL,
-        reps_performed  INTEGER NOT NULL,
+        weight_used     NUMERIC(6,2),
+        reps_performed  INTEGER,
         logged_at       TIMESTAMP DEFAULT NOW()
       );
     `);

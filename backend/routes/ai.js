@@ -13,7 +13,13 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function cleanJSON(text) {
-  return text.replace(/```json|```/g, "").trim();
+  const stripped = text.replace(/```json|```/g, "").trim();
+  const firstBrace = stripped.indexOf("{");
+  const lastBrace = stripped.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    return stripped.substring(firstBrace, lastBrace + 1);
+  }
+  return stripped;
 }
 
 async function getSessionHistory(userId) {
