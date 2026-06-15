@@ -591,7 +591,7 @@ function ReopenSessionModal({
 
 // ─── Extra session modal ──────────────────────────────────────────────────────
 
-type ExtraModalStep = "choose" | "confirm";
+type ExtraModalStep = "session_type" | "gym" | "confirm";
 
 function ExtraSessionModal({
   visible,
@@ -604,24 +604,30 @@ function ExtraSessionModal({
   onGenerated: (sessionId: number) => void;
   gyms: Gym[];
 }) {
-  const [step, setStep] = useState<ExtraModalStep>("choose");
+  const [step, setStep] = useState<ExtraModalStep>("session_type");
+  const [selectedSessionType, setSelectedSessionType] = useState<
+    "compound" | "isolation" | null
+  >(null);
   const [selectedGym, setSelectedGym] = useState<Gym | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   function handleOpen() {
-    setStep("choose");
-    const defaultGym = gyms.find((g) => g.is_default) || gyms[0] || null;
-    setSelectedGym(defaultGym);
+    setStep("session_type");
+    setSelectedSessionType(null);
+    setSelectedGym(gyms.find((g) => g.is_default) || gyms[0] || null);
     setError("");
   }
 
   async function handleConfirm() {
-    if (!selectedGym) return;
+    if (!selectedGym || !selectedSessionType) return;
     setLoading(true);
     setError("");
     try {
-      const result = await generateExtraSession(selectedGym.id);
+      const result = await generateExtraSession(
+        selectedGym.id,
+        selectedSessionType,
+      );
       onClose();
       onGenerated(result.session_id);
     } catch (err: any) {
@@ -630,6 +636,23 @@ function ExtraSessionModal({
       setLoading(false);
     }
   }
+
+  const SESSION_TYPES: {
+    type: "compound" | "isolation";
+    label: string;
+    description: string;
+  }[] = [
+    {
+      type: "compound",
+      label: "Compound",
+      description: "Back, chest, legs, shoulders — big muscle groups",
+    },
+    {
+      type: "isolation",
+      label: "Isolation",
+      description: "Arms, core, shoulders — smaller targeted muscles",
+    },
+  ];
 
   return (
     <Modal
@@ -659,7 +682,7 @@ function ExtraSessionModal({
           }}
           onPress={() => {}}
         >
-          {step === "choose" ? (
+          {step === "session_type" && (
             <>
               <Text
                 style={{
@@ -672,6 +695,76 @@ function ExtraSessionModal({
                 }}
               >
                 Extra Session
+              </Text>
+              <Text
+                style={{
+                  fontSize: 22,
+                  fontWeight: "700",
+                  color: Colors.text,
+                  letterSpacing: -0.4,
+                  marginBottom: 20,
+                }}
+              >
+                What type of session?
+              </Text>
+
+              {SESSION_TYPES.map(({ type, label, description }) => (
+                <Pressable
+                  key={type}
+                  onPress={() => {
+                    setSelectedSessionType(type);
+                    setStep("gym");
+                  }}
+                  style={{
+                    backgroundColor: Colors.card2,
+                    borderRadius: 14,
+                    padding: 16,
+                    alignItems: "center",
+                    marginBottom: 10,
+                    borderWidth: 0.5,
+                    borderColor: Colors.line2,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: 16,
+                      fontWeight: "600",
+                      color: Colors.text,
+                    }}
+                  >
+                    {label}
+                  </Text>
+                  <Text
+                    style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}
+                  >
+                    {description}
+                  </Text>
+                </Pressable>
+              ))}
+
+              <Pressable
+                onPress={onClose}
+                style={{ marginTop: 16, alignItems: "center" }}
+              >
+                <Text style={{ fontSize: 14, color: Colors.ter }}>Cancel</Text>
+              </Pressable>
+            </>
+          )}
+
+          {step === "gym" && (
+            <>
+              <Text
+                style={{
+                  fontFamily: "Courier",
+                  fontSize: 10,
+                  color: Colors.ter,
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                  marginBottom: 6,
+                }}
+              >
+                Extra Session ·{" "}
+                {selectedSessionType === "compound" ? "Compound" : "Isolation"}
               </Text>
               <Text
                 style={{
@@ -729,13 +822,18 @@ function ExtraSessionModal({
               })}
 
               <Pressable
-                onPress={onClose}
-                style={{ marginTop: 16, alignItems: "center" }}
+                onPress={() => {
+                  setStep("session_type");
+                  setError("");
+                }}
+                style={{ marginTop: 8, alignItems: "center" }}
               >
-                <Text style={{ fontSize: 14, color: Colors.ter }}>Cancel</Text>
+                <Text style={{ fontSize: 14, color: Colors.ter }}>← Back</Text>
               </Pressable>
             </>
-          ) : (
+          )}
+
+          {step === "confirm" && (
             <>
               <Text
                 style={{
@@ -768,8 +866,9 @@ function ExtraSessionModal({
                   marginBottom: 24,
                 }}
               >
-                {selectedGym?.gym_name} · AI will select the best exercises for
-                you based on your training history.
+                {selectedSessionType === "compound" ? "Compound" : "Isolation"}{" "}
+                · {selectedGym?.gym_name} · AI will select the best exercises
+                based on your training history.
               </Text>
 
               <Pressable
@@ -814,7 +913,7 @@ function ExtraSessionModal({
 
               <Pressable
                 onPress={() => {
-                  setStep("choose");
+                  setStep("gym");
                   setError("");
                 }}
                 style={{ marginTop: 8, alignItems: "center" }}
@@ -914,7 +1013,6 @@ function SessionCard({
         borderColor: isActive ? Colors.accent : Colors.line,
       }}
     >
-      {/* header row */}
       <View
         style={{
           flexDirection: "row",
@@ -1036,11 +1134,7 @@ function SessionCard({
             }}
           >
             <Text
-              style={{
-                fontSize: 12,
-                fontWeight: "600",
-                color: Colors.sec,
-              }}
+              style={{ fontSize: 12, fontWeight: "600", color: Colors.sec }}
             >
               Reopen
             </Text>
@@ -1050,7 +1144,6 @@ function SessionCard({
 
       <Divider inset={16} />
 
-      {/* exercise list */}
       <View style={{ paddingHorizontal: 16, paddingTop: 4, paddingBottom: 12 }}>
         {exercises.map((ex, j) => {
           const unit = ex.equipment_unit ?? "kg";
@@ -1162,7 +1255,6 @@ function CardioModal({
   editEntry?: CardioEntry | null;
 }) {
   const isEditing = !!editEntry;
-
   const [activityType, setActivityType] = useState("Running");
   const [customType, setCustomType] = useState("");
   const [duration, setDuration] = useState("");
@@ -1188,11 +1280,11 @@ function CardioModal({
     setHeartRate(entry.avg_heart_rate ? String(entry.avg_heart_rate) : "");
     setCalories(entry.calories ? String(entry.calories) : "");
     if (entry.avg_pace_seconds) {
-      if (entry.activity_type === "Cycling") {
-        setPaceInput(secondsToKmh(entry.avg_pace_seconds));
-      } else {
-        setPaceInput(secondsToPaceString(entry.avg_pace_seconds));
-      }
+      setPaceInput(
+        entry.activity_type === "Cycling"
+          ? secondsToKmh(entry.avg_pace_seconds)
+          : secondsToPaceString(entry.avg_pace_seconds),
+      );
     } else {
       setPaceInput("");
     }
@@ -1234,22 +1326,17 @@ function CardioModal({
       quality: 0.9,
       base64: true,
     });
-
     if (result.canceled || !result.assets?.[0]) return;
-
     const asset = result.assets[0];
     if (!asset.base64) {
       setError("Could not read image");
       return;
     }
-
     const mediaType = (asset.mimeType as any) || "image/jpeg";
     setExtracting(true);
     setError("");
-
     try {
       const extracted = await extractCardioFromImage(asset.base64, mediaType);
-
       const type = CARDIO_TYPES.includes(extracted.activity_type)
         ? extracted.activity_type
         : "Other";
@@ -1262,11 +1349,11 @@ function CardioModal({
         setHeartRate(String(extracted.avg_heart_rate));
       if (extracted.calories) setCalories(String(extracted.calories));
       if (extracted.avg_pace_seconds) {
-        if (extracted.activity_type === "Cycling") {
-          setPaceInput(secondsToKmh(extracted.avg_pace_seconds));
-        } else {
-          setPaceInput(secondsToPaceString(extracted.avg_pace_seconds));
-        }
+        setPaceInput(
+          extracted.activity_type === "Cycling"
+            ? secondsToKmh(extracted.avg_pace_seconds)
+            : secondsToPaceString(extracted.avg_pace_seconds),
+        );
       }
       if (extracted.notes) setNotes(extracted.notes);
     } catch (err: any) {
@@ -1297,7 +1384,6 @@ function CardioModal({
       setError("Please enter an activity type");
       return;
     }
-
     const payload = {
       activity_type: type,
       duration_minutes: mins,
@@ -1307,7 +1393,6 @@ function CardioModal({
       avg_pace_seconds: buildAvgPaceSeconds() ?? undefined,
       notes: notes.trim() || undefined,
     };
-
     setSaving(true);
     setError("");
     try {
@@ -1337,7 +1422,6 @@ function CardioModal({
     borderWidth: 0.5,
     borderColor: Colors.line,
   };
-
   const labelStyle = {
     fontFamily: "Courier",
     fontSize: 10,
@@ -1719,21 +1803,15 @@ export default function WeekScreen() {
   }
 
   const completedCount = sessions.filter((s) => s.status === "complete").length;
-  const currentWeekSessions = sessions;
 
   const plannedSessions = [
-    currentWeekSessions.find(
-      (s) => s.session_type === "compound" && s.occurrence === 1,
-    ),
-    currentWeekSessions.find((s) => s.session_type === "isolation"),
-    currentWeekSessions.find(
-      (s) => s.session_type === "compound" && s.occurrence === 2,
-    ),
+    sessions.find((s) => s.session_type === "compound" && s.occurrence === 1),
+    sessions.find((s) => s.session_type === "isolation"),
+    sessions.find((s) => s.session_type === "compound" && s.occurrence === 2),
   ].filter(Boolean) as Session[];
 
   const extraSessions = sessions.filter((s) => s.session_type === "extra");
   const orderedSessions = [...plannedSessions, ...extraSessions];
-
   const phaseLabel = profile
     ? PHASE_LABELS[profile.current_phase] || profile.current_phase
     : "";
@@ -1741,7 +1819,6 @@ export default function WeekScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: Colors.bg }}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* header */}
         <View
           style={{ paddingHorizontal: 20, paddingTop: 60, paddingBottom: 4 }}
         >
@@ -1846,7 +1923,6 @@ export default function WeekScreen() {
           </View>
         )}
 
-        {/* generate extra session button */}
         {!loading && (
           <Pressable
             onPress={() => setExtraModalVisible(true)}
@@ -1898,7 +1974,6 @@ export default function WeekScreen() {
           </Pressable>
         )}
 
-        {/* cardio section */}
         {!loading && (
           <View style={{ marginHorizontal: 20, marginTop: 10 }}>
             {cardioEntries.length > 0 && (
@@ -2092,7 +2167,6 @@ export default function WeekScreen() {
           </View>
         )}
 
-        {/* footer */}
         <View style={{ paddingBottom: 24, alignItems: "center" }}>
           <Text
             style={{

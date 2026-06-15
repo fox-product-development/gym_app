@@ -1214,9 +1214,8 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
 // POST /ai/extra-session
 
 router.post("/extra-session", requireAuth, async (req, res) => {
-  const { gym_id } = req.body;
+  const { gym_id, session_type = "compound" } = req.body;
   if (!gym_id) return res.status(400).json({ error: "gym_id is required" });
-
   try {
     const gymCheck = await pool.query(
       `SELECT id, gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
@@ -1275,9 +1274,15 @@ router.post("/extra-session", requireAuth, async (req, res) => {
     const condCSV = buildConditioningCSV(conditioningLookup);
     const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
 
-    const userPrompt = `The athlete has arrived at the gym for an extra session today. Select the ${weightExercises} best weight exercises for them based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
+    const weightInstruction = buildWildcardInstruction(
+      weightExercises,
+      session_type,
+      goal_description,
+    );
 
-CURRENT STATE
+    const userPrompt = `The athlete has arrived at the gym for an extra ${session_type} session today. Select the ${weightExercises} best weight exercises for them based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
+
+    CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
@@ -1335,8 +1340,7 @@ Return ONLY this exact JSON structure, nothing else:
   ]
 }
 
-Exactly ${weightExercises} weight exercises and ${conditioningCount} conditioning exercises. Apply the current phase sets and reps scheme. Use target_weight from the exercise library where available. Only suggest weights from the valid weights lists above. No extra fields. No explanation. No markdown.`;
-
+${weightInstruction} Then ${conditioningCount} conditioning exercises. Apply the current phase sets and reps scheme. Use target_weight from the exercise library where available. Only suggest weights from the valid weights lists above. No extra fields. No explanation. No markdown.`;
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1500,
@@ -1645,9 +1649,20 @@ EXERCISE SELECTION RULES
 4. EMG SCORE — prefer higher scores when other factors are equal
 5. TIEBREAKER — use table order
 
-ATHLETE NOTES
-Read the "Athlete notes" field in the user prompt. If it contains explicit avoidance instructions (e.g. "avoid", "do not", "exclude", "no X") apply them strictly when selecting exercises — do not select any exercise targeting the affected muscle group. Ignore vague mentions of discomfort, soreness, or tiredness — only act on clear directives. Be tolerant of spelling mistakes and interpret the intent.
+SUB-COMPONENT VALUES
+sub_component must always be an anatomical term describing the specific part of the muscle being targeted. Examples: "Sternal head", "Clavicular head", "Anterior deltoid", "Long head", "Lower lat", "Vastus lateralis". Never use movement patterns like "Vertical Push", "Horizontal Pull", or "Pressing" as sub-components.
 
+EXERCISE ORDERING
+Do not place exercises targeting the same primary muscle group consecutively. Alternate between upper and lower body where possible to allow muscle group recovery between exercises.
+
+ATHLETE NOTES
+Read the "Athlete notes" field in the user prompt carefully. It may contain avoidance instructions, muscle preferences, or both.
+
+AVOIDANCE: If it contains explicit avoidance instructions (e.g. "avoid", "do not", "exclude", "no X", "dodgy knee", "bad back") apply them strictly — do not select any exercise targeting the affected muscle group or body part. Ignore vague mentions of discomfort, soreness, or tiredness — only act on clear directives.
+
+PREFERENCES: If it mentions muscles or body parts to focus on (e.g. "focus on triceps", "prioritise calves", "want bigger arms"), thread that preference through ALL exercise selection — not just wildcard slots. For mandatory muscle slots, choose the exercise variant that best involves the preferred muscle as a secondary mover. For example, if the athlete wants triceps focus, prefer Chest Press (triceps secondary) over Chest Fly (no triceps) for the Chest slot. Fill wildcard slots with preferred muscles first, then fall back to standard undertrained logic.
+
+Be tolerant of spelling mistakes and interpret the intent.
 BLOCK EXCLUSION — no exercise from Block 1 may appear in Block 2
 
 CONDITIONING SELECTION RULES

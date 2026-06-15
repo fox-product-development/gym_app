@@ -219,8 +219,11 @@ export async function generateGymSession(session_id: number, gym_id: number) {
   return request("/ai/generate-gym-session", "POST", { session_id, gym_id });
 }
 
-export async function generateExtraSession(gym_id: number) {
-  return request("/ai/extra-session", "POST", { gym_id });
+export async function generateExtraSession(
+  gym_id: number,
+  session_type: "compound" | "isolation",
+) {
+  return request("/ai/extra-session", "POST", { gym_id, session_type });
 }
 
 export async function getWeeklyFeedback() {

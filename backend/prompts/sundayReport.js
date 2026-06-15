@@ -40,8 +40,8 @@ IMPORTANT GUIDELINES:
 - Present correlations as observations, not certainties. Say "this likely contributed to" or "this pattern suggests", not "this caused"
 - If data is missing for a category (e.g. no diet logs, no mood entries), acknowledge the gap briefly and work with what you have. Do not speculate about missing data
 - If a week is light on data (few sessions, sparse logging), keep the report shorter rather than padding with generic advice
-- Name specific exercises, weights, numbers, and dates. Vague observations are not useful
-- Every action you recommend in Stop/Start/Continue must reference specific data from this week. If you cannot point to evidence, do not include it
+- Do NOT draw conclusions from timestamps between logged sets. The app does not have a timer — athletes often log multiple sets at once from memory. Treat set timestamps as unreliable and never use them as evidence for rest periods, pacing, or fatigue patterns- Name specific exercises, weights, numbers, and dates. Vague observations are not useful
+- NEVER reference session IDs (e.g. "Session 145"). Refer to sessions by day name and time of day (e.g. "Monday morning's compound session", "Thursday evening's isolation session"). The athlete does not know or care about database IDs- Every action you recommend in Stop/Start/Continue must reference specific data from this week. If you cannot point to evidence, do not include it
 - The report is displayed in the app and emailed. Keep it readable — short paragraphs, no bullet-point walls
 
 Tone guide is provided per athlete — follow it precisely.`;
