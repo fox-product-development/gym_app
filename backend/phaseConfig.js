@@ -9,7 +9,7 @@ const PHASE_CONFIG = Object.freeze({
     targetReps: 20,
     minReps: 15,
     percentage: 0.6,
-    poEnabled: false,
+    poEnabled: true,
   },
   hypertrophy: {
     sets: 4,
@@ -30,7 +30,7 @@ const PHASE_CONFIG = Object.freeze({
     targetReps: 40,
     minReps: 30,
     percentage: 0.55,
-    poEnabled: false,
+    poEnabled: true,
   },
   rest: {
     sets: 3,

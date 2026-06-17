@@ -524,7 +524,7 @@ Return ONLY this exact JSON structure, nothing else:
 }
 
 ${compoundInstruction} Then ${conditioningCount} conditioning exercises appended after.
-Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after.${current_phase === "muscle_definition" ? " IMPORTANT: This is Muscle Definition phase — every weight exercise in both sessions must use machine-type equipment only. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction." : ""} No extra fields. No explanation. No markdown.`;
+Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after. No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -574,7 +574,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       const programmeId = progResult.rows[0].id;
 
       for (let week = 1; week <= 3; week++) {
-        async function insertSessionExercises(sessionId, sessionPlan, phase) {
+        async function insertSessionExercises(sessionId, sessionPlan) {
           const weightExs = sessionPlan.exercises || [];
           const condExs = sessionPlan.conditioning || [];
 
@@ -594,7 +594,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
                 ex.sets,
                 ex.target_reps,
                 ex.weight,
-                phase === "muscle_definition" ? "drop" : "standard",
+                "standard",
               ],
             );
           }
@@ -630,7 +630,6 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         await insertSessionExercises(
           comp1.rows[0].id,
           blockPlan.compound_session,
-          current_phase,
         );
 
         const comp2 = await client.query(
@@ -641,7 +640,6 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         await insertSessionExercises(
           comp2.rows[0].id,
           blockPlan.compound_session,
-          current_phase,
         );
 
         const iso = await client.query(
@@ -652,7 +650,6 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         await insertSessionExercises(
           iso.rows[0].id,
           blockPlan.isolation_session,
-          current_phase,
         );
       }
 
@@ -1072,7 +1069,7 @@ Return ONLY this exact JSON structure, nothing else:
 }
 
 Compound: ${compoundInstruction} Then ${conditioningCount} conditioning exercises.
-Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises.${current_phase === "muscle_definition" ? " IMPORTANT: Muscle Definition phase — weight exercises must use machine-type equipment only. Conditioning exercises are exempt." : ""} No extra fields. No explanation. No markdown.`;
+Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises. No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
@@ -1115,7 +1112,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       await client.query("BEGIN");
 
       for (const week of weeks_needed) {
-        async function insertSessionExercises(sessionId, sessionPlan, phase) {
+        async function insertSessionExercises(sessionId, sessionPlan) {
           const weightExs = sessionPlan.exercises || [];
           const condExs = sessionPlan.conditioning || [];
 
@@ -1132,7 +1129,7 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
                 ex.sets,
                 ex.target_reps,
                 ex.weight,
-                phase === "muscle_definition" ? "drop" : "standard",
+                "standard",
               ],
             );
           }
@@ -1165,7 +1162,6 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         await insertSessionExercises(
           comp1.rows[0].id,
           blockPlan.compound_session,
-          current_phase,
         );
 
         const comp2 = await client.query(
@@ -1176,7 +1172,6 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         await insertSessionExercises(
           comp2.rows[0].id,
           blockPlan.compound_session,
-          current_phase,
         );
 
         const iso = await client.query(
@@ -1187,7 +1182,6 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
         await insertSessionExercises(
           iso.rows[0].id,
           blockPlan.isolation_session,
-          current_phase,
         );
       }
 
@@ -1692,10 +1686,7 @@ PHASE SCHEMES
 - Anatomical Adaptation: 3 sets x 20 reps target (min 15)
 - Hypertrophy: 4 sets x 10 reps target (min 8)
 - Maximum Strength: 5 sets x 5 reps target (min 3)
-- Muscle Definition: 1 set x 40 reps target (min 30) — DROP SET STYLE (Work Gym only)
-
-MUSCLE DEFINITION — MACHINE EQUIPMENT RESTRICTION
-When the phase is 'muscle_definition', weight exercises must only use machine-type equipment. No barbells, dumbbells, or bodyweight exercises. Conditioning exercises are exempt from this restriction.
+- Muscle Definition: 1 set x 40 reps target (min 30)
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 

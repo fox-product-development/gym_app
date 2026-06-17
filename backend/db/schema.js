@@ -18,6 +18,7 @@ async function dropTables() {
   await pool.query("DROP TABLE IF EXISTS cardio_logs CASCADE");
   await pool.query("DROP TABLE IF EXISTS mood_logs CASCADE");
   await pool.query("DROP TABLE IF EXISTS diet_logs CASCADE");
+  await pool.query("DROP TABLE IF EXISTS conditioning CASCADE");
   await pool.query("DROP TABLE IF EXISTS plates CASCADE");
   await pool.query("DROP TABLE IF EXISTS equipment CASCADE");
   await pool.query("DROP TABLE IF EXISTS gyms CASCADE");
@@ -129,8 +130,23 @@ async function createTables() {
     `);
     console.log("✓ plates table ready");
 
-    // ─── Cycles ──────────────────────────────────────────────────────────────
-    // One row per phase per user. A full cycle is 4 rows (or more if duplicate
+    // ─── Conditioning ────────────────────────────────────────────────────────
+    // Bodyweight conditioning exercises (cardio, core, mobility, TRX).
+    // gym_id is nullable — most apply to all gyms; TRX exercises are gym-specific.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS conditioning (
+        id          SERIAL PRIMARY KEY,
+        exercise    TEXT NOT NULL,
+        category    TEXT NOT NULL,
+        metric      TEXT NOT NULL,
+        target      INTEGER NOT NULL,
+        sets        INTEGER NOT NULL DEFAULT 3,
+        gym_id      INTEGER REFERENCES gyms(id)
+      );
+    `);
+    console.log("✓ conditioning table ready");
+
+    // ─── Cycles ────────────────────────────────────────────────────────────── // One row per phase per user. A full cycle is 4 rows (or more if duplicate
     // phases are added). The cron reads these to determine phase advancement
     // instead of using a hardcoded sequence.
     await pool.query(`
