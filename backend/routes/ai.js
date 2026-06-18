@@ -1,11 +1,14 @@
 // backend/routes/ai.js
 // AI routes — block generation, gym session swap, extra session, weekly feedback.
+// The AI's role is exercise SELECTION and ORDERING. The server calculates all
+// weights, reps, and sets from phaseConfig × 1RM data.
 
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("../db");
 const requireAuth = require("../middleware");
 const { getValidWeightsForEquipment } = require("../weightCalc");
+const { getWeekConfig, BASELINE_TEST_CONFIG } = require("../phaseConfig");
 
 const router = express.Router();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -20,6 +23,14 @@ function cleanJSON(text) {
     return stripped.substring(firstBrace, lastBrace + 1);
   }
   return stripped;
+}
+
+// Normalises training_level to handle the 'amateur' → 'recreational' rename
+// that hasn't been migrated yet. Falls back to 'recreational' if null.
+function normaliseTrainingLevel(raw) {
+  if (!raw) return "recreational";
+  if (raw === "amateur") return "recreational";
+  return raw;
 }
 
 async function getSessionHistory(userId) {
@@ -159,6 +170,71 @@ async function getConditioningLookup(gymId) {
   return lookup;
 }
 
+// ─── Weight calculation ───────────────────────────────────────────────────────
+
+// Builds a lookup map of exercise → { estimated_1rm, target_weight } for
+// server-side weight calculation. 1RM is preferred; target_weight is the
+// fallback until a baseline testing session establishes a proper 1RM.
+async function buildWeightLookup(userId, gymId) {
+  const ormResult = await pool.query(
+    `SELECT DISTINCT ON (exercise_name)
+       exercise_name, estimated_1rm
+     FROM one_rep_max_history
+     WHERE user_id = $1
+     ORDER BY exercise_name, logged_at DESC`,
+    [userId],
+  );
+
+  const twResult = await pool.query(
+    `SELECT exercise, target_weight
+     FROM exercises
+     WHERE user_id = $1 AND gym_id = $2 AND active = TRUE`,
+    [userId, gymId],
+  );
+
+  const lookup = {};
+
+  for (const row of twResult.rows) {
+    lookup[row.exercise.toLowerCase()] = {
+      estimated_1rm: null,
+      target_weight: row.target_weight ? parseFloat(row.target_weight) : null,
+    };
+  }
+
+  for (const row of ormResult.rows) {
+    const key = row.exercise_name.toLowerCase();
+    if (!lookup[key])
+      lookup[key] = { estimated_1rm: null, target_weight: null };
+    lookup[key].estimated_1rm = row.estimated_1rm
+      ? parseFloat(row.estimated_1rm)
+      : null;
+  }
+
+  return lookup;
+}
+
+// Calculates a target weight for an exercise at a given percentage of 1RM.
+// Falls back to target_weight from the exercises table if no 1RM exists.
+// Returns 0 for exercises with no weight data (e.g. bodyweight exercises).
+function calculateExerciseWeight(exerciseName, percentage, weightLookup) {
+  const key = exerciseName.toLowerCase();
+  const data = weightLookup[key];
+  if (!data) return 0;
+
+  if (data.estimated_1rm) {
+    return data.estimated_1rm * percentage;
+  }
+
+  // Fallback: target_weight is a working weight maintained by the PO system.
+  // This is a rough proxy until a baseline testing session establishes a
+  // proper 1RM for this exercise.
+  if (data.target_weight) {
+    return data.target_weight;
+  }
+
+  return 0;
+}
+
 // ─── Weight validation ────────────────────────────────────────────────────────
 
 async function validateAndCorrectWeights(exercises, gymId, userId) {
@@ -207,6 +283,8 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
 }
 
 // ─── Equipment summary for AI prompt ─────────────────────────────────────────
+// Retained for potential future use but no longer included in AI prompts.
+// The server now calculates all weights from phaseConfig × 1RM.
 
 async function buildEquipmentSummary(gymId, userId) {
   const sections = [];
@@ -345,6 +423,80 @@ function enrichConditioningExercises(condExs, conditioningLookup) {
   return enriched;
 }
 
+// Enriches an AI-returned exercise array with server-calculated weights, reps,
+// and sets from phaseConfig for a specific week, then validates weights against
+// equipment constraints.
+async function enrichExercisesForWeek(
+  exercises,
+  weekConfig,
+  weightLookup,
+  gymId,
+  userId,
+) {
+  const enriched = exercises.map((ex) => ({
+    exercise: ex.exercise,
+    muscles_primary: ex.muscles_primary,
+    sub_component: ex.sub_component,
+    sets: weekConfig.sets,
+    target_reps: weekConfig.reps,
+    weight: calculateExerciseWeight(
+      ex.exercise,
+      weekConfig.percentage,
+      weightLookup,
+    ),
+  }));
+
+  await validateAndCorrectWeights(enriched, gymId, userId);
+  return enriched;
+}
+
+// Inserts weight exercises and conditioning exercises into planned_exercises
+// for a given session.
+async function insertSessionExercises(client, sessionId, weightExs, condExs) {
+  for (let i = 0; i < weightExs.length; i++) {
+    const ex = weightExs[i];
+    await client.query(
+      `INSERT INTO planned_exercises
+         (session_id, exercise_name, muscles_primary, sub_component,
+          order_index, target_sets, target_reps, target_weight, set_style)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [
+        sessionId,
+        ex.exercise,
+        ex.muscles_primary,
+        ex.sub_component,
+        i,
+        ex.sets,
+        ex.target_reps,
+        ex.weight,
+        "standard",
+      ],
+    );
+  }
+
+  for (let i = 0; i < condExs.length; i++) {
+    const ex = condExs[i];
+    await client.query(
+      `INSERT INTO planned_exercises
+         (session_id, exercise_name, muscles_primary, sub_component,
+          order_index, target_sets, target_reps, target_weight, set_style, metric)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        sessionId,
+        ex.exercise,
+        "Conditioning",
+        "Conditioning",
+        weightExs.length + i,
+        ex.sets,
+        ex.target_reps,
+        0,
+        "standard",
+        ex.metric,
+      ],
+    );
+  }
+}
+
 // ─── Generate block ───────────────────────────────────────────────────────────
 // POST /ai/generate-block
 
@@ -373,7 +525,7 @@ router.post("/generate-block", async (req, res) => {
     const userResult = await pool.query(
       `SELECT current_phase, current_block, phase_week,
               weight_exercises_per_session, conditioning_exercises_per_session,
-              goal_description
+              goal_description, training_level
        FROM users WHERE id = $1`,
       [req.userId],
     );
@@ -389,6 +541,9 @@ router.post("/generate-block", async (req, res) => {
       conditioning_exercises_per_session,
       goal_description,
     } = userResult.rows[0];
+    const trainingLevel = normaliseTrainingLevel(
+      userResult.rows[0].training_level,
+    );
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
 
@@ -404,6 +559,15 @@ router.post("/generate-block", async (req, res) => {
     const gymId = gymResult.rows[0].id;
     const gymName = gymResult.rows[0].gym_name;
 
+    // Verify phaseConfig exists for this phase/level/block before calling the AI
+    try {
+      getWeekConfig(current_phase, trainingLevel, current_block, 1);
+    } catch (configErr) {
+      return res.status(400).json({
+        error: `No training config available: ${configErr.message}`,
+      });
+    }
+
     const [
       sessionHistory,
       oneRepMaxHistory,
@@ -413,6 +577,7 @@ router.post("/generate-block", async (req, res) => {
       moodHistory,
       cardioHistory,
       conditioningLookup,
+      weightLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
@@ -422,11 +587,11 @@ router.post("/generate-block", async (req, res) => {
       getMoodHistory(req.userId),
       getCardioHistory(req.userId),
       getConditioningLookup(gymId),
+      buildWeightLookup(req.userId, gymId),
     ]);
 
     const gymCSV = await buildGymCSV(gymId, req.userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
-    const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
     const compoundInstruction = buildWildcardInstruction(
       weightExercises,
       "compound",
@@ -438,12 +603,14 @@ router.post("/generate-block", async (req, res) => {
       goal_description,
     );
 
-    const userPrompt = `Generate a training block for the following athlete.
+    const userPrompt = `Select exercises for a training block for the following athlete.
+The server will calculate all weights, reps, and sets — return exercise selections only.
 
 CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
+- Training level: ${trainingLevel}
 - Gym: ${gymName}
 - Weight exercises per session: ${weightExercises}
 - Conditioning exercises per session: ${conditioningCount}
@@ -452,12 +619,10 @@ CURRENT STATE
 EXERCISE LIBRARY
 ${gymCSV}
 
-${equipmentSummary}
-
 CONDITIONING LIBRARY
 ${condCSV}
 
-ESTIMATED 1RM HISTORY
+ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
 ${JSON.stringify(oneRepMaxHistory, null, 2)}
 
 SESSION HISTORY — LAST 4 WEEKS
@@ -478,22 +643,18 @@ ${moodHistory.length > 0 ? JSON.stringify(moodHistory, null, 2) : "No mood data 
 CARDIO — LAST 2 WEEKS
 ${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio logged"}
 
-Use diet, mood, energy and cardio data to inform weight selection and exercise ordering. If energy has been consistently low, favour moderate weights over ambitious targets. If cardio load has been high, consider recovery when selecting compound movements.
+Use diet, mood, energy and cardio data to inform exercise selection and ordering. If energy has been consistently low, favour exercises the athlete performs well at. If cardio load has been high, consider recovery when selecting compound movements.
 
 For conditioning: select ${conditioningCount} exercises from the conditioning library. Aim for at least 1 cardio movement and 1 core exercise. Use remaining slots to match the athlete's goal description and phase. Return only the exercise name and sets — targets and metrics are looked up server-side. Exercise names must match the conditioning library exactly.
 
 Return ONLY this exact JSON structure, nothing else:
 {
-  "phase": "<phase_name>",
   "compound_session": {
     "exercises": [
       {
         "exercise": "<name>",
         "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight": <number>
+        "sub_component": "<sub component>"
       }
     ],
     "conditioning": [
@@ -508,10 +669,7 @@ Return ONLY this exact JSON structure, nothing else:
       {
         "exercise": "<name>",
         "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight": <number>
+        "sub_component": "<sub component>"
       }
     ],
     "conditioning": [
@@ -523,7 +681,7 @@ Return ONLY this exact JSON structure, nothing else:
   }
 }
 
-${compoundInstruction} Then ${conditioningCount} conditioning exercises appended after.
+Compound: ${compoundInstruction} Then ${conditioningCount} conditioning exercises appended after.
 Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after. No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
@@ -543,22 +701,12 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       throw new Error("Invalid block plan structure from Claude");
     }
 
-    blockPlan.compound_session.exercises = await validateAndCorrectWeights(
-      blockPlan.compound_session.exercises,
-      gymId,
-      req.userId,
-    );
-    blockPlan.isolation_session.exercises = await validateAndCorrectWeights(
-      blockPlan.isolation_session.exercises,
-      gymId,
-      req.userId,
-    );
-
-    blockPlan.compound_session.conditioning = enrichConditioningExercises(
+    // Enrich conditioning once (phase-independent)
+    const enrichedCompConditioning = enrichConditioningExercises(
       blockPlan.compound_session.conditioning || [],
       conditioningLookup,
     );
-    blockPlan.isolation_session.conditioning = enrichConditioningExercises(
+    const enrichedIsoConditioning = enrichConditioningExercises(
       blockPlan.isolation_session.conditioning || [],
       conditioningLookup,
     );
@@ -574,53 +722,35 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       const programmeId = progResult.rows[0].id;
 
       for (let week = 1; week <= 3; week++) {
-        async function insertSessionExercises(sessionId, sessionPlan) {
-          const weightExs = sessionPlan.exercises || [];
-          const condExs = sessionPlan.conditioning || [];
+        const weekConfig = getWeekConfig(
+          current_phase,
+          trainingLevel,
+          current_block,
+          week,
+        );
 
-          for (let i = 0; i < weightExs.length; i++) {
-            const ex = weightExs[i];
-            await client.query(
-              `INSERT INTO planned_exercises
-                 (session_id, exercise_name, muscles_primary, sub_component,
-                  order_index, target_sets, target_reps, target_weight, set_style)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-              [
-                sessionId,
-                ex.exercise,
-                ex.muscles_primary,
-                ex.sub_component,
-                i,
-                ex.sets,
-                ex.target_reps,
-                ex.weight,
-                "standard",
-              ],
-            );
-          }
+        // Server calculates weights from phaseConfig percentage × 1RM,
+        // then validates against equipment constraints
+        const compoundExercises = await enrichExercisesForWeek(
+          blockPlan.compound_session.exercises,
+          weekConfig,
+          weightLookup,
+          gymId,
+          req.userId,
+        );
 
-          for (let i = 0; i < condExs.length; i++) {
-            const ex = condExs[i];
-            await client.query(
-              `INSERT INTO planned_exercises
-                 (session_id, exercise_name, muscles_primary, sub_component,
-                  order_index, target_sets, target_reps, target_weight, set_style, metric)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-              [
-                sessionId,
-                ex.exercise,
-                "Conditioning",
-                "Conditioning",
-                weightExs.length + i,
-                ex.sets,
-                ex.target_reps,
-                0,
-                "standard",
-                ex.metric,
-              ],
-            );
-          }
-        }
+        const isolationExercises = await enrichExercisesForWeek(
+          blockPlan.isolation_session.exercises,
+          weekConfig,
+          weightLookup,
+          gymId,
+          req.userId,
+        );
+
+        // TODO: Week 1 session 1 should be flagged as a 1RM baseline testing
+        // session (one max-effort set per exercise, 4-8 reps to failure).
+        // The baseline results would then recalculate weights for the
+        // remaining sessions. See BASELINE_TEST_CONFIG in phaseConfig.js.
 
         const comp1 = await client.query(
           `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
@@ -628,8 +758,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           [req.userId, programmeId, week, gymId],
         );
         await insertSessionExercises(
+          client,
           comp1.rows[0].id,
-          blockPlan.compound_session,
+          compoundExercises,
+          enrichedCompConditioning,
         );
 
         const comp2 = await client.query(
@@ -638,8 +770,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           [req.userId, programmeId, week, gymId],
         );
         await insertSessionExercises(
+          client,
           comp2.rows[0].id,
-          blockPlan.compound_session,
+          compoundExercises,
+          enrichedCompConditioning,
         );
 
         const iso = await client.query(
@@ -648,8 +782,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           [req.userId, programmeId, week, gymId],
         );
         await insertSessionExercises(
+          client,
           iso.rows[0].id,
-          blockPlan.isolation_session,
+          isolationExercises,
+          enrichedIsoConditioning,
         );
       }
 
@@ -691,14 +827,19 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
     const gymName = gymResult.rows[0].gym_name;
 
     const sessionResult = await pool.query(
-      `SELECT s.*, p.phase, p.block_number, u.phase_week FROM sessions s JOIN programmes p ON p.id = s.programme_id JOIN users u ON u.id = s.user_id WHERE s.id = $1 AND s.user_id = $2`,
+      `SELECT s.*, p.phase, p.block_number, u.phase_week, u.training_level
+       FROM sessions s
+       JOIN programmes p ON p.id = s.programme_id
+       JOIN users u ON u.id = s.user_id
+       WHERE s.id = $1 AND s.user_id = $2`,
       [session_id, req.userId],
     );
     if (sessionResult.rows.length === 0)
       return res.status(404).json({ error: "Session not found" });
 
     const session = sessionResult.rows[0];
-    const { session_type, phase, block_number, phase_week } = session;
+    const { session_type, phase, block_number, week_number } = session;
+    const trainingLevel = normaliseTrainingLevel(session.training_level);
 
     const userResult = await pool.query(
       `SELECT weight_exercises_per_session, conditioning_exercises_per_session, goal_description FROM users WHERE id = $1`,
@@ -718,17 +859,18 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
       bodyCompHistory,
       previousBlockExercises,
       conditioningLookup,
+      weightLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
       getBodyCompHistory(req.userId),
       getPreviousBlockExercises(req.userId, phase, block_number),
       getConditioningLookup(gym_id),
+      buildWeightLookup(req.userId, gym_id),
     ]);
 
     const gymCSV = await buildGymCSV(gym_id, req.userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
-    const equipmentSummary = await buildEquipmentSummary(gym_id, req.userId);
     const sessionTypeLabel =
       session_type === "compound" ? "compound" : "isolation";
     const weightInstruction = buildWildcardInstruction(
@@ -737,14 +879,16 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
       goal_description,
     );
 
-    const userPrompt = `Generate a single ${sessionTypeLabel} session for the following athlete at ${gymName}.
+    const userPrompt = `Select exercises for a single ${sessionTypeLabel} session for the following athlete at ${gymName}.
+The server will calculate all weights, reps, and sets — return exercise selections only.
 
 This session replaces a planned session at a different gym. Apply the same exercise selection logic — sub-component coverage, progressive overload response, recency, EMG score, and tiebreaker rules all apply.
 
 CURRENT STATE
 - Phase: ${phase}
 - Block: ${block_number}
-- Phase week: ${phase_week || "unknown"} of 6
+- Week: ${week_number} of 3
+- Training level: ${trainingLevel}
 - Gym: ${gymName}
 - Weight exercises: ${weightExercises}
 - Conditioning exercises: ${conditioningCount}
@@ -753,12 +897,10 @@ CURRENT STATE
 EXERCISE LIBRARY (${gymName} only)
 ${gymCSV}
 
-${equipmentSummary}
-
 CONDITIONING LIBRARY
 ${condCSV}
 
-ESTIMATED 1RM HISTORY
+ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
 ${JSON.stringify(oneRepMaxHistory, null, 2)}
 
 SESSION HISTORY — LAST 4 WEEKS
@@ -776,10 +918,7 @@ Return ONLY this exact JSON structure, nothing else:
     {
       "exercise": "<name>",
       "muscles_primary": "<primary muscle>",
-      "sub_component": "<sub component>",
-      "sets": <number>,
-      "target_reps": <number>,
-      "weight": <number>
+      "sub_component": "<sub component>"
     }
   ],
   "conditioning": [
@@ -809,12 +948,21 @@ No extra fields. No explanation. No markdown.`;
     if (!result.exercises || result.exercises.length === 0)
       throw new Error("Invalid session structure from Claude");
 
-    result.exercises = await validateAndCorrectWeights(
+    // Calculate weights for this specific week
+    const weekConfig = getWeekConfig(
+      phase,
+      trainingLevel,
+      block_number,
+      week_number,
+    );
+    const enrichedExercises = await enrichExercisesForWeek(
       result.exercises,
+      weekConfig,
+      weightLookup,
       gym_id,
       req.userId,
     );
-    result.conditioning = enrichConditioningExercises(
+    const enrichedConditioning = enrichConditioningExercises(
       result.conditioning || [],
       conditioningLookup,
     );
@@ -827,43 +975,12 @@ No extra fields. No explanation. No markdown.`;
         [session_id],
       );
 
-      const weightExs = result.exercises || [];
-      const condExs = result.conditioning || [];
-
-      for (let i = 0; i < weightExs.length; i++) {
-        const ex = weightExs[i];
-        await client.query(
-          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [
-            session_id,
-            ex.exercise,
-            ex.muscles_primary,
-            ex.sub_component,
-            i,
-            ex.sets,
-            ex.target_reps,
-            ex.weight,
-          ],
-        );
-      }
-
-      for (let i = 0; i < condExs.length; i++) {
-        const ex = condExs[i];
-        await client.query(
-          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, metric) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [
-            session_id,
-            ex.exercise,
-            "Conditioning",
-            "Conditioning",
-            weightExs.length + i,
-            ex.sets,
-            ex.target_reps,
-            0,
-            ex.metric,
-          ],
-        );
-      }
+      await insertSessionExercises(
+        client,
+        session_id,
+        enrichedExercises,
+        enrichedConditioning,
+      );
 
       await client.query(
         `UPDATE sessions SET gym_id = $1, status = 'in_progress', started_at = NOW() WHERE id = $2`,
@@ -874,8 +991,8 @@ No extra fields. No explanation. No markdown.`;
       res.status(200).json({
         message: "Gym session generated and started",
         session_id,
-        exercises: result.exercises,
-        conditioning: result.conditioning,
+        exercises: enrichedExercises,
+        conditioning: enrichedConditioning,
       });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -921,7 +1038,10 @@ router.post("/generate-missing", async (req, res) => {
 
   try {
     const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week, weight_exercises_per_session, conditioning_exercises_per_session, goal_description FROM users WHERE id = $1`,
+      `SELECT current_phase, current_block, phase_week,
+              weight_exercises_per_session, conditioning_exercises_per_session,
+              goal_description, training_level
+       FROM users WHERE id = $1`,
       [req.userId],
     );
     if (userResult.rows.length === 0)
@@ -935,6 +1055,9 @@ router.post("/generate-missing", async (req, res) => {
       conditioning_exercises_per_session,
       goal_description,
     } = userResult.rows[0];
+    const trainingLevel = normaliseTrainingLevel(
+      userResult.rows[0].training_level,
+    );
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
 
@@ -956,6 +1079,7 @@ router.post("/generate-missing", async (req, res) => {
       moodHistory,
       cardioHistory,
       conditioningLookup,
+      weightLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
@@ -965,11 +1089,11 @@ router.post("/generate-missing", async (req, res) => {
       getMoodHistory(req.userId),
       getCardioHistory(req.userId),
       getConditioningLookup(gymId),
+      buildWeightLookup(req.userId, gymId),
     ]);
 
     const gymCSV = await buildGymCSV(gymId, req.userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
-    const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
     const compoundInstruction = buildWildcardInstruction(
       weightExercises,
       "compound",
@@ -985,12 +1109,15 @@ router.post("/generate-missing", async (req, res) => {
       ? `EXISTING PLAN (use as baseline — keep exercises unless avoidance notes or quantity changes require substitution)\n${JSON.stringify(existing_plan, null, 2)}`
       : "EXISTING PLAN: None available — select fresh exercises following standard rules.";
 
-    const userPrompt = `Regenerate missing sessions for the following athlete. Use the existing plan as a baseline and only change exercises where the athlete notes explicitly require avoidance, or where the exercise count has changed and wildcard slots need adjusting.
+    const userPrompt = `Select exercises for missing sessions for the following athlete.
+The server will calculate all weights, reps, and sets — return exercise selections only.
+Use the existing plan as a baseline and only change exercises where the athlete notes explicitly require avoidance, or where the exercise count has changed and wildcard slots need adjusting.
 
 CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
+- Training level: ${trainingLevel}
 - Gym: ${gymName}
 - Weeks to generate: ${weeks_needed.join(", ")}
 - Weight exercises per session: ${weightExercises}
@@ -1002,12 +1129,10 @@ ${existingPlanSection}
 EXERCISE LIBRARY
 ${gymCSV}
 
-${equipmentSummary}
-
 CONDITIONING LIBRARY
 ${condCSV}
 
-ESTIMATED 1RM HISTORY
+ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
 ${JSON.stringify(oneRepMaxHistory, null, 2)}
 
 SESSION HISTORY — LAST 4 WEEKS
@@ -1035,10 +1160,7 @@ Return ONLY this exact JSON structure, nothing else:
       {
         "exercise": "<name>",
         "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight": <number>
+        "sub_component": "<sub component>"
       }
     ],
     "conditioning": [
@@ -1053,10 +1175,7 @@ Return ONLY this exact JSON structure, nothing else:
       {
         "exercise": "<name>",
         "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>",
-        "sets": <number>,
-        "target_reps": <number>,
-        "weight": <number>
+        "sub_component": "<sub component>"
       }
     ],
     "conditioning": [
@@ -1087,22 +1206,11 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
     if (!blockPlan.compound_session || !blockPlan.isolation_session)
       throw new Error("Invalid block plan structure from Claude");
 
-    blockPlan.compound_session.exercises = await validateAndCorrectWeights(
-      blockPlan.compound_session.exercises,
-      gymId,
-      req.userId,
-    );
-    blockPlan.isolation_session.exercises = await validateAndCorrectWeights(
-      blockPlan.isolation_session.exercises,
-      gymId,
-      req.userId,
-    );
-
-    blockPlan.compound_session.conditioning = enrichConditioningExercises(
+    const enrichedCompConditioning = enrichConditioningExercises(
       blockPlan.compound_session.conditioning || [],
       conditioningLookup,
     );
-    blockPlan.isolation_session.conditioning = enrichConditioningExercises(
+    const enrichedIsoConditioning = enrichConditioningExercises(
       blockPlan.isolation_session.conditioning || [],
       conditioningLookup,
     );
@@ -1112,47 +1220,28 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       await client.query("BEGIN");
 
       for (const week of weeks_needed) {
-        async function insertSessionExercises(sessionId, sessionPlan) {
-          const weightExs = sessionPlan.exercises || [];
-          const condExs = sessionPlan.conditioning || [];
+        const weekConfig = getWeekConfig(
+          current_phase,
+          trainingLevel,
+          current_block,
+          week,
+        );
 
-          for (let i = 0; i < weightExs.length; i++) {
-            const ex = weightExs[i];
-            await client.query(
-              `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, set_style) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-              [
-                sessionId,
-                ex.exercise,
-                ex.muscles_primary,
-                ex.sub_component,
-                i,
-                ex.sets,
-                ex.target_reps,
-                ex.weight,
-                "standard",
-              ],
-            );
-          }
+        const compoundExercises = await enrichExercisesForWeek(
+          blockPlan.compound_session.exercises,
+          weekConfig,
+          weightLookup,
+          gymId,
+          req.userId,
+        );
 
-          for (let i = 0; i < condExs.length; i++) {
-            const ex = condExs[i];
-            await client.query(
-              `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, set_style, metric) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-              [
-                sessionId,
-                ex.exercise,
-                "Conditioning",
-                "Conditioning",
-                weightExs.length + i,
-                ex.sets,
-                ex.target_reps,
-                0,
-                "standard",
-                ex.metric,
-              ],
-            );
-          }
-        }
+        const isolationExercises = await enrichExercisesForWeek(
+          blockPlan.isolation_session.exercises,
+          weekConfig,
+          weightLookup,
+          gymId,
+          req.userId,
+        );
 
         const comp1 = await client.query(
           `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
@@ -1160,8 +1249,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           [req.userId, programme_id, week, gymId],
         );
         await insertSessionExercises(
+          client,
           comp1.rows[0].id,
-          blockPlan.compound_session,
+          compoundExercises,
+          enrichedCompConditioning,
         );
 
         const comp2 = await client.query(
@@ -1170,8 +1261,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           [req.userId, programme_id, week, gymId],
         );
         await insertSessionExercises(
+          client,
           comp2.rows[0].id,
-          blockPlan.compound_session,
+          compoundExercises,
+          enrichedCompConditioning,
         );
 
         const iso = await client.query(
@@ -1180,8 +1273,10 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
           [req.userId, programme_id, week, gymId],
         );
         await insertSessionExercises(
+          client,
           iso.rows[0].id,
-          blockPlan.isolation_session,
+          isolationExercises,
+          enrichedIsoConditioning,
         );
       }
 
@@ -1221,7 +1316,10 @@ router.post("/extra-session", requireAuth, async (req, res) => {
     const gymName = gymCheck.rows[0].gym_name;
 
     const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week, weight_exercises_per_session, conditioning_exercises_per_session, goal_description FROM users WHERE id = $1`,
+      `SELECT current_phase, current_block, phase_week,
+              weight_exercises_per_session, conditioning_exercises_per_session,
+              goal_description, training_level
+       FROM users WHERE id = $1`,
       [req.userId],
     );
     if (userResult.rows.length === 0)
@@ -1235,8 +1333,28 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       conditioning_exercises_per_session,
       goal_description,
     } = userResult.rows[0];
+    const trainingLevel = normaliseTrainingLevel(
+      userResult.rows[0].training_level,
+    );
     const weightExercises = weight_exercises_per_session || 6;
     const conditioningCount = conditioning_exercises_per_session || 3;
+
+    // Determine which week config to use for an extra session.
+    // phase_week 1-3 → block 1, phase_week 4-6 → block 2, phase_week 7+ → rest
+    let weekConfig;
+    if (phase_week >= 7) {
+      // Rest week — use flat rest config
+      weekConfig = { percentage: 0.45, reps: 12, sets: 3 };
+    } else {
+      const blockNumber = phase_week <= 3 ? 1 : 2;
+      const weekInBlock = phase_week <= 3 ? phase_week : phase_week - 3;
+      weekConfig = getWeekConfig(
+        current_phase,
+        trainingLevel,
+        blockNumber,
+        weekInBlock,
+      );
+    }
 
     const [
       sessionHistory,
@@ -1246,6 +1364,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       moodHistory,
       cardioHistory,
       conditioningLookup,
+      weightLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
@@ -1254,6 +1373,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       getMoodHistory(req.userId),
       getCardioHistory(req.userId),
       getConditioningLookup(gymId),
+      buildWeightLookup(req.userId, gymId),
     ]);
 
     const lastSession = sessionHistory[0];
@@ -1266,7 +1386,6 @@ router.post("/extra-session", requireAuth, async (req, res) => {
 
     const gymCSV = await buildGymCSV(gymId, req.userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
-    const equipmentSummary = await buildEquipmentSummary(gymId, req.userId);
 
     const weightInstruction = buildWildcardInstruction(
       weightExercises,
@@ -1274,12 +1393,14 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       goal_description,
     );
 
-    const userPrompt = `The athlete has arrived at the gym for an extra ${session_type} session today. Select the ${weightExercises} best weight exercises for them based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
+    const userPrompt = `The athlete has arrived at the gym for an extra ${session_type} session today. Select the ${weightExercises} best weight exercises based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
+The server will calculate all weights, reps, and sets — return exercise selections only.
 
-    CURRENT STATE
+CURRENT STATE
 - Phase: ${current_phase}
 - Block: ${current_block}
 - Phase week: ${phase_week} of 6
+- Training level: ${trainingLevel}
 - Gym: ${gymName}
 - Days since last session: ${daysSinceLast}
 - Weight exercises: ${weightExercises}
@@ -1289,12 +1410,10 @@ router.post("/extra-session", requireAuth, async (req, res) => {
 EXERCISE LIBRARY
 ${gymCSV}
 
-${equipmentSummary}
-
 CONDITIONING LIBRARY
 ${condCSV}
 
-ESTIMATED 1RM HISTORY
+ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
 ${JSON.stringify(oneRepMaxHistory, null, 2)}
 
 SESSION HISTORY — LAST 4 WEEKS
@@ -1312,7 +1431,7 @@ ${moodHistory.length > 0 ? JSON.stringify(moodHistory, null, 2) : "No mood data 
 CARDIO — LAST 2 WEEKS
 ${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio logged"}
 
-Use today's mood and energy scores to inform exercise selection and weight targets. If energy is low today, select exercises the athlete performs well at moderate intensity. If cardio load has been heavy this week, favour upper body compound movements to allow leg recovery.
+Use today's mood and energy scores to inform exercise selection. If energy is low, select exercises the athlete performs well at. If cardio load has been heavy this week, favour upper body compound movements to allow leg recovery.
 
 Return ONLY this exact JSON structure, nothing else:
 {
@@ -1320,10 +1439,7 @@ Return ONLY this exact JSON structure, nothing else:
     {
       "exercise": "<name>",
       "muscles_primary": "<primary muscle>",
-      "sub_component": "<sub component>",
-      "sets": <number>,
-      "target_reps": <number>,
-      "weight": <number>
+      "sub_component": "<sub component>"
     }
   ],
   "conditioning": [
@@ -1334,7 +1450,8 @@ Return ONLY this exact JSON structure, nothing else:
   ]
 }
 
-${weightInstruction} Then ${conditioningCount} conditioning exercises. Apply the current phase sets and reps scheme. Use target_weight from the exercise library where available. Only suggest weights from the valid weights lists above. No extra fields. No explanation. No markdown.`;
+${weightInstruction} Then ${conditioningCount} conditioning exercises. No extra fields. No explanation. No markdown.`;
+
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1500,
@@ -1351,12 +1468,14 @@ ${weightInstruction} Then ${conditioningCount} conditioning exercises. Apply the
     if (!result.exercises || result.exercises.length === 0)
       throw new Error("Invalid session structure from Claude");
 
-    result.exercises = await validateAndCorrectWeights(
+    const enrichedExercises = await enrichExercisesForWeek(
       result.exercises,
+      weekConfig,
+      weightLookup,
       gymId,
       req.userId,
     );
-    result.conditioning = enrichConditioningExercises(
+    const enrichedConditioning = enrichConditioningExercises(
       result.conditioning || [],
       conditioningLookup,
     );
@@ -1380,43 +1499,13 @@ ${weightInstruction} Then ${conditioningCount} conditioning exercises. Apply the
       );
 
       const sessionId = sessionResult.rows[0].id;
-      const weightExs = result.exercises || [];
-      const condExs = result.conditioning || [];
 
-      for (let i = 0; i < weightExs.length; i++) {
-        const ex = weightExs[i];
-        await client.query(
-          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-          [
-            sessionId,
-            ex.exercise,
-            ex.muscles_primary,
-            ex.sub_component,
-            i,
-            ex.sets,
-            ex.target_reps,
-            ex.weight,
-          ],
-        );
-      }
-
-      for (let i = 0; i < condExs.length; i++) {
-        const ex = condExs[i];
-        await client.query(
-          `INSERT INTO planned_exercises (session_id, exercise_name, muscles_primary, sub_component, order_index, target_sets, target_reps, target_weight, metric) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [
-            sessionId,
-            ex.exercise,
-            "Conditioning",
-            "Conditioning",
-            weightExs.length + i,
-            ex.sets,
-            ex.target_reps,
-            0,
-            ex.metric,
-          ],
-        );
-      }
+      await insertSessionExercises(
+        client,
+        sessionId,
+        enrichedExercises,
+        enrichedConditioning,
+      );
 
       await client.query("COMMIT");
       res.status(201).json({
@@ -1594,13 +1683,13 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
 
 async function buildGymCSV(gymId, userId) {
   if (!gymId) {
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight,increment,max_weight\n(no gym selected)";
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight\n(no gym selected)";
   }
   try {
     const result = await pool.query(
       `SELECT e.exercise, e.muscles_primary, e.muscles_secondary, e.type,
               e.sub_component, e.emg_score, e.target_weight,
-              eq.equipment_name, eq.increment, eq.max_weight
+              eq.equipment_name
        FROM exercises e
        LEFT JOIN equipment eq ON eq.id = e.equipment_id
        WHERE e.user_id = $1 AND e.gym_id = $2 AND e.active = TRUE
@@ -1609,24 +1698,27 @@ async function buildGymCSV(gymId, userId) {
     );
 
     const header =
-      "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight,increment,max_weight";
+      "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight";
     if (result.rows.length === 0)
       return header + "\n(no exercises configured for this gym)";
 
     const rows = result.rows.map(
       (e) =>
-        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight ?? "null"},${e.increment ?? "null"},${e.max_weight ?? "null"}`,
+        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight ?? "null"}`,
     );
     return [header, ...rows].join("\n");
   } catch (err) {
     console.error("buildGymCSV DB error:", err.message);
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight,increment,max_weight\n(error loading exercises)";
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight\n(error loading exercises)";
   }
 }
 
 // ─── System prompts ───────────────────────────────────────────────────────────
 
-const BLOCK_GENERATION_SYSTEM_PROMPT = `You are a personal gym coach and training planner. You follow periodisation principles from Tudor Bompa's Serious Strength Training and Zatsiorsky's Science and Practice of Strength Training.
+const BLOCK_GENERATION_SYSTEM_PROMPT = `You are a personal gym coach and exercise selector. You follow periodisation principles from Tudor Bompa's Serious Strength Training.
+
+ROLE
+You select and order exercises. The server calculates all weights, reps, and sets from periodised loading patterns (phaseConfig × 1RM). Do not include weights, reps, or sets in your response. Your focus is choosing the right exercises for the athlete's current phase, history, and goals.
 
 TRAINING STRUCTURE
 - Sessions alternate Compound → Isolation → Compound (repeating based on weekly session count)
@@ -1649,6 +1741,13 @@ sub_component must always be an anatomical term describing the specific part of 
 EXERCISE ORDERING
 Do not place exercises targeting the same primary muscle group consecutively. Alternate between upper and lower body where possible to allow muscle group recovery between exercises.
 
+PHASE CONTEXT
+Each phase has a different training goal that should influence exercise selection:
+- Anatomical Adaptation: Movement quality and connective tissue preparation. Favour exercises with good form accessibility and full range of motion.
+- Hypertrophy: Muscle size and density. Favour exercises that maximise time under tension. Prefer equipment supporting controlled movement under moderate loads.
+- Maximum Strength: Force production and neural adaptation. Favour heavy compound movements. Prefer barbell and loadable equipment that supports heavy loading.
+- Muscle Definition: Metabolic conditioning at high reps. All equipment types permitted. Favour exercises suitable for sustained high-rep endurance work.
+
 ATHLETE NOTES
 Read the "Athlete notes" field in the user prompt carefully. It may contain avoidance instructions, muscle preferences, or both.
 
@@ -1664,29 +1763,6 @@ CONDITIONING SELECTION RULES
 - Use remaining slots for mobility or trx based on athlete goals and phase
 - Only return the exercise name and sets — targets and metrics are looked up server-side
 - Exercise names must match the conditioning library exactly
-
-WEIGHT RULES
-- The exercise library CSV includes equipment_name, increment, and max_weight per exercise
-- If max_weight is provided: NEVER suggest a weight exceeding it
-- If increment is provided: the weight must be a multiple of the increment
-- If target_weight is NOT null: use it directly (as long as it does not exceed max_weight)
-- If target_weight IS null: estimate using phase percentage of 1RM if available, or a conservative starting weight:
-  - Anatomical Adaptation: 60% of 1RM
-  - Hypertrophy: 75% of 1RM
-  - Maximum Strength: 85% of 1RM
-  - Muscle Definition: 55% of 1RM
-- For loadable equipment (where increment and max_weight are null): use the valid weights from the WEIGHT GUIDANCE section in the user prompt
-
-You must only suggest weights that are valid for the exercise's equipment. The user prompt includes the full valid weight list — pick the closest valid value that does not exceed the calculated target.
-
-DUMBBELL CONVENTION
-weight for any dumbbell exercise is the weight of ONE dumbbell. Do not double it for pair exercises.
-
-PHASE SCHEMES
-- Anatomical Adaptation: 3 sets x 20 reps target (min 15)
-- Hypertrophy: 4 sets x 10 reps target (min 8)
-- Maximum Strength: 5 sets x 5 reps target (min 3)
-- Muscle Definition: 1 set x 40 reps target (min 30)
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 
