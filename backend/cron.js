@@ -115,9 +115,6 @@ async function triggerPhaseGeneration(user) {
       },
       body: JSON.stringify({
         user_id: user.id,
-        phase: entry.phase,
-        total_weeks: entry.weeks,
-        sessions_per_week: entry.sessionsPerWeek,
         preselect_for_md: preselectForMd,
       }),
     });

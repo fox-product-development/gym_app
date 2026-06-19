@@ -2,6 +2,36 @@ require("dotenv").config();
 // backend/db/schema.js
 // Creates all database tables if they don't already exist.
 // Run with --fresh flag to drop and recreate all tables: node db/schema.js --fresh
+//
+// REBUILT [today's date] for the Bompa redesign:
+//   - No training levels. phaseConfig.js is keyed by userKey ('user1',
+//     'user2'...) derived directly from the user's id — training_level,
+//     goal_size/strength/definition/fitness, weekly_sessions,
+//     goal_description, weight_exercises_per_session, and in_rest_week
+//     are all removed from users as they're no longer read anywhere.
+//   - No blocks. current_block is removed from users; block_number is
+//     removed from programmes. A phase's exercises are selected once and
+//     every week within that phase is generated from that single selection.
+//   - No cycles table. Phase sequencing is now defined in code
+//     (cycleConfig.js), not as DB rows. cycle_position (an index into that
+//     array) replaces it. phase_cycle (the old per-user jsonb attempt at
+//     the same idea) is also removed.
+//   - No progressive overload. range_exceeded is removed from
+//     planned_exercises — the 1RM retest schedule is now the sole
+//     progressive overload mechanism (see sessions.js).
+//   - session_type is now phase-specific (full_body, upper, lower,
+//     mixed_mxs, mixed_h_24, mixed_h_6, extra) rather than the old fixed
+//     compound/isolation/extra enum. occurrence is removed — session order
+//     within a week is implicit from session_type and insertion order.
+//   - is_1rm_test added to sessions — flags a session as a 1RM testing
+//     session rather than a normal training session.
+//   - group_id added to planned_exercises — used only in Muscle Definition
+//     weeks 4-6 to assign exercises into nonstop-execution groups.
+//   - total_weeks added to programmes — how many weeks this programme's
+//     phase runs for (3 or 6, depending on the user's cycle config entry).
+//   - phase CHECK constraints (users.current_phase, programmes.phase)
+//     extended to include 'mixed' and 'transition', which didn't exist
+//     before today.
 
 const pool = require("./index");
 
@@ -13,7 +43,6 @@ async function dropTables() {
   await pool.query("DROP TABLE IF EXISTS planned_exercises CASCADE");
   await pool.query("DROP TABLE IF EXISTS sessions CASCADE");
   await pool.query("DROP TABLE IF EXISTS programmes CASCADE");
-  await pool.query("DROP TABLE IF EXISTS cycles CASCADE");
   await pool.query("DROP TABLE IF EXISTS exercises CASCADE");
   await pool.query("DROP TABLE IF EXISTS cardio_logs CASCADE");
   await pool.query("DROP TABLE IF EXISTS mood_logs CASCADE");
@@ -25,6 +54,13 @@ async function dropTables() {
   await pool.query("DROP TABLE IF EXISTS approved_emails CASCADE");
   await pool.query("DROP TABLE IF EXISTS users CASCADE");
   console.log("✓ All tables dropped");
+  // Note: 'cycles' is intentionally not in this list. It was dropped via
+  // migrate-bompa-redesign.js / a manual DROP TABLE earlier today, since
+  // phase sequencing now lives in cycleConfig.js, not the database. If
+  // you're running --fresh against a database that still has the old
+  // 'cycles' table from before today, drop it manually first.
+
+  console.log("✓ All tables dropped");
 }
 
 async function createTables() {
@@ -35,6 +71,10 @@ async function createTables() {
     }
 
     // ─── Users ───────────────────────────────────────────────────────────────
+    // cycle_position is an index into CYCLE_CONFIG (cycleConfig.js) — it
+    // replaces the old cycles table entirely. phase_week is 1-based and
+    // counts weeks within the CURRENT cycle entry (no longer within a
+    // block — blocks don't exist).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id                SERIAL PRIMARY KEY,
@@ -46,25 +86,17 @@ async function createTables() {
           CHECK (current_phase IN (
             'anatomical_adaptation',
             'hypertrophy',
+            'mixed',
             'maximum_strength',
-            'muscle_definition'
+            'muscle_definition',
+            'transition'
           )),
-        current_block     INTEGER NOT NULL DEFAULT 1
-          CHECK (current_block IN (1, 2)),
+        cycle_position    INTEGER NOT NULL DEFAULT 0,
         phase_week        INTEGER NOT NULL DEFAULT 1
           CHECK (phase_week BETWEEN 1 AND 8),
         phase_start_date  DATE NOT NULL DEFAULT CURRENT_DATE,
-        phase_cycle       JSONB,
         agent_tone        TEXT NOT NULL DEFAULT 'neutral'
           CHECK (agent_tone IN ('motivational', 'neutral', 'coaching', 'drill_sergeant')),
-        goal_size         INTEGER CHECK (goal_size BETWEEN 1 AND 5),
-        goal_strength     INTEGER CHECK (goal_strength BETWEEN 1 AND 5),
-        goal_definition   INTEGER CHECK (goal_definition BETWEEN 1 AND 5),
-        goal_fitness      INTEGER CHECK (goal_fitness BETWEEN 1 AND 5),
-        training_level    TEXT CHECK (training_level IN ('new', 'amateur', 'serious', 'professional')),
-        weekly_sessions   INTEGER CHECK (weekly_sessions BETWEEN 1 AND 14),
-        goal_description  TEXT,
-        weight_exercises_per_session        INTEGER,
         conditioning_exercises_per_session  INTEGER,
         created_at        TIMESTAMP DEFAULT NOW()
       );
@@ -146,37 +178,27 @@ async function createTables() {
     `);
     console.log("✓ conditioning table ready");
 
-    // ─── Cycles ────────────────────────────────────────────────────────────── // One row per phase per user. A full cycle is 4 rows (or more if duplicate
-    // phases are added). The cron reads these to determine phase advancement
-    // instead of using a hardcoded sequence.
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS cycles (
-        id             SERIAL PRIMARY KEY,
-        user_id        INTEGER REFERENCES users(id) ON DELETE CASCADE,
-        phase          TEXT NOT NULL
-          CHECK (phase IN (
-            'anatomical_adaptation',
-            'hypertrophy',
-            'maximum_strength',
-            'muscle_definition'
-          )),
-        phase_order    INTEGER NOT NULL,
-        status         TEXT NOT NULL DEFAULT 'pending'
-          CHECK (status IN ('pending', 'in_progress', 'complete')),
-        duration_weeks INTEGER NOT NULL DEFAULT 6
-          CHECK (duration_weeks IN (4, 6, 8)),
-        created_at     TIMESTAMP DEFAULT NOW()
-      );
-    `);
-    console.log("✓ cycles table ready");
-
     // ─── Programmes ──────────────────────────────────────────────────────────
+    // One row per phase run. block_number is removed — a phase's exercises
+    // are selected once (by the AI) and every week of the phase is
+    // generated from that single selection, so there's no second block to
+    // distinguish. total_weeks records how many weeks this specific phase
+    // run covers (3 or 6, taken from the user's cycleConfig entry at the
+    // time the phase was generated).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS programmes (
         id           SERIAL PRIMARY KEY,
         user_id      INTEGER REFERENCES users(id),
-        phase        TEXT NOT NULL,
-        block_number INTEGER NOT NULL CHECK (block_number IN (1, 2)),
+        phase        TEXT NOT NULL
+          CHECK (phase IN (
+            'anatomical_adaptation',
+            'hypertrophy',
+            'mixed',
+            'maximum_strength',
+            'muscle_definition',
+            'transition'
+          )),
+        total_weeks  INTEGER NOT NULL,
         week_start   DATE NOT NULL,
         created_at   TIMESTAMP DEFAULT NOW()
       );
@@ -184,6 +206,13 @@ async function createTables() {
     console.log("✓ programmes table ready");
 
     // ─── Sessions ────────────────────────────────────────────────────────────
+    // session_type is phase-specific rather than a fixed compound/isolation
+    // enum — see ai.js's PHASE_SESSION_TEMPLATES for what each phase uses.
+    // occurrence is removed — session order within a week is implicit from
+    // session_type and insertion order, not a separate counter.
+    // is_1rm_test flags a session as a max-effort testing session — see
+    // sessions.js for how completing one of these recalculates target
+    // weights for the rest of the phase.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sessions (
         id             SERIAL PRIMARY KEY,
@@ -191,9 +220,17 @@ async function createTables() {
         user_id        INTEGER REFERENCES users(id),
         gym_id         INTEGER REFERENCES gyms(id),
         session_type   TEXT NOT NULL
-          CHECK (session_type IN ('compound', 'isolation', 'extra')),
-        occurrence     INTEGER NOT NULL DEFAULT 1,
+          CHECK (session_type IN (
+            'full_body',
+            'upper',
+            'lower',
+            'mixed_mxs',
+            'mixed_h_24',
+            'mixed_h_6',
+            'extra'
+          )),
         week_number    INTEGER NOT NULL,
+        is_1rm_test    BOOLEAN NOT NULL DEFAULT FALSE,
         status         TEXT NOT NULL DEFAULT 'planned'
           CHECK (status IN ('planned', 'in_progress', 'complete')),
         notes          TEXT,
@@ -205,6 +242,11 @@ async function createTables() {
     console.log("✓ sessions table ready");
 
     // ─── Planned exercises ───────────────────────────────────────────────────
+    // range_exceeded is removed — progressive overload via rep-range
+    // detection no longer exists (see sessions.js header note). group_id is
+    // added for Muscle Definition weeks 4-6, where exercises are performed
+    // nonstop in pairs/groups rather than individually; NULL for every
+    // other phase and for MD weeks 1-3.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS planned_exercises (
         id              SERIAL PRIMARY KEY,
@@ -219,7 +261,7 @@ async function createTables() {
         set_style       TEXT NOT NULL DEFAULT 'standard'
           CHECK (set_style IN ('standard', 'drop')),
         metric          TEXT,
-        range_exceeded  BOOLEAN DEFAULT FALSE,
+        group_id        INTEGER,
         created_at      TIMESTAMP DEFAULT NOW()
       );
     `);
@@ -242,6 +284,11 @@ async function createTables() {
     console.log("✓ logged_sets table ready");
 
     // ─── 1RM history ─────────────────────────────────────────────────────────
+    // The ONLY writer of this table is now the 1RM test completion handler
+    // in sessions.js (recalculateFromOneRmTest). Normal session set logging
+    // no longer writes here — see sessions.js header note for why that
+    // changed (it was silently overwriting genuine test data with
+    // non-maximal working-set estimates).
     await pool.query(`
       CREATE TABLE IF NOT EXISTS one_rep_max_history (
         id              SERIAL PRIMARY KEY,
@@ -272,6 +319,14 @@ async function createTables() {
     console.log("✓ body_composition table ready");
 
     // ─── Exercises ────────────────────────────────────────────────────────────
+    // target_weight remains here as a column but is no longer treated as a
+    // weight-calculation source anywhere in the app — 1RM × phaseConfig
+    // percentage is the sole source (see ai.js's calculateExerciseWeight,
+    // which has no fallback). It's still written to by the 1RM test
+    // recalculation cascade's sibling effects historically, but as of
+    // today's rebuild that cascade only touches planned_exercises, not
+    // this table — target_weight here is effectively informational/legacy
+    // and may be removed in a future pass once confirmed nothing reads it.
     await pool.query(`
       CREATE TABLE IF NOT EXISTS exercises (
         id                SERIAL PRIMARY KEY,

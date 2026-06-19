@@ -16,6 +16,7 @@ const pool = require("../db");
 const requireAuth = require("../middleware");
 const { getValidWeightsForEquipment } = require("../weightCalc");
 const { getWeekConfig, getMixedWeekConfig } = require("../phaseConfig");
+const { getCycleEntry } = require("../cycleConfig");
 
 const router = express.Router();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -620,24 +621,28 @@ router.post("/generate-phase", async (req, res) => {
   const userId = resolveUserId(req, res);
   if (!userId) return;
 
-  const { phase, total_weeks, sessions_per_week, preselect_for_md } = req.body;
-  if (!phase || !total_weeks || !sessions_per_week) {
-    return res.status(400).json({
-      error: "phase, total_weeks, and sessions_per_week are required",
-    });
-  }
+  const { preselect_for_md } = req.body;
 
   try {
     const userKey = getUserKey(userId);
 
     const userResult = await pool.query(
-      `SELECT conditioning_exercises_per_session FROM users WHERE id = $1`,
+      `SELECT conditioning_exercises_per_session, cycle_position FROM users WHERE id = $1`,
       [userId],
     );
     if (userResult.rows.length === 0)
       return res.status(404).json({ error: "User not found" });
     const conditioningCount =
       userResult.rows[0].conditioning_exercises_per_session || 3;
+
+    // Derive phase/weeks/sessions from the user's own cycle_position rather
+    // than trusting the caller's body — this is the single source of truth
+    // (cycleConfig.js), so the route can't be told something inconsistent
+    // with the user's actual cycle state.
+    const cycleEntry = getCycleEntry(userResult.rows[0].cycle_position);
+    const phase = cycleEntry.phase;
+    const total_weeks = cycleEntry.weeks;
+    const sessions_per_week = cycleEntry.sessionsPerWeek;
 
     const gymResult = await pool.query(
       `SELECT id, gym_name FROM gyms WHERE user_id = $1 AND is_default = TRUE LIMIT 1`,

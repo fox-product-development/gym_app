@@ -29,30 +29,175 @@
 // "Session" here means session number within the week (1st, 2nd, 3rd...),
 // NOT a calendar day. Which day of the week a session actually falls on is
 // determined by the user's real-world schedule, not by this config.
+//
+// user3 — TEST ACCOUNT ONLY. Mirrors user1's values exactly (same object
+// reference, not a copy) so the existing test user (DB id 3) can exercise
+// every code path without needing its own transcribed table data. Remove
+// the user3 entries once a proper testing strategy is in place, or keep
+// them indefinitely if user3 stays a permanent test fixture — either way,
+// do not let user3 drift from user1 by editing it separately.
+
+// ─── Anatomical Adaptation values (shared — identical table for user1/user2/user3) ──
+const aaShared = {
+  week_1: [{ percentage: 0.4, reps: 15, sets: 3 }],
+  week_2: [{ percentage: 0.5, reps: 12, sets: 3 }],
+  week_3: [{ percentage: 0.6, reps: 8, sets: 3 }],
+  week_4: [{ percentage: 0.5, reps: 15, sets: 4 }],
+  week_5: [{ percentage: 0.6, reps: 12, sets: 4 }],
+  week_6: [{ percentage: 0.7, reps: 10, sets: 4 }],
+};
+
+// ─── Hypertrophy values — user1 (Table 11.4, Advanced) ───────────────────────
+const hypertrophyUser1 = {
+  // [Lower/Low, Upper/Low, Lower/High, Upper/High]
+  week_1: [
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+  ],
+  week_2: [
+    { percentage: 0.6, reps: 15, sets: 4 },
+    { percentage: 0.6, reps: 15, sets: 4 },
+    { percentage: 0.7, reps: 10, sets: 4 },
+    { percentage: 0.7, reps: 10, sets: 4 },
+  ],
+  week_3: [
+    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.75, reps: 10, sets: 4 },
+  ],
+  week_4: [
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.7, reps: 10, sets: 4 },
+    { percentage: 0.7, reps: 10, sets: 4 },
+  ],
+  week_5: [
+    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.75, reps: 10, sets: 4 },
+  ],
+  week_6: [
+    { percentage: 0.8, reps: 8, sets: 5 },
+    { percentage: 0.8, reps: 8, sets: 5 },
+    { percentage: 0.85, reps: 5, sets: 5 },
+    { percentage: 0.85, reps: 5, sets: 5 },
+  ],
+};
+
+// ─── Hypertrophy values — user2 (Table 11.2, Entry-level) ────────────────────
+const hypertrophyUser2 = {
+  // [Lower/Low, Upper/Low, Lower/High, Upper/High]
+  week_1: [
+    { percentage: 0.4, reps: 10, sets: 2 },
+    { percentage: 0.4, reps: 10, sets: 2 },
+    { percentage: 0.4, reps: 12, sets: 2 },
+    { percentage: 0.4, reps: 12, sets: 2 },
+  ],
+  week_2: [
+    { percentage: 0.4, reps: 15, sets: 2 },
+    { percentage: 0.4, reps: 15, sets: 2 },
+    { percentage: 0.4, reps: 15, sets: 3 },
+    { percentage: 0.4, reps: 15, sets: 3 },
+  ],
+  week_3: [
+    { percentage: 0.5, reps: 12, sets: 2 },
+    { percentage: 0.5, reps: 12, sets: 2 },
+    { percentage: 0.5, reps: 10, sets: 3 },
+    { percentage: 0.5, reps: 10, sets: 3 },
+  ],
+  week_4: [
+    { percentage: 0.4, reps: 12, sets: 2 },
+    { percentage: 0.4, reps: 12, sets: 2 },
+    { percentage: 0.4, reps: 12, sets: 3 },
+    { percentage: 0.4, reps: 12, sets: 3 },
+  ],
+  week_5: [
+    { percentage: 0.5, reps: 12, sets: 3 },
+    { percentage: 0.5, reps: 12, sets: 3 },
+    { percentage: 0.5, reps: 12, sets: 3 },
+    { percentage: 0.5, reps: 12, sets: 3 },
+  ],
+  week_6: [
+    { percentage: 0.6, reps: 10, sets: 2 },
+    { percentage: 0.6, reps: 10, sets: 2 },
+    { percentage: 0.6, reps: 10, sets: 3 },
+    { percentage: 0.6, reps: 10, sets: 3 },
+  ],
+};
+
+// ─── Mixed values — user1 only (Tables 12.4 H portion + 12.5 MxS portion) ────
+const mixedUser1 = {
+  week_1: {
+    mxs: [
+      { percentage: 0.7, reps: 8, sets: 3 },
+      { percentage: 0.7, reps: 8, sets: 3 },
+    ],
+    h: [{ percentage: 0.5, reps: 12, sets: 3 }],
+  },
+  week_2: {
+    mxs: [
+      { percentage: 0.7, reps: 8, sets: 3 },
+      { percentage: 0.8, reps: 7, sets: 3 },
+    ],
+    h: [{ percentage: 0.6, reps: 12, sets: 3 }],
+  },
+  week_3: {
+    mxs: [
+      { percentage: 0.8, reps: 8, sets: 4 },
+      { percentage: 0.8, reps: 8, sets: 4 },
+    ],
+    h: [{ percentage: 0.7, reps: 8, sets: 4 }],
+  },
+};
+
+// ─── Maximum Strength values — user1 only (Table 13.2, Recreational) ────────
+const maximumStrengthUser1 = {
+  week_1: [
+    { percentage: 0.7, reps: 8, sets: 3 },
+    { percentage: 0.75, reps: 8, sets: 4 },
+    { percentage: 0.75, reps: 8, sets: 4 },
+  ],
+  week_2: [
+    { percentage: 0.8, reps: 6, sets: 4 },
+    { percentage: 0.8, reps: 6, sets: 4 },
+    {
+      percentage: 0.8,
+      reps: 6,
+      sets: 3,
+      finisher: { percentage: 0.9, reps: 3, sets: 1 },
+    },
+  ],
+  week_3: [
+    { percentage: 0.9, reps: 3, sets: 4 },
+    { percentage: 0.9, reps: 3, sets: 4 },
+    { percentage: 0.9, reps: 3, sets: 4 },
+  ],
+};
+
+// ─── Muscle Definition values — user1 only (Table 14.1, Recreational) ───────
+const muscleDefinitionUser1 = {
+  week_1: [{ percentage: 0.3, reps: 30, sets: 2 }],
+  week_2: [{ percentage: 0.3, reps: 40, sets: 2 }],
+  week_3: [{ percentage: 0.3, reps: 50, sets: 2 }],
+  week_4: [{ percentage: 0.3, reps: 100, sets: 1 }], // reps = total per pair
+  week_5: [{ percentage: 0.3, reps: 200, sets: 1 }], // reps = total per group of 4
+  week_6: [{ percentage: 0.3, reps: 400, sets: 1 }], // reps = total across all 8
+};
 
 const PHASE_CONFIG = Object.freeze({
   // ─── Anatomical Adaptation ────────────────────────────────────────────────
-  // Source: Table 10.2. Identical for both users. Full-body circuit,
+  // Source: Table 10.2. Identical for both real users. Full-body circuit,
   // 4 sessions/week, all sessions in a week share the same value (no
   // per-session split shown in this table). 9 exercises per session.
   anatomical_adaptation: {
     poEnabled: true,
-    user1: {
-      week_1: [{ percentage: 0.4, reps: 15, sets: 3 }],
-      week_2: [{ percentage: 0.5, reps: 12, sets: 3 }],
-      week_3: [{ percentage: 0.6, reps: 8, sets: 3 }],
-      week_4: [{ percentage: 0.5, reps: 15, sets: 4 }],
-      week_5: [{ percentage: 0.6, reps: 12, sets: 4 }],
-      week_6: [{ percentage: 0.7, reps: 10, sets: 4 }],
-    },
-    user2: {
-      week_1: [{ percentage: 0.4, reps: 15, sets: 3 }],
-      week_2: [{ percentage: 0.5, reps: 12, sets: 3 }],
-      week_3: [{ percentage: 0.6, reps: 8, sets: 3 }],
-      week_4: [{ percentage: 0.5, reps: 15, sets: 4 }],
-      week_5: [{ percentage: 0.6, reps: 12, sets: 4 }],
-      week_6: [{ percentage: 0.7, reps: 10, sets: 4 }],
-    },
+    user1: aaShared,
+    user2: aaShared,
+    user3: aaShared, // TEST ACCOUNT — mirrors user1/user2 (table is identical anyway)
   },
 
   // ─── Hypertrophy ──────────────────────────────────────────────────────────
@@ -68,84 +213,9 @@ const PHASE_CONFIG = Object.freeze({
   // layout (interpreted as Low/High per week, consistent with user1).
   hypertrophy: {
     poEnabled: true,
-    user1: {
-      // [Lower/Low, Upper/Low, Lower/High, Upper/High]
-      week_1: [
-        { percentage: 0.6, reps: 12, sets: 4 },
-        { percentage: 0.6, reps: 12, sets: 4 },
-        { percentage: 0.6, reps: 12, sets: 4 },
-        { percentage: 0.6, reps: 12, sets: 4 },
-      ],
-      week_2: [
-        { percentage: 0.6, reps: 15, sets: 4 },
-        { percentage: 0.6, reps: 15, sets: 4 },
-        { percentage: 0.7, reps: 10, sets: 4 },
-        { percentage: 0.7, reps: 10, sets: 4 },
-      ],
-      week_3: [
-        { percentage: 0.75, reps: 10, sets: 4 },
-        { percentage: 0.75, reps: 10, sets: 4 },
-        { percentage: 0.75, reps: 10, sets: 4 },
-        { percentage: 0.75, reps: 10, sets: 4 },
-      ],
-      week_4: [
-        { percentage: 0.6, reps: 12, sets: 4 },
-        { percentage: 0.6, reps: 12, sets: 4 },
-        { percentage: 0.7, reps: 10, sets: 4 },
-        { percentage: 0.7, reps: 10, sets: 4 },
-      ],
-      week_5: [
-        { percentage: 0.75, reps: 10, sets: 4 },
-        { percentage: 0.75, reps: 10, sets: 4 },
-        { percentage: 0.75, reps: 10, sets: 4 },
-        { percentage: 0.75, reps: 10, sets: 4 },
-      ],
-      week_6: [
-        { percentage: 0.8, reps: 8, sets: 5 },
-        { percentage: 0.8, reps: 8, sets: 5 },
-        { percentage: 0.85, reps: 5, sets: 5 },
-        { percentage: 0.85, reps: 5, sets: 5 },
-      ],
-    },
-    user2: {
-      // [Lower/Low, Upper/Low, Lower/High, Upper/High] — read from Table 11.2
-      week_1: [
-        { percentage: 0.4, reps: 10, sets: 2 },
-        { percentage: 0.4, reps: 10, sets: 2 },
-        { percentage: 0.4, reps: 12, sets: 2 },
-        { percentage: 0.4, reps: 12, sets: 2 },
-      ],
-      week_2: [
-        { percentage: 0.4, reps: 15, sets: 2 },
-        { percentage: 0.4, reps: 15, sets: 2 },
-        { percentage: 0.4, reps: 15, sets: 3 },
-        { percentage: 0.4, reps: 15, sets: 3 },
-      ],
-      week_3: [
-        { percentage: 0.5, reps: 12, sets: 2 },
-        { percentage: 0.5, reps: 12, sets: 2 },
-        { percentage: 0.5, reps: 10, sets: 3 },
-        { percentage: 0.5, reps: 10, sets: 3 },
-      ],
-      week_4: [
-        { percentage: 0.4, reps: 12, sets: 2 },
-        { percentage: 0.4, reps: 12, sets: 2 },
-        { percentage: 0.4, reps: 12, sets: 3 },
-        { percentage: 0.4, reps: 12, sets: 3 },
-      ],
-      week_5: [
-        { percentage: 0.5, reps: 12, sets: 3 },
-        { percentage: 0.5, reps: 12, sets: 3 },
-        { percentage: 0.5, reps: 12, sets: 3 },
-        { percentage: 0.5, reps: 12, sets: 3 },
-      ],
-      week_6: [
-        { percentage: 0.6, reps: 10, sets: 2 },
-        { percentage: 0.6, reps: 10, sets: 2 },
-        { percentage: 0.6, reps: 10, sets: 3 },
-        { percentage: 0.6, reps: 10, sets: 3 },
-      ],
-    },
+    user1: hypertrophyUser1,
+    user2: hypertrophyUser2,
+    user3: hypertrophyUser1, // TEST ACCOUNT — mirrors user1
   },
 
   // ─── Mixed ────────────────────────────────────────────────────────────────
@@ -157,29 +227,8 @@ const PHASE_CONFIG = Object.freeze({
   // N/A for user2 — this user's cycle has no Mixed phase.
   mixed: {
     poEnabled: true,
-    user1: {
-      week_1: {
-        mxs: [
-          { percentage: 0.7, reps: 8, sets: 3 },
-          { percentage: 0.7, reps: 8, sets: 3 },
-        ],
-        h: [{ percentage: 0.5, reps: 12, sets: 3 }],
-      },
-      week_2: {
-        mxs: [
-          { percentage: 0.7, reps: 8, sets: 3 },
-          { percentage: 0.8, reps: 7, sets: 3 },
-        ],
-        h: [{ percentage: 0.6, reps: 12, sets: 3 }],
-      },
-      week_3: {
-        mxs: [
-          { percentage: 0.8, reps: 8, sets: 4 },
-          { percentage: 0.8, reps: 8, sets: 4 },
-        ],
-        h: [{ percentage: 0.7, reps: 8, sets: 4 }],
-      },
-    },
+    user1: mixedUser1,
+    user3: mixedUser1, // TEST ACCOUNT — mirrors user1
   },
 
   // ─── Maximum Strength ─────────────────────────────────────────────────────
@@ -190,28 +239,8 @@ const PHASE_CONFIG = Object.freeze({
   // session entry. N/A for user2.
   maximum_strength: {
     poEnabled: true,
-    user1: {
-      week_1: [
-        { percentage: 0.7, reps: 8, sets: 3 },
-        { percentage: 0.75, reps: 8, sets: 4 },
-        { percentage: 0.75, reps: 8, sets: 4 },
-      ],
-      week_2: [
-        { percentage: 0.8, reps: 6, sets: 4 },
-        { percentage: 0.8, reps: 6, sets: 4 },
-        {
-          percentage: 0.8,
-          reps: 6,
-          sets: 3,
-          finisher: { percentage: 0.9, reps: 3, sets: 1 },
-        },
-      ],
-      week_3: [
-        { percentage: 0.9, reps: 3, sets: 4 },
-        { percentage: 0.9, reps: 3, sets: 4 },
-        { percentage: 0.9, reps: 3, sets: 4 },
-      ],
-    },
+    user1: maximumStrengthUser1,
+    user3: maximumStrengthUser1, // TEST ACCOUNT — mirrors user1
   },
 
   // ─── Muscle Definition ────────────────────────────────────────────────────
@@ -221,22 +250,16 @@ const PHASE_CONFIG = Object.freeze({
   // not here. N/A for user2.
   muscle_definition: {
     poEnabled: true,
-    user1: {
-      week_1: [{ percentage: 0.3, reps: 30, sets: 2 }],
-      week_2: [{ percentage: 0.3, reps: 40, sets: 2 }],
-      week_3: [{ percentage: 0.3, reps: 50, sets: 2 }],
-      week_4: [{ percentage: 0.3, reps: 100, sets: 1 }], // reps = total per pair
-      week_5: [{ percentage: 0.3, reps: 200, sets: 1 }], // reps = total per group of 4
-      week_6: [{ percentage: 0.3, reps: 400, sets: 1 }], // reps = total across all 8
-    },
+    user1: muscleDefinitionUser1,
+    user3: muscleDefinitionUser1, // TEST ACCOUNT — mirrors user1
   },
 
   // ─── Transition ───────────────────────────────────────────────────────────
-  // Flat, same for both users — not tabled per-user by Bompa. Always reads
+  // Flat, same for every user — not tabled per-user by Bompa. Always reads
   // week_1 regardless of how many weeks the cycle config gives a given
   // transition entry (1-4 weeks). PO disabled. Exercise selection logic
   // (inherit from prior phase, or pre-select for an upcoming MD phase) lives
-  // in ai.js/cron.js, not here.
+  // in ai.js/cron.js, not here. No per-user keying needed.
   transition: {
     poEnabled: false,
     week_1: [{ percentage: 0.4, reps: 12, sets: 2 }],

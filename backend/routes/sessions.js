@@ -1,22 +1,52 @@
 // backend/routes/sessions.js
 // Session routes — create, retrieve, log sets, start and complete sessions.
+//
+// No blocks. Sessions belong to a programme (one per phase run), identified
+// by week_number within that programme. session_type is phase-specific
+// (full_body, upper, lower, mixed_mxs, mixed_h_24, mixed_h_6, extra) rather
+// than the old compound/isolation/occurrence model.
+//
+// NO PROGRESSIVE OVERLOAD. The old PO system (range_exceeded cascade,
+// auto-bumping target_weight when an athlete exceeded the rep range) has
+// been removed. The 1RM retest schedule (every 3-6 weeks depending on
+// phase) IS the progressive overload mechanism now — it measures actual
+// max-effort performance under controlled conditions rather than inferring
+// readiness from a working set, and it doesn't fight the deliberately
+// conservative early-week loading that periodisation depends on. Effort
+// data (RPE or similar) may be added later as a coaching/reporting signal,
+// but it will not automatically change target weights.
+//
+// 1RM DATA ONLY COMES FROM 1RM TEST SESSIONS. Logging a set in a normal
+// session never writes to one_rep_max_history — only the 1RM test
+// completion handler does. This was a deliberate fix: writing an Epley
+// estimate from every regular working set would silently overwrite the
+// most recent real test result with non-maximal data, since downstream
+// lookups (ai.js's buildWeightLookup) always take the most recent row.
 
 const express = require("express");
 const pool = require("../db");
 const requireAuth = require("../middleware");
-const { getNextValidWeight } = require("../weightCalc");
-const { PHASE_CONFIG } = require("../phaseConfig");
+const {
+  PHASE_CONFIG,
+  getSessionConfig,
+  getMixedWeekConfig,
+} = require("../phaseConfig");
 
 const router = express.Router();
 
+function getUserKey(userId) {
+  return `user${userId}`;
+}
+
 // ─── Get sessions for current week ───────────────────────────────────────────
 // GET /sessions/week
-// Returns sessions for the user's current phase_week only.
+// Returns sessions for the user's current phase_week within their current
+// programme (the most recent programme matching current_phase).
 
 router.get("/week", requireAuth, async (req, res) => {
   try {
     const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week FROM users WHERE id = $1`,
+      `SELECT current_phase, phase_week FROM users WHERE id = $1`,
       [req.userId],
     );
 
@@ -24,16 +54,15 @@ router.get("/week", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const { current_phase, current_block, phase_week } = userResult.rows[0];
+    const { current_phase, phase_week } = userResult.rows[0];
 
     const progResult = await pool.query(
       `SELECT id FROM programmes
        WHERE user_id = $1
          AND phase = $2
-         AND block_number = $3
        ORDER BY created_at DESC
        LIMIT 1`,
-      [req.userId, current_phase, current_block],
+      [req.userId, current_phase],
     );
 
     if (progResult.rows.length === 0) {
@@ -59,7 +88,7 @@ router.get("/week", requireAuth, async (req, res) => {
              'target_weight', pe.target_weight,
              'set_style', pe.set_style,
              'metric', pe.metric,
-             'range_exceeded', pe.range_exceeded,
+             'group_id', pe.group_id,
              'equipment_unit', COALESCE(eq.unit, 'kg'),
              'equipment_increment', eq.increment
            ) ORDER BY pe.order_index
@@ -76,7 +105,7 @@ router.get("/week", requireAuth, async (req, res) => {
          AND s.user_id = $2
          AND s.week_number = $3
        GROUP BY s.id, g.gym_name
-       ORDER BY s.session_type ASC, s.occurrence ASC`,
+       ORDER BY s.id ASC`,
       [programmeId, req.userId, phase_week],
     );
 
@@ -87,269 +116,9 @@ router.get("/week", requireAuth, async (req, res) => {
   }
 });
 
-// ─── Replan sessions ──────────────────────────────────────────────────────────
-// POST /sessions/replan
-//
-// Deletes all planned sessions for the current programme, then regenerates
-// only the missing session slots via /ai/generate-missing.
-//
-// Use case: user has changed exercises, equipment, session count, or goal
-// notes and wants upcoming sessions to reflect those changes. Completed
-// and in-progress sessions are never touched.
-
-router.post("/replan", requireAuth, async (req, res) => {
-  try {
-    // 1. Get user state and current programme
-    const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week FROM users WHERE id = $1`,
-      [req.userId],
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
-    }
-
-    const { current_phase, current_block } = userResult.rows[0];
-
-    const progResult = await pool.query(
-      `SELECT id FROM programmes
-       WHERE user_id = $1
-         AND phase = $2
-         AND block_number = $3
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [req.userId, current_phase, current_block],
-    );
-
-    if (progResult.rows.length === 0) {
-      return res.status(400).json({ error: "No active programme found" });
-    }
-
-    const programmeId = progResult.rows[0].id;
-
-    // 2. Determine block weeks
-    const blockWeeks = current_block === 1 ? [1, 2, 3] : [4, 5, 6];
-
-    // 3. Capture the existing exercise plan from planned sessions as a baseline.
-    //    The AI will use this to keep the same exercises unless settings changes
-    //    require substitution. All weeks share the same plan so we deduplicate.
-    const existingPlanResult = await pool.query(
-      `SELECT s.session_type, pe.exercise_name, pe.muscles_primary,
-              pe.sub_component, pe.target_sets, pe.target_reps,
-              pe.target_weight, pe.order_index, pe.metric
-       FROM planned_exercises pe
-       JOIN sessions s ON s.id = pe.session_id
-       WHERE s.programme_id = $1
-         AND s.user_id = $2
-         AND s.status = 'planned'
-       ORDER BY s.session_type, pe.order_index`,
-      [programmeId, req.userId],
-    );
-
-    let existingPlan = null;
-    if (existingPlanResult.rows.length > 0) {
-      function buildSessionPlan(rows, sessionType) {
-        const typeRows = rows.filter((r) => r.session_type === sessionType);
-        const weightRows = typeRows.filter(
-          (r) => r.muscles_primary !== "Conditioning",
-        );
-        const condRows = typeRows.filter(
-          (r) => r.muscles_primary === "Conditioning",
-        );
-
-        // Deduplicate by exercise name (same plan across all weeks)
-        const seenWeight = new Set();
-        const exercises = [];
-        for (const r of weightRows) {
-          if (!seenWeight.has(r.exercise_name)) {
-            seenWeight.add(r.exercise_name);
-            exercises.push({
-              exercise: r.exercise_name,
-              muscles_primary: r.muscles_primary,
-              sub_component: r.sub_component,
-              sets: r.target_sets,
-              target_reps: r.target_reps,
-              weight: r.target_weight ? parseFloat(r.target_weight) : 0,
-            });
-          }
-        }
-
-        const seenCond = new Set();
-        const conditioning = [];
-        for (const r of condRows) {
-          if (!seenCond.has(r.exercise_name)) {
-            seenCond.add(r.exercise_name);
-            conditioning.push({
-              exercise: r.exercise_name,
-              sets: r.target_sets,
-            });
-          }
-        }
-
-        return { exercises, conditioning };
-      }
-
-      const compoundPlan = buildSessionPlan(
-        existingPlanResult.rows,
-        "compound",
-      );
-      const isolationPlan = buildSessionPlan(
-        existingPlanResult.rows,
-        "isolation",
-      );
-
-      if (
-        compoundPlan.exercises.length > 0 ||
-        isolationPlan.exercises.length > 0
-      ) {
-        existingPlan = {
-          compound_session: compoundPlan,
-          isolation_session: isolationPlan,
-        };
-      }
-    }
-
-    // 4. Delete all planned sessions and their exercises
-    const plannedSessionsResult = await pool.query(
-      `SELECT id FROM sessions
-       WHERE programme_id = $1
-         AND user_id = $2
-         AND status = 'planned'`,
-      [programmeId, req.userId],
-    );
-
-    const plannedIds = plannedSessionsResult.rows.map((r) => r.id);
-
-    if (plannedIds.length > 0) {
-      await pool.query(
-        `DELETE FROM planned_exercises WHERE session_id = ANY($1)`,
-        [plannedIds],
-      );
-      await pool.query(`DELETE FROM sessions WHERE id = ANY($1)`, [plannedIds]);
-    }
-
-    // 5. Check which weeks have missing session slots.
-    //    Each week expects 3 sessions: compound occ 1, compound occ 2, isolation occ 1.
-    const EXPECTED_SLOTS = [
-      { session_type: "compound", occurrence: 1 },
-      { session_type: "compound", occurrence: 2 },
-      { session_type: "isolation", occurrence: 1 },
-    ];
-
-    const remainingResult = await pool.query(
-      `SELECT week_number, session_type, occurrence
-       FROM sessions
-       WHERE programme_id = $1
-         AND user_id = $2
-         AND status IN ('in_progress', 'complete')`,
-      [programmeId, req.userId],
-    );
-
-    const filledSlots = new Set(
-      remainingResult.rows.map(
-        (r) => `${r.week_number}-${r.session_type}-${r.occurrence}`,
-      ),
-    );
-
-    const weeksNeeded = [];
-    for (const week of blockWeeks) {
-      const hasMissing = EXPECTED_SLOTS.some(
-        (slot) =>
-          !filledSlots.has(`${week}-${slot.session_type}-${slot.occurrence}`),
-      );
-      if (hasMissing) weeksNeeded.push(week);
-    }
-
-    if (weeksNeeded.length === 0) {
-      return res.json({
-        message:
-          "No sessions to regenerate — all sessions in this block are complete or in progress.",
-        weeks_regenerated: [],
-      });
-    }
-
-    // 6. Call /ai/generate-missing internally
-    const port = process.env.PORT || 3000;
-    const internalUrl = `http://localhost:${port}/ai/generate-missing`;
-
-    const genResponse = await fetch(internalUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-cron-secret": process.env.CRON_SECRET,
-      },
-      body: JSON.stringify({
-        user_id: req.userId,
-        programme_id: programmeId,
-        weeks_needed: weeksNeeded,
-        existing_plan: existingPlan,
-      }),
-    });
-
-    if (!genResponse.ok) {
-      const errorData = await genResponse.json().catch(() => ({}));
-      throw new Error(
-        errorData.detail || errorData.error || "Session generation failed",
-      );
-    }
-
-    // 7. Cleanup: generate-missing creates all 3 session types per week,
-    //    but some slots may already be filled by complete/in_progress sessions.
-    //    Delete any newly-created planned duplicates.
-    await pool.query(
-      `DELETE FROM planned_exercises
-       WHERE session_id IN (
-         SELECT s1.id FROM sessions s1
-         WHERE s1.programme_id = $1
-           AND s1.user_id = $2
-           AND s1.status = 'planned'
-           AND EXISTS (
-             SELECT 1 FROM sessions s2
-             WHERE s2.programme_id = s1.programme_id
-               AND s2.user_id = s1.user_id
-               AND s2.week_number = s1.week_number
-               AND s2.session_type = s1.session_type
-               AND s2.occurrence = s1.occurrence
-               AND s2.id != s1.id
-               AND s2.status IN ('in_progress', 'complete')
-           )
-       )`,
-      [programmeId, req.userId],
-    );
-
-    await pool.query(
-      `DELETE FROM sessions s1
-       USING sessions s2
-       WHERE s1.programme_id = $1
-         AND s1.user_id = $2
-         AND s1.status = 'planned'
-         AND s2.programme_id = s1.programme_id
-         AND s2.user_id = s1.user_id
-         AND s2.week_number = s1.week_number
-         AND s2.session_type = s1.session_type
-         AND s2.occurrence = s1.occurrence
-         AND s2.id != s1.id
-         AND s2.status IN ('in_progress', 'complete')`,
-      [programmeId, req.userId],
-    );
-
-    res.json({
-      message: "Sessions replanned successfully",
-      weeks_regenerated: weeksNeeded,
-    });
-  } catch (err) {
-    console.error("Replan sessions error:", err.message);
-    res.status(500).json({ error: "Server error", detail: err.message });
-  }
-});
-
 // ─── Get a single session ─────────────────────────────────────────────────────
 // GET /sessions/:id
-//
-// Returns the session with:
-//   - gym_name from the gyms table (via gym_id FK)
-//   - equipment_unit per planned exercise (via exercises → equipment JOIN)
-//     Used by the frontend to show kg or lbs suffixes correctly.
+// Unchanged from previous version — no phase/block dependency.
 
 router.get("/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
@@ -404,26 +173,17 @@ router.get("/:id", requireAuth, async (req, res) => {
 
 // ─── Create a session ─────────────────────────────────────────────────────────
 // POST /sessions
+// Manual session creation (used by frontend flows outside AI generation,
+// e.g. importing a one-off session). session_type is now a free-form phase
+// session type string rather than a fixed compound/isolation enum.
 
 router.post("/", requireAuth, async (req, res) => {
-  const {
-    programme_id,
-    session_type,
-    occurrence,
-    week_number,
-    gym_id,
-    exercises,
-  } = req.body;
+  const { programme_id, session_type, week_number, gym_id, exercises } =
+    req.body;
 
-  if (
-    !session_type ||
-    !occurrence ||
-    !week_number ||
-    !exercises ||
-    exercises.length === 0
-  ) {
+  if (!session_type || !week_number || !exercises || exercises.length === 0) {
     return res.status(400).json({
-      error: "session_type, occurrence, week_number and exercises are required",
+      error: "session_type, week_number and exercises are required",
     });
   }
 
@@ -434,14 +194,13 @@ router.post("/", requireAuth, async (req, res) => {
 
     const sessionResult = await client.query(
       `INSERT INTO sessions
-         (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (user_id, programme_id, session_type, week_number, gym_id)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
       [
         req.userId,
         programme_id || null,
         session_type,
-        occurrence,
         week_number,
         gym_id || null,
       ],
@@ -482,6 +241,7 @@ router.post("/", requireAuth, async (req, res) => {
 
 // ─── Start a session ──────────────────────────────────────────────────────────
 // PATCH /sessions/:id/start
+// Unchanged from previous version.
 
 router.patch("/:id/start", requireAuth, async (req, res) => {
   const { id } = req.params;
@@ -509,21 +269,12 @@ router.patch("/:id/start", requireAuth, async (req, res) => {
 // ─── Log a set ────────────────────────────────────────────────────────────────
 // POST /sessions/:id/sets
 //
-// On every set:
-//   - Log the set to logged_sets
-//   - On set_number = 1 only: calculate 1RM via Epley and store in one_rep_max_history
-//
-// After logging, check for progressive overload (PO):
-//   - PO only fires for phases where poEnabled = true (Hypertrophy, Max Strength)
-//   - Get the planned_exercises row for this exercise in this session
-//   - If all planned sets have been logged AND every logged set hit phase targetReps:
-//       - Set range_exceeded = true on the planned_exercises row
-//       - Calculate next valid weight for the triggering exercise (weightCalc.js)
-//       - Update target_weight for the triggering exercise in the exercises table
-//       - Cascade: update target_weight for all other active exercises sharing
-//         the same muscles_primary for this user (each uses its own equipment increment)
-//       - Cascade: update planned_exercises.target_weight for all planned sessions
-//         for every affected exercise
+// Just logs the set. No 1RM write happens here at all — 1RM data only ever
+// comes from a 1RM test session's completion (see PATCH /:id/complete),
+// which reads logged_sets directly rather than relying on a side-effect
+// written during normal logging. This guarantees one_rep_max_history is
+// only ever updated by a genuine max-effort test, never by a normal
+// working set in an ordinary session.
 
 router.post("/:id/sets", requireAuth, async (req, res) => {
   const { id } = req.params;
@@ -542,13 +293,8 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
     });
   }
 
-  const client = await pool.connect();
-
   try {
-    await client.query("BEGIN");
-
-    // 1. Log the set
-    const setResult = await client.query(
+    const setResult = await pool.query(
       `INSERT INTO logged_sets
          (session_id, exercise_name, set_number, drop_number, weight, reps, notes)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -556,181 +302,39 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
       [id, exercise_name, set_number, drop_number, weight, reps, notes || null],
     );
 
-    // 2. Calculate 1RM on the first set only (not drops, not high-rep sets)
-    // Informational only — writes to one_rep_max_history, not to exercises table
-    if (set_number === 1 && drop_number === 0 && reps <= 12) {
-      const estimated1RM = weight * (1 + reps / 30);
-      await client.query(
-        `INSERT INTO one_rep_max_history
-           (user_id, exercise_name, estimated_1rm, weight_used, reps_performed)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [req.userId, exercise_name, estimated1RM.toFixed(2), weight, reps],
-      );
-    }
-
-    // 3. Check for progressive overload
-    const plannedResult = await client.query(
-      `SELECT pe.id, pe.target_sets, pe.target_reps, pe.range_exceeded,
-              pe.set_style, pe.muscles_primary, s.gym_id
-       FROM planned_exercises pe
-       JOIN sessions s ON s.id = pe.session_id
-       WHERE pe.session_id = $1
-         AND pe.exercise_name = $2`,
-      [id, exercise_name],
-    );
-
-    if (plannedResult.rows.length > 0) {
-      const planned = plannedResult.rows[0];
-
-      if (!planned.range_exceeded) {
-        const userResult = await client.query(
-          `SELECT current_phase FROM users WHERE id = $1`,
-          [req.userId],
-        );
-        const phase = userResult.rows[0]?.current_phase;
-        const phaseConfig = PHASE_CONFIG[phase];
-
-        if (!phaseConfig || !phaseConfig.poEnabled) {
-          await client.query("COMMIT");
-          return res.status(201).json(setResult.rows[0]);
-        }
-
-        let rangeExceeded = false;
-
-        if (planned.set_style === "drop") {
-          if (
-            set_number === 1 &&
-            drop_number === 0 &&
-            reps >= planned.target_reps
-          ) {
-            rangeExceeded = true;
-          }
-        } else {
-          const loggedResult = await client.query(
-            `SELECT reps FROM logged_sets
-             WHERE session_id = $1 AND exercise_name = $2
-             ORDER BY set_number ASC`,
-            [id, exercise_name],
-          );
-
-          const loggedSets = loggedResult.rows;
-
-          if (loggedSets.length >= planned.target_sets) {
-            const maxReps = phaseConfig.targetReps;
-            rangeExceeded = loggedSets.every((s) => s.reps >= maxReps);
-          }
-        }
-
-        if (rangeExceeded) {
-          await client.query(
-            `UPDATE planned_exercises SET range_exceeded = TRUE WHERE id = $1`,
-            [planned.id],
-          );
-
-          const triggerExResult = await client.query(
-            `SELECT id, target_weight
-             FROM exercises
-             WHERE user_id = $1 AND gym_id = $2 AND exercise = $3`,
-            [req.userId, planned.gym_id, exercise_name],
-          );
-
-          const updatedExercises = [];
-
-          if (
-            triggerExResult.rows.length > 0 &&
-            triggerExResult.rows[0].target_weight !== null
-          ) {
-            const triggerEx = triggerExResult.rows[0];
-            const newWeight = await getNextValidWeight(
-              triggerEx.id,
-              req.userId,
-            );
-
-            if (
-              newWeight !== null &&
-              newWeight !== parseFloat(triggerEx.target_weight)
-            ) {
-              await client.query(
-                `UPDATE exercises SET target_weight = $1 WHERE id = $2`,
-                [newWeight, triggerEx.id],
-              );
-              updatedExercises.push({ name: exercise_name, weight: newWeight });
-            }
-          }
-
-          if (
-            planned.muscles_primary &&
-            planned.muscles_primary !== "Conditioning"
-          ) {
-            const siblingResult = await client.query(
-              `SELECT e.id, e.exercise, e.target_weight
-               FROM exercises e
-               WHERE e.user_id = $1
-                 AND e.muscles_primary = $2
-                 AND e.exercise != $3
-                 AND e.target_weight IS NOT NULL
-                 AND e.active = TRUE`,
-              [req.userId, planned.muscles_primary, exercise_name],
-            );
-
-            for (const sibling of siblingResult.rows) {
-              const siblingNewWeight = await getNextValidWeight(
-                sibling.id,
-                req.userId,
-              );
-
-              if (
-                siblingNewWeight !== null &&
-                siblingNewWeight !== parseFloat(sibling.target_weight)
-              ) {
-                await client.query(
-                  `UPDATE exercises SET target_weight = $1 WHERE id = $2`,
-                  [siblingNewWeight, sibling.id],
-                );
-                updatedExercises.push({
-                  name: sibling.exercise,
-                  weight: siblingNewWeight,
-                });
-              }
-            }
-          }
-
-          for (const updated of updatedExercises) {
-            await client.query(
-              `UPDATE planned_exercises pe
-               SET target_weight = $1
-               FROM sessions s
-               WHERE pe.session_id = s.id
-                 AND s.status = 'planned'
-                 AND s.user_id = $2
-                 AND pe.exercise_name = $3`,
-              [updated.weight, req.userId, updated.name],
-            );
-          }
-        }
-      }
-    }
-
-    await client.query("COMMIT");
     res.status(201).json(setResult.rows[0]);
   } catch (err) {
-    await client.query("ROLLBACK");
     console.error("Log set error:", err.message);
     res.status(500).json({ error: "Server error" });
-  } finally {
-    client.release();
   }
 });
 
 // ─── Complete a session ───────────────────────────────────────────────────────
 // PATCH /sessions/:id/complete
+//
+// If this session is a 1RM test session (is_1rm_test = true), completion
+// triggers the recalculation cascade — and this is now the ONLY place in
+// the app that writes to one_rep_max_history:
+//   1. Read every exercise's first logged set from this session (the
+//      max-effort set the test was designed to capture)
+//   2. Calculate Epley 1RM for each and write to one_rep_max_history
+//   3. Find every remaining PLANNED session in the same programme
+//   4. For each, recalculate target_weight on every planned_exercises row
+//      using fresh 1RM × that session's phaseConfig percentage
+//
+// This IS the progressive overload mechanism for this app — see the file
+// header note. Normal (non-test) sessions completing do nothing further.
 
 router.patch("/:id/complete", requireAuth, async (req, res) => {
   const { id } = req.params;
   const { notes } = req.body;
 
+  const client = await pool.connect();
+
   try {
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    const result = await client.query(
       `UPDATE sessions
        SET status = 'complete',
            completed_at = NOW(),
@@ -741,13 +345,21 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
     );
 
     if (result.rows.length === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "Session not found" });
     }
 
     const session = result.rows[0];
 
+    if (session.is_1rm_test) {
+      await recalculateFromOneRmTest(client, session, req.userId);
+    }
+
+    await client.query("COMMIT");
+
     // ─── Push completed session to Activity Coach ─────────────────────────
     // Non-blocking — failure here does not affect session completion.
+    // Bridge removal is tracked as backlog (non-urgent) — left as-is here.
     try {
       const activityPayload = {
         type: "gym",
@@ -782,13 +394,138 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
 
     res.json(session);
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("Complete session error:", err.message);
     res.status(500).json({ error: "Server error" });
+  } finally {
+    client.release();
   }
 });
 
+// Performs the 1RM test recalculation cascade described above. Runs inside
+// the same transaction as the session completion update. This is the ONLY
+// function in the entire app that writes to one_rep_max_history.
+async function recalculateFromOneRmTest(client, session, userId) {
+  const userKey = getUserKey(userId);
+
+  const testSetsResult = await client.query(
+    `SELECT DISTINCT ON (exercise_name)
+       exercise_name, weight, reps
+     FROM logged_sets
+     WHERE session_id = $1 AND set_number = 1 AND drop_number = 0
+     ORDER BY exercise_name, logged_at ASC`,
+    [session.id],
+  );
+
+  const freshOneRmByExercise = {};
+  for (const row of testSetsResult.rows) {
+    const weight = parseFloat(row.weight);
+    const reps = parseInt(row.reps, 10);
+    const estimated1RM = weight * (1 + reps / 30);
+    freshOneRmByExercise[row.exercise_name.toLowerCase()] = estimated1RM;
+
+    await client.query(
+      `INSERT INTO one_rep_max_history
+         (user_id, exercise_name, estimated_1rm, weight_used, reps_performed)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId, row.exercise_name, estimated1RM.toFixed(2), weight, reps],
+    );
+  }
+
+  if (Object.keys(freshOneRmByExercise).length === 0) {
+    console.warn(
+      `1RM test session ${session.id} completed with no logged sets — nothing to recalculate`,
+    );
+    return;
+  }
+
+  const phase = await getPhaseForProgramme(client, session.programme_id);
+
+  const remainingSessionsResult = await client.query(
+    `SELECT id, session_type, week_number
+     FROM sessions
+     WHERE programme_id = $1
+       AND user_id = $2
+       AND status = 'planned'`,
+    [session.programme_id, userId],
+  );
+
+  for (const remaining of remainingSessionsResult.rows) {
+    const exercisesResult = await client.query(
+      `SELECT id, exercise_name FROM planned_exercises
+       WHERE session_id = $1 AND muscles_primary != 'Conditioning'`,
+      [remaining.id],
+    );
+
+    if (exercisesResult.rows.length === 0) continue;
+
+    let sessionConfig;
+    try {
+      sessionConfig = resolveSessionConfigForRecalc(
+        phase,
+        userKey,
+        remaining.week_number,
+        remaining.session_type,
+      );
+    } catch (err) {
+      console.error(
+        `Could not resolve session config for recalculation (session ${remaining.id}):`,
+        err.message,
+      );
+      continue;
+    }
+
+    for (const ex of exercisesResult.rows) {
+      const oneRm = freshOneRmByExercise[ex.exercise_name.toLowerCase()];
+      if (!oneRm) continue; // exercise wasn't part of this 1RM test
+
+      const newWeight = oneRm * sessionConfig.percentage;
+
+      await client.query(
+        `UPDATE planned_exercises SET target_weight = $1 WHERE id = $2`,
+        [Math.round(newWeight * 10) / 10, ex.id],
+      );
+    }
+  }
+
+  console.log(
+    `✓ Recalculated target weights for ${remainingSessionsResult.rows.length} remaining session(s) following 1RM test (session ${session.id})`,
+  );
+}
+
+// Looks up the phase for a programme — needed because the sessions table
+// itself doesn't store phase directly (it's on programmes).
+async function getPhaseForProgramme(client, programmeId) {
+  const result = await client.query(
+    `SELECT phase FROM programmes WHERE id = $1`,
+    [programmeId],
+  );
+  return result.rows[0]?.phase;
+}
+
+// Resolves a single session's { percentage, reps, sets } config for
+// recalculation purposes. We only need percentage here — reps/sets on the
+// planned_exercises row are untouched by a 1RM recalculation.
+function resolveSessionConfigForRecalc(
+  phase,
+  userKey,
+  weekNumber,
+  sessionType,
+) {
+  if (phase === "mixed") {
+    const mixedWeek = getMixedWeekConfig(userKey, weekNumber);
+    const track = sessionType === "mixed_mxs" ? "mxs" : "h";
+    return mixedWeek[track][0];
+  }
+  if (phase === "transition") {
+    return getSessionConfig("transition", userKey, 1, 0);
+  }
+  return getSessionConfig(phase, userKey, weekNumber, 0);
+}
+
 // ─── Reopen a completed session ───────────────────────────────────────────────
 // PATCH /sessions/:id/reopen
+// Unchanged from previous version.
 
 router.patch("/:id/reopen", requireAuth, async (req, res) => {
   const { id } = req.params;
