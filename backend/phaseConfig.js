@@ -1,320 +1,314 @@
 // backend/phaseConfig.js
 // Single source of truth for phase rep schemes, percentages, and PO rules.
-// Imported by sessions.js, cron.js, and calibration.js.
-// Do not hardcode these values anywhere else.
+// Imported by sessions.js, cron.js, and ai.js. Do not hardcode these values
+// anywhere else.
 //
-// Structure: PHASE_CONFIG[phase].levels[trainingLevel].block_N.week_N
-//            = { percentage, reps, sets }
+// NO TRAINING LEVELS. This app is personal, not multi-tier. Each user has
+// their own predetermined cycle (see cycleConfig.js) and their own set of
+// phase values below, taken directly from the specific Bompa table that
+// matches their actual programme — not derived, not averaged, not
+// synthesised. Where a table shows per-session variation within a week,
+// that variation is captured per session, not collapsed to one weekly value.
 //
-// Training level mapping (matches users.training_level CHECK constraint):
-//   new          → Bompa "Entry-Level"
-//   recreational → Bompa "Recreational"  (renamed from 'amateur' — see migration note below)
-//   serious      → Bompa "Advanced"
-//   professional → Bompa "Professional"
+// Structure: PHASE_CONFIG[phase][userKey].week_N = sessionArray
+//   sessionArray is an array of session configs, one per session in that
+//   week. Most sessions are a single set-block: { percentage, reps, sets }.
+//   Where a table shows a genuine split within one session (a different
+//   load for the final set(s)), the session config carries a `finisher`
+//   field for that extra set-block. See maximum_strength.user1.week_2,
+//   session index 2, for the only current example of this.
 //
-// MIGRATION NOTE: users.training_level CHECK constraint currently allows
-// 'amateur', not 'recreational'. A migration is needed to rename the value
-// before this config can be used for any user currently set to 'amateur'.
+// Source tables used per phase per user (see BOMPA_PROGRAMME_REFERENCE.md
+// for the full book context):
+//   AA            — Table 10.2, both users (identical table)
+//   Hypertrophy   — Table 11.4 (user1, Advanced), Table 11.2 (user2, Entry)
+//   Mixed         — Tables 12.4 + 12.5 (user1, Recreational H + MxS portions). N/A for user2.
+//   MxS           — Table 13.2 (user1, Recreational). N/A for user2.
+//   MD            — Table 14.1 (user1, Recreational). N/A for user2.
 //
-// Where Bompa's tables show a range (e.g. "3-4 sets"), the higher value is
-// used here, with the original range noted in a comment.
-//
-// Professional Maximum Strength Block 2 Week 3: Bompa's table shows up to
-// 130% 1RM via eccentric-only loading (requires a spotter to lift the weight
-// concentrically, athlete only lowers it). This app has no way to verify
-// spotter availability or supervise eccentric-only technique safely, so this
-// is capped at 95% concentric — the standard solo-liftable ceiling.
+// "Session" here means session number within the week (1st, 2nd, 3rd...),
+// NOT a calendar day. Which day of the week a session actually falls on is
+// determined by the user's real-world schedule, not by this config.
 
 const PHASE_CONFIG = Object.freeze({
   // ─── Anatomical Adaptation ────────────────────────────────────────────────
-  // Bompa Tables 10.2 (Entry/Recreational, 6-week) and 10.3 (Advanced, 3-week).
-  // Professional: not separately tabled — uses Advanced 3-week version, or
-  // may skip AA entirely (handled at the cycle-planning level, not here).
+  // Source: Table 10.2. Identical for both users. Full-body circuit,
+  // 4 sessions/week, all sessions in a week share the same value (no
+  // per-session split shown in this table). 9 exercises per session.
   anatomical_adaptation: {
-    minReps: 8,
     poEnabled: true,
-    levels: {
-      new: {
-        block_1: {
-          week_1: { percentage: 0.4, reps: 15, sets: 3 },
-          week_2: { percentage: 0.5, reps: 12, sets: 3 },
-          week_3: { percentage: 0.6, reps: 8, sets: 3 },
-        },
-        block_2: {
-          week_1: { percentage: 0.5, reps: 15, sets: 4 },
-          week_2: { percentage: 0.6, reps: 12, sets: 4 },
-          week_3: { percentage: 0.7, reps: 10, sets: 4 },
-        },
-      },
-      recreational: {
-        block_1: {
-          week_1: { percentage: 0.4, reps: 15, sets: 3 },
-          week_2: { percentage: 0.5, reps: 12, sets: 3 },
-          week_3: { percentage: 0.6, reps: 8, sets: 3 },
-        },
-        block_2: {
-          week_1: { percentage: 0.5, reps: 15, sets: 4 },
-          week_2: { percentage: 0.6, reps: 12, sets: 4 },
-          week_3: { percentage: 0.7, reps: 10, sets: 4 },
-        },
-      },
-      serious: {
-        // Advanced — single 3-week block, no block_2.
-        block_1: {
-          week_1: { percentage: 0.5, reps: 15, sets: 3 },
-          week_2: { percentage: 0.6, reps: 12, sets: 4 },
-          week_3: { percentage: 0.7, reps: 10, sets: 4 },
-        },
-        block_2: null,
-      },
-      professional: {
-        // Not separately tabled — uses Advanced 3-week version as a brief
-        // re-introduction. Cycle planning may skip AA for this level entirely.
-        block_1: {
-          week_1: { percentage: 0.5, reps: 15, sets: 3 },
-          week_2: { percentage: 0.6, reps: 12, sets: 4 },
-          week_3: { percentage: 0.7, reps: 10, sets: 4 },
-        },
-        block_2: null,
-      },
+    user1: {
+      week_1: [{ percentage: 0.4, reps: 15, sets: 3 }],
+      week_2: [{ percentage: 0.5, reps: 12, sets: 3 }],
+      week_3: [{ percentage: 0.6, reps: 8, sets: 3 }],
+      week_4: [{ percentage: 0.5, reps: 15, sets: 4 }],
+      week_5: [{ percentage: 0.6, reps: 12, sets: 4 }],
+      week_6: [{ percentage: 0.7, reps: 10, sets: 4 }],
+    },
+    user2: {
+      week_1: [{ percentage: 0.4, reps: 15, sets: 3 }],
+      week_2: [{ percentage: 0.5, reps: 12, sets: 3 }],
+      week_3: [{ percentage: 0.6, reps: 8, sets: 3 }],
+      week_4: [{ percentage: 0.5, reps: 15, sets: 4 }],
+      week_5: [{ percentage: 0.6, reps: 12, sets: 4 }],
+      week_6: [{ percentage: 0.7, reps: 10, sets: 4 }],
     },
   },
 
   // ─── Hypertrophy ──────────────────────────────────────────────────────────
-  // Bompa Tables 11.2 (Entry), 11.3 (Recreational), 11.4 (Advanced), 11.5 (Professional).
+  // user1 source: Table 11.4 (Advanced, 5 workouts/week original — adapted to
+  // 4 sessions/week per user's actual schedule). Two muscle groups (Lower,
+  // Upper), each with a Low session and a High session per week. Session
+  // order: 1=Lower/Low, 2=Upper/Low, 3=Lower/High, 4=Upper/High. Lower and
+  // Upper use IDENTICAL loading each week (confirmed from the table — both
+  // groups step through the same Low/Medium/High progression together).
+  //
+  // user2 source: Table 11.2 (Entry-level). Same session ordering convention
+  // applied. Values read directly from the table's two-column-per-step
+  // layout (interpreted as Low/High per week, consistent with user1).
   hypertrophy: {
-    minReps: 8,
     poEnabled: true,
-    levels: {
-      new: {
-        block_1: {
-          week_1: { percentage: 0.4, reps: 10, sets: 2 },
-          week_2: { percentage: 0.4, reps: 15, sets: 2 },
-          week_3: { percentage: 0.5, reps: 10, sets: 3 }, // Bompa: 2-3 sets
-        },
-        block_2: {
-          week_1: { percentage: 0.4, reps: 10, sets: 3 },
-          week_2: { percentage: 0.5, reps: 10, sets: 3 },
-          week_3: { percentage: 0.6, reps: 10, sets: 3 },
-        },
+    user1: {
+      // [Lower/Low, Upper/Low, Lower/High, Upper/High]
+      week_1: [
+        { percentage: 0.6, reps: 12, sets: 4 },
+        { percentage: 0.6, reps: 12, sets: 4 },
+        { percentage: 0.6, reps: 12, sets: 4 },
+        { percentage: 0.6, reps: 12, sets: 4 },
+      ],
+      week_2: [
+        { percentage: 0.6, reps: 15, sets: 4 },
+        { percentage: 0.6, reps: 15, sets: 4 },
+        { percentage: 0.7, reps: 10, sets: 4 },
+        { percentage: 0.7, reps: 10, sets: 4 },
+      ],
+      week_3: [
+        { percentage: 0.75, reps: 10, sets: 4 },
+        { percentage: 0.75, reps: 10, sets: 4 },
+        { percentage: 0.75, reps: 10, sets: 4 },
+        { percentage: 0.75, reps: 10, sets: 4 },
+      ],
+      week_4: [
+        { percentage: 0.6, reps: 12, sets: 4 },
+        { percentage: 0.6, reps: 12, sets: 4 },
+        { percentage: 0.7, reps: 10, sets: 4 },
+        { percentage: 0.7, reps: 10, sets: 4 },
+      ],
+      week_5: [
+        { percentage: 0.75, reps: 10, sets: 4 },
+        { percentage: 0.75, reps: 10, sets: 4 },
+        { percentage: 0.75, reps: 10, sets: 4 },
+        { percentage: 0.75, reps: 10, sets: 4 },
+      ],
+      week_6: [
+        { percentage: 0.8, reps: 8, sets: 5 },
+        { percentage: 0.8, reps: 8, sets: 5 },
+        { percentage: 0.85, reps: 5, sets: 5 },
+        { percentage: 0.85, reps: 5, sets: 5 },
+      ],
+    },
+    user2: {
+      // [Lower/Low, Upper/Low, Lower/High, Upper/High] — read from Table 11.2
+      week_1: [
+        { percentage: 0.4, reps: 10, sets: 2 },
+        { percentage: 0.4, reps: 10, sets: 2 },
+        { percentage: 0.4, reps: 12, sets: 2 },
+        { percentage: 0.4, reps: 12, sets: 2 },
+      ],
+      week_2: [
+        { percentage: 0.4, reps: 15, sets: 2 },
+        { percentage: 0.4, reps: 15, sets: 2 },
+        { percentage: 0.4, reps: 15, sets: 3 },
+        { percentage: 0.4, reps: 15, sets: 3 },
+      ],
+      week_3: [
+        { percentage: 0.5, reps: 12, sets: 2 },
+        { percentage: 0.5, reps: 12, sets: 2 },
+        { percentage: 0.5, reps: 10, sets: 3 },
+        { percentage: 0.5, reps: 10, sets: 3 },
+      ],
+      week_4: [
+        { percentage: 0.4, reps: 12, sets: 2 },
+        { percentage: 0.4, reps: 12, sets: 2 },
+        { percentage: 0.4, reps: 12, sets: 3 },
+        { percentage: 0.4, reps: 12, sets: 3 },
+      ],
+      week_5: [
+        { percentage: 0.5, reps: 12, sets: 3 },
+        { percentage: 0.5, reps: 12, sets: 3 },
+        { percentage: 0.5, reps: 12, sets: 3 },
+        { percentage: 0.5, reps: 12, sets: 3 },
+      ],
+      week_6: [
+        { percentage: 0.6, reps: 10, sets: 2 },
+        { percentage: 0.6, reps: 10, sets: 2 },
+        { percentage: 0.6, reps: 10, sets: 3 },
+        { percentage: 0.6, reps: 10, sets: 3 },
+      ],
+    },
+  },
+
+  // ─── Mixed ────────────────────────────────────────────────────────────────
+  // user1 only. Source: Table 12.4 (H portion) + Table 12.5 (MxS portion),
+  // both Recreational. Two session types per week: MxS sessions (straight
+  // sets, heavier) and H sessions (split, lighter). H portion uses one value
+  // per week shared across both H session groups (Day 2 + Day 6 in the book
+  // matched exactly). MxS portion has genuine per-session variation in week 2.
+  // N/A for user2 — this user's cycle has no Mixed phase.
+  mixed: {
+    poEnabled: true,
+    user1: {
+      week_1: {
+        mxs: [
+          { percentage: 0.7, reps: 8, sets: 3 },
+          { percentage: 0.7, reps: 8, sets: 3 },
+        ],
+        h: [{ percentage: 0.5, reps: 12, sets: 3 }],
       },
-      recreational: {
-        block_1: {
-          week_1: { percentage: 0.5, reps: 12, sets: 3 },
-          week_2: { percentage: 0.6, reps: 12, sets: 3 },
-          week_3: { percentage: 0.6, reps: 15, sets: 4 }, // volume-dominant peak — see reference doc
-        },
-        block_2: {
-          week_1: { percentage: 0.5, reps: 12, sets: 3 },
-          week_2: { percentage: 0.6, reps: 12, sets: 4 },
-          week_3: { percentage: 0.7, reps: 10, sets: 4 },
-        },
+      week_2: {
+        mxs: [
+          { percentage: 0.7, reps: 8, sets: 3 },
+          { percentage: 0.8, reps: 7, sets: 3 },
+        ],
+        h: [{ percentage: 0.6, reps: 12, sets: 3 }],
       },
-      serious: {
-        block_1: {
-          week_1: { percentage: 0.6, reps: 12, sets: 4 },
-          week_2: { percentage: 0.6, reps: 15, sets: 4 },
-          week_3: { percentage: 0.75, reps: 10, sets: 4 },
-        },
-        block_2: {
-          week_1: { percentage: 0.7, reps: 10, sets: 4 },
-          week_2: { percentage: 0.75, reps: 10, sets: 4 },
-          week_3: { percentage: 0.8, reps: 8, sets: 5 }, // Bompa: 4-5 sets
-        },
-      },
-      professional: {
-        block_1: {
-          week_1: { percentage: 0.7, reps: 12, sets: 4 },
-          week_2: { percentage: 0.7, reps: 15, sets: 5 }, // Bompa: 4-5 sets
-          week_3: { percentage: 0.8, reps: 7, sets: 6 }, // Bompa: 3-6 sets, varies by exercise
-        },
-        block_2: {
-          week_1: { percentage: 0.7, reps: 10, sets: 5 },
-          week_2: { percentage: 0.75, reps: 8, sets: 5 }, // Bompa: 3-5 sets
-          week_3: { percentage: 0.85, reps: 4, sets: 6 },
-        },
+      week_3: {
+        mxs: [
+          { percentage: 0.8, reps: 8, sets: 4 },
+          { percentage: 0.8, reps: 8, sets: 4 },
+        ],
+        h: [{ percentage: 0.7, reps: 8, sets: 4 }],
       },
     },
   },
 
   // ─── Maximum Strength ─────────────────────────────────────────────────────
-  // Bompa Tables 13.2 (Recreational), 13.3 (Advanced), 13.4 (Professional).
-  // Entry-Level: not separately tabled — uses Recreational with reduced sets.
+  // user1 only. Source: Table 13.2 (Recreational). 3 sessions/week, genuine
+  // per-session variation within each week. Week 2, session 3 has a real
+  // within-session split: 3 sets at 80/6 followed by a 1-set finisher at
+  // 90/3 — captured via the `finisher` field rather than a second top-level
+  // session entry. N/A for user2.
   maximum_strength: {
-    minReps: 2,
     poEnabled: true,
-    levels: {
-      new: {
-        block_1: {
-          week_1: { percentage: 0.7, reps: 8, sets: 2 },
-          week_2: { percentage: 0.75, reps: 8, sets: 3 },
-          week_3: { percentage: 0.75, reps: 8, sets: 3 },
+    user1: {
+      week_1: [
+        { percentage: 0.7, reps: 8, sets: 3 },
+        { percentage: 0.75, reps: 8, sets: 4 },
+        { percentage: 0.75, reps: 8, sets: 4 },
+      ],
+      week_2: [
+        { percentage: 0.8, reps: 6, sets: 4 },
+        { percentage: 0.8, reps: 6, sets: 4 },
+        {
+          percentage: 0.8,
+          reps: 6,
+          sets: 3,
+          finisher: { percentage: 0.9, reps: 3, sets: 1 },
         },
-        block_2: {
-          week_1: { percentage: 0.8, reps: 6, sets: 3 },
-          week_2: { percentage: 0.8, reps: 6, sets: 3 },
-          week_3: { percentage: 0.9, reps: 3, sets: 3 },
-        },
-      },
-      recreational: {
-        block_1: {
-          week_1: { percentage: 0.7, reps: 8, sets: 3 },
-          week_2: { percentage: 0.75, reps: 8, sets: 4 },
-          week_3: { percentage: 0.75, reps: 8, sets: 4 },
-        },
-        block_2: {
-          week_1: { percentage: 0.8, reps: 6, sets: 4 },
-          week_2: { percentage: 0.8, reps: 6, sets: 4 }, // Bompa: 3-4 sets
-          week_3: { percentage: 0.9, reps: 3, sets: 4 },
-        },
-      },
-      serious: {
-        block_1: {
-          week_1: { percentage: 0.75, reps: 8, sets: 4 },
-          week_2: { percentage: 0.8, reps: 6, sets: 5 },
-          week_3: { percentage: 0.85, reps: 5, sets: 5 }, // Bompa: 80-85%
-        },
-        block_2: {
-          week_1: { percentage: 0.85, reps: 5, sets: 5 },
-          week_2: { percentage: 0.9, reps: 3, sets: 5 },
-          week_3: { percentage: 0.95, reps: 2, sets: 5 },
-        },
-      },
-      professional: {
-        block_1: {
-          week_1: { percentage: 0.7, reps: 8, sets: 6 },
-          week_2: { percentage: 0.85, reps: 4, sets: 6 }, // Bompa: 75-85%, 4-8 reps
-          week_3: { percentage: 0.95, reps: 3, sets: 7 }, // Bompa: 85-100%, 1-3 reps
-        },
-        block_2: {
-          week_1: { percentage: 0.8, reps: 6, sets: 6 },
-          week_2: { percentage: 0.95, reps: 2, sets: 6 }, // Bompa: 90-95%, 2-3 reps
-          week_3: { percentage: 0.95, reps: 3, sets: 7 }, // capped — see file header note on eccentric loading
-        },
-      },
+      ],
+      week_3: [
+        { percentage: 0.9, reps: 3, sets: 4 },
+        { percentage: 0.9, reps: 3, sets: 4 },
+        { percentage: 0.9, reps: 3, sets: 4 },
+      ],
     },
   },
 
   // ─── Muscle Definition ────────────────────────────────────────────────────
-  // App adaptation, not a direct Bompa phase. Load scaled by level per
-  // Tables 14.1 (Recreational, 30%) and 14.2 (Advanced/Professional, 40-50%).
-  // Structural progression (exercise grouping) from Bompa's tables is not
-  // implemented — using our weekly rep escalation (30/40/50) instead.
+  // user1 only. Source: Table 14.1 (Recreational). One value per week, flat
+  // 30% load throughout. Weeks 4-6 are a structural change (nonstop
+  // grouping), not a loading change — group_id assignment happens in ai.js,
+  // not here. N/A for user2.
   muscle_definition: {
-    minReps: 25,
     poEnabled: true,
-    levels: {
-      new: {
-        block_1: {
-          week_1: { percentage: 0.3, reps: 30, sets: 1 },
-          week_2: { percentage: 0.3, reps: 40, sets: 1 },
-          week_3: { percentage: 0.3, reps: 50, sets: 1 },
-        },
-        block_2: {
-          week_1: { percentage: 0.3, reps: 30, sets: 1 },
-          week_2: { percentage: 0.3, reps: 40, sets: 1 },
-          week_3: { percentage: 0.3, reps: 50, sets: 1 },
-        },
-      },
-      recreational: {
-        block_1: {
-          week_1: { percentage: 0.3, reps: 30, sets: 1 },
-          week_2: { percentage: 0.3, reps: 40, sets: 1 },
-          week_3: { percentage: 0.3, reps: 50, sets: 1 },
-        },
-        block_2: {
-          week_1: { percentage: 0.3, reps: 30, sets: 1 },
-          week_2: { percentage: 0.3, reps: 40, sets: 1 },
-          week_3: { percentage: 0.3, reps: 50, sets: 1 },
-        },
-      },
-      serious: {
-        block_1: {
-          week_1: { percentage: 0.45, reps: 30, sets: 1 },
-          week_2: { percentage: 0.45, reps: 40, sets: 1 },
-          week_3: { percentage: 0.45, reps: 50, sets: 1 },
-        },
-        block_2: {
-          week_1: { percentage: 0.4, reps: 30, sets: 1 }, // recovery-week influence — see Table 14.2
-          week_2: { percentage: 0.45, reps: 40, sets: 1 },
-          week_3: { percentage: 0.45, reps: 50, sets: 1 },
-        },
-      },
-      professional: {
-        block_1: {
-          week_1: { percentage: 0.5, reps: 30, sets: 1 },
-          week_2: { percentage: 0.5, reps: 40, sets: 1 },
-          week_3: { percentage: 0.5, reps: 50, sets: 1 },
-        },
-        block_2: {
-          week_1: { percentage: 0.4, reps: 30, sets: 1 }, // recovery-week influence — see Table 14.2
-          week_2: { percentage: 0.5, reps: 40, sets: 1 },
-          week_3: { percentage: 0.5, reps: 50, sets: 1 },
-        },
-      },
+    user1: {
+      week_1: [{ percentage: 0.3, reps: 30, sets: 2 }],
+      week_2: [{ percentage: 0.3, reps: 40, sets: 2 }],
+      week_3: [{ percentage: 0.3, reps: 50, sets: 2 }],
+      week_4: [{ percentage: 0.3, reps: 100, sets: 1 }], // reps = total per pair
+      week_5: [{ percentage: 0.3, reps: 200, sets: 1 }], // reps = total per group of 4
+      week_6: [{ percentage: 0.3, reps: 400, sets: 1 }], // reps = total across all 8
     },
   },
 
-  // ─── Rest week ────────────────────────────────────────────────────────────
-  // Flat across all training levels — not tabled per-level by Bompa.
-  rest: {
-    sets: 3,
-    targetReps: 12,
-    minReps: null,
-    percentage: 0.45,
+  // ─── Transition ───────────────────────────────────────────────────────────
+  // Flat, same for both users — not tabled per-user by Bompa. Always reads
+  // week_1 regardless of how many weeks the cycle config gives a given
+  // transition entry (1-4 weeks). PO disabled. Exercise selection logic
+  // (inherit from prior phase, or pre-select for an upcoming MD phase) lives
+  // in ai.js/cron.js, not here.
+  transition: {
     poEnabled: false,
+    week_1: [{ percentage: 0.4, reps: 12, sets: 2 }],
   },
 });
 
-// ─── 1RM Baseline Testing Protocol ─────────────────────────────────────────
-// Bompa's prescribed method for establishing/retesting 1RM at each block
-// boundary (every 3 weeks). One max-effort set per exercise, not a true
-// single-rep attempt — using a 4-8 rep range keeps Epley estimation accurate
-// (Epley degrades significantly above ~10 reps).
-const BASELINE_TEST_CONFIG = Object.freeze({
-  minTestReps: 4,
-  maxTestReps: 8,
-  restBetweenExercisesMinutes: { min: 3, max: 5 },
-  setsPerExercise: 1,
-  toFailure: true,
-  // If logged reps exceed this, the result is flagged as unreliable for
-  // Epley estimation (too far into high-rep range) rather than rejected.
-  unreliableAboveReps: 10,
-});
+// ─── Lookup helpers ───────────────────────────────────────────────────────────
 
-// ─── Lookup helper ──────────────────────────────────────────────────────────
-// Returns the { percentage, reps, sets } for a given phase/level/block/week.
-// Throws if the combination doesn't exist (e.g. block_2 for AA serious/professional)
-// so callers must handle the single-block phases explicitly rather than
-// silently receiving undefined.
-function getWeekConfig(phase, trainingLevel, blockNumber, weekNumber) {
+// Returns the array of session configs for a given phase/user/week.
+// Each element is { percentage, reps, sets, finisher? } — index into the
+// array using the session's position within the week (0-based).
+// Not valid for 'mixed' (use getMixedWeekConfig). Transition always returns
+// week_1 regardless of weekNumber passed.
+// Throws if the combination doesn't exist so callers handle gaps explicitly
+// rather than silently receiving undefined.
+function getWeekConfig(phase, userKey, weekNumber) {
   const phaseConfig = PHASE_CONFIG[phase];
   if (!phaseConfig) throw new Error(`Unknown phase: ${phase}`);
 
-  const levelConfig = phaseConfig.levels && phaseConfig.levels[trainingLevel];
-  if (!levelConfig) {
-    throw new Error(
-      `No config for phase "${phase}" at level "${trainingLevel}"`,
-    );
+  if (phase === "transition") {
+    return phaseConfig.week_1;
   }
 
-  const blockKey = `block_${blockNumber}`;
-  const block = levelConfig[blockKey];
-  if (!block) {
-    throw new Error(
-      `Phase "${phase}" at level "${trainingLevel}" has no ${blockKey} (this level may only run a single block for this phase)`,
-    );
+  const userConfig = phaseConfig[userKey];
+  if (!userConfig) {
+    throw new Error(`No config for phase "${phase}" for user "${userKey}"`);
   }
 
   const weekKey = `week_${weekNumber}`;
-  const week = block[weekKey];
+  const week = userConfig[weekKey];
   if (!week) {
-    throw new Error(
-      `No week ${weekNumber} config for ${phase}/${trainingLevel}/${blockKey}`,
-    );
+    throw new Error(`No ${weekKey} config for ${phase}/${userKey}`);
   }
 
   return week;
 }
 
-module.exports = { PHASE_CONFIG, BASELINE_TEST_CONFIG, getWeekConfig };
+// Returns a single session's config from a week array, by session index
+// (0-based — session 1 of the week is index 0).
+function getSessionConfig(phase, userKey, weekNumber, sessionIndex) {
+  const week = getWeekConfig(phase, userKey, weekNumber);
+  const session = week[sessionIndex];
+  if (!session) {
+    throw new Error(
+      `No session at index ${sessionIndex} for ${phase}/${userKey}/week_${weekNumber} (week has ${week.length} session(s))`,
+    );
+  }
+  return session;
+}
+
+// Returns { mxs: [...], h: [...] } for the Mixed phase at a given user/week.
+// Mixed is structurally different from every other phase (two parallel
+// session tracks per week), so it gets its own lookup function rather than
+// overloading getWeekConfig().
+function getMixedWeekConfig(userKey, weekNumber) {
+  const userConfig = PHASE_CONFIG.mixed[userKey];
+  if (!userConfig) {
+    throw new Error(`No mixed config for user "${userKey}"`);
+  }
+
+  const weekKey = `week_${weekNumber}`;
+  const week = userConfig[weekKey];
+  if (!week) {
+    throw new Error(`No ${weekKey} config for mixed/${userKey}`);
+  }
+
+  return week;
+}
+
+module.exports = {
+  PHASE_CONFIG,
+  getWeekConfig,
+  getSessionConfig,
+  getMixedWeekConfig,
+};

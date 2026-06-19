@@ -1,14 +1,21 @@
 // backend/routes/ai.js
-// AI routes — block generation, gym session swap, extra session, weekly feedback.
-// The AI's role is exercise SELECTION and ORDERING. The server calculates all
-// weights, reps, and sets from phaseConfig × 1RM data.
+// AI routes — phase generation, week generation, gym session swap, extra
+// session, weekly feedback. The AI's role is exercise SELECTION and
+// ORDERING. The server calculates all weights, reps, and sets from
+// phaseConfig × 1RM data.
+//
+// No training levels. phaseConfig.js is keyed directly by userKey
+// ('user1' / 'user2'), derived from the DB user id ('user' + id). There is
+// no block concept — the AI selects exercises ONCE per phase, and every
+// week within that phase reuses those exercises with that week's
+// phaseConfig loading values.
 
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("../db");
 const requireAuth = require("../middleware");
 const { getValidWeightsForEquipment } = require("../weightCalc");
-const { getWeekConfig, BASELINE_TEST_CONFIG } = require("../phaseConfig");
+const { getWeekConfig, getMixedWeekConfig } = require("../phaseConfig");
 
 const router = express.Router();
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -25,18 +32,104 @@ function cleanJSON(text) {
   return stripped;
 }
 
-// Normalises training_level to handle the 'amateur' → 'recreational' rename
-// that hasn't been migrated yet. Falls back to 'recreational' if null.
-function normaliseTrainingLevel(raw) {
-  if (!raw) return "recreational";
-  if (raw === "amateur") return "recreational";
-  return raw;
+// Maps a DB user id to the phaseConfig.js user key. Mike (id 1) -> 'user1',
+// his partner (id 2) -> 'user2'.
+function getUserKey(userId) {
+  return `user${userId}`;
 }
+
+// Per-phase session template definitions. Each entry describes how many
+// sessions run per week, how many exercises each session needs, and the
+// muscle/role slots the AI should fill. This replaces the old wildcard-slot
+// compound/isolation model entirely — every phase has its own shape.
+const PHASE_SESSION_TEMPLATES = {
+  anatomical_adaptation: {
+    sessionsPerWeek: 4,
+    sessions: [
+      {
+        type: "full_body",
+        exerciseCount: 9,
+        slots:
+          "9 exercises covering the full body: Quads, Hamstrings, Chest, Back, Shoulders, Calves, Lower Back, Core, plus 1 Wildcard. All 4 sessions in the week use the SAME 9 exercises.",
+      },
+    ],
+  },
+  hypertrophy: {
+    sessionsPerWeek: 4,
+    sessions: [
+      {
+        type: "lower",
+        exerciseCount: 8,
+        slots:
+          "8 exercises for a Lower body session: Quads x2, Hamstrings x2, Calves x1, Lower Back x1, Core x2.",
+      },
+      {
+        type: "upper",
+        exerciseCount: 8,
+        slots:
+          "8 exercises for an Upper body session: Chest x2, Back x2, Shoulders x2, Biceps x1, Triceps x1.",
+      },
+    ],
+    // Session order within the week: Lower, Upper, Lower, Upper. Both Lower
+    // sessions use the same 8 exercises; both Upper sessions use the same 8
+    // exercises. Only the loading (from phaseConfig) differs between the
+    // first pair (Low) and second pair (High).
+    sessionOrder: ["lower", "upper", "lower", "upper"],
+  },
+  mixed: {
+    sessionsPerWeek: 4,
+    sessions: [
+      {
+        type: "mixed_mxs",
+        exerciseCount: 6,
+        slots:
+          "6 full-body compound exercises: Quads (squat variant), Hamstrings, Chest (press), Back (row), Shoulders (press), Calves.",
+      },
+      {
+        type: "mixed_h_24",
+        exerciseCount: 5,
+        slots:
+          "5 upper accessory exercises: Triceps, Back (pulldown variant), Shoulders (lateral), Shoulders (shrug/trap), Lower Back.",
+      },
+      {
+        type: "mixed_h_6",
+        exerciseCount: 6,
+        slots:
+          "6 exercises: Quads (lunge/unilateral), Core, Biceps, plus the SAME Triceps, Back (pulldown variant), and Shoulders (lateral) exercises selected for the mixed_h_24 session above. Do not select shoulder shrug or lower back exercises for this session.",
+      },
+    ],
+    // Session order: MxS, H(2/4), MxS, H(6). Both MxS sessions use the same
+    // 6 exercises (loading differs by week per phaseConfig.mixed.mxs).
+    sessionOrder: ["mixed_mxs", "mixed_h_24", "mixed_mxs", "mixed_h_6"],
+  },
+  maximum_strength: {
+    sessionsPerWeek: 3,
+    sessions: [
+      {
+        type: "full_body",
+        exerciseCount: 5,
+        slots:
+          "5 heavy compound exercises: Quads (squat variant), Hamstrings, Chest (press), Back (row), Calves. All 3 sessions in the week use the SAME 5 exercises.",
+      },
+    ],
+  },
+  muscle_definition: {
+    sessionsPerWeek: 4,
+    sessions: [
+      {
+        type: "full_body",
+        exerciseCount: 8,
+        slots:
+          "8 exercises covering the full body: Quads x2, Hamstrings x1, Chest x1, Back x1, Core x1, Biceps x1, plus 1 Wildcard. All 4 sessions in the week use the SAME 8 exercises.",
+      },
+    ],
+  },
+};
 
 async function getSessionHistory(userId) {
   const result = await pool.query(
     `SELECT
-       s.id, s.session_type, s.occurrence, s.week_number,
+       s.id, s.session_type, s.week_number,
        g.gym_name AS gym,
        s.status, s.notes, s.completed_at,
        json_agg(
@@ -131,21 +224,33 @@ async function getCardioHistory(userId) {
   return result.rows;
 }
 
-async function getPreviousBlockExercises(userId, phase, blockNumber) {
-  const previousBlock = blockNumber === 2 ? 1 : null;
-  if (!previousBlock) return [];
-
+// Fetches exercises selected for the CURRENT phase's programme, grouped by
+// session type. Used by generate-week (no AI call — reuse what generate-phase
+// already selected) and by the Mixed/H session-sharing rules.
+async function getCurrentPhaseExercises(userId, programmeId) {
   const result = await pool.query(
-    `SELECT DISTINCT pe.exercise_name
-     FROM planned_exercises pe
-     JOIN sessions s ON s.id = pe.session_id
-     JOIN programmes p ON p.id = s.programme_id
+    `SELECT DISTINCT s.session_type, pe.exercise_name, pe.muscles_primary,
+            pe.sub_component, pe.order_index
+     FROM sessions s
+     JOIN planned_exercises pe ON pe.session_id = s.id
      WHERE s.user_id = $1
-       AND p.phase = $2
-       AND p.block_number = $3`,
-    [userId, phase, previousBlock],
+       AND s.programme_id = $2
+       AND s.week_number = 1
+       AND pe.muscles_primary != 'Conditioning'
+     ORDER BY s.session_type, pe.order_index`,
+    [userId, programmeId],
   );
-  return result.rows.map((r) => r.exercise_name);
+
+  const bySessionType = {};
+  for (const row of result.rows) {
+    if (!bySessionType[row.session_type]) bySessionType[row.session_type] = [];
+    bySessionType[row.session_type].push({
+      exercise: row.exercise_name,
+      muscles_primary: row.muscles_primary,
+      sub_component: row.sub_component,
+    });
+  }
+  return bySessionType;
 }
 
 // Fetches conditioning exercises for a given gym and returns a lookup map:
@@ -172,10 +277,9 @@ async function getConditioningLookup(gymId) {
 
 // ─── Weight calculation ───────────────────────────────────────────────────────
 
-// Builds a lookup map of exercise → { estimated_1rm, target_weight } for
-// server-side weight calculation. 1RM is preferred; target_weight is the
-// fallback until a baseline testing session establishes a proper 1RM.
-async function buildWeightLookup(userId, gymId) {
+// Builds a lookup map of exercise → estimated_1rm for server-side weight
+// calculation. 1RM is the SOLE source — there is no target_weight fallback.
+async function buildWeightLookup(userId) {
   const ormResult = await pool.query(
     `SELECT DISTINCT ON (exercise_name)
        exercise_name, estimated_1rm
@@ -185,54 +289,23 @@ async function buildWeightLookup(userId, gymId) {
     [userId],
   );
 
-  const twResult = await pool.query(
-    `SELECT exercise, target_weight
-     FROM exercises
-     WHERE user_id = $1 AND gym_id = $2 AND active = TRUE`,
-    [userId, gymId],
-  );
-
   const lookup = {};
-
-  for (const row of twResult.rows) {
-    lookup[row.exercise.toLowerCase()] = {
-      estimated_1rm: null,
-      target_weight: row.target_weight ? parseFloat(row.target_weight) : null,
-    };
-  }
-
   for (const row of ormResult.rows) {
-    const key = row.exercise_name.toLowerCase();
-    if (!lookup[key])
-      lookup[key] = { estimated_1rm: null, target_weight: null };
-    lookup[key].estimated_1rm = row.estimated_1rm
+    lookup[row.exercise_name.toLowerCase()] = row.estimated_1rm
       ? parseFloat(row.estimated_1rm)
       : null;
   }
-
   return lookup;
 }
 
 // Calculates a target weight for an exercise at a given percentage of 1RM.
-// Falls back to target_weight from the exercises table if no 1RM exists.
-// Returns 0 for exercises with no weight data (e.g. bodyweight exercises).
+// No fallback — returns 0 if no 1RM exists (e.g. brand new exercise that
+// hasn't been through a 1RM test session yet, or a bodyweight exercise).
 function calculateExerciseWeight(exerciseName, percentage, weightLookup) {
   const key = exerciseName.toLowerCase();
-  const data = weightLookup[key];
-  if (!data) return 0;
-
-  if (data.estimated_1rm) {
-    return data.estimated_1rm * percentage;
-  }
-
-  // Fallback: target_weight is a working weight maintained by the PO system.
-  // This is a rough proxy until a baseline testing session establishes a
-  // proper 1RM for this exercise.
-  if (data.target_weight) {
-    return data.target_weight;
-  }
-
-  return 0;
+  const oneRepMax = weightLookup[key];
+  if (!oneRepMax) return 0;
+  return oneRepMax * percentage;
 }
 
 // ─── Weight validation ────────────────────────────────────────────────────────
@@ -282,69 +355,6 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
   return exercises;
 }
 
-// ─── Equipment summary for AI prompt ─────────────────────────────────────────
-// Retained for potential future use but no longer included in AI prompts.
-// The server now calculates all weights from phaseConfig × 1RM.
-
-async function buildEquipmentSummary(gymId, userId) {
-  const sections = [];
-
-  try {
-    const result = await pool.query(
-      `SELECT id, equipment_name, type, increment, max_weight, unladen_weight
-       FROM equipment
-       WHERE gym_id = $1 AND user_id = $2
-         AND type != 'apparatus'
-       ORDER BY type, equipment_name`,
-      [gymId, userId],
-    );
-
-    for (const eq of result.rows) {
-      const validWeights = await getValidWeightsForEquipment(
-        eq.id,
-        gymId,
-        userId,
-      );
-
-      if (eq.type === "loadable" && validWeights.length > 0) {
-        const isDumbbell = eq.equipment_name.toLowerCase().includes("dumbbell");
-        const convention = isDumbbell
-          ? " (weight shown is per dumbbell)"
-          : " (total weight including bar)";
-        sections.push(
-          `${eq.equipment_name}${convention}:\n${validWeights.join(", ")}`,
-        );
-      } else if (
-        (eq.type === "fixed" || eq.type === "machine") &&
-        eq.increment
-      ) {
-        const max = eq.max_weight ? ` — max ${eq.max_weight}` : "";
-        sections.push(
-          `${eq.equipment_name} (${eq.type}): increments of ${eq.increment}${max}`,
-        );
-      }
-    }
-  } catch (err) {
-    console.error("buildEquipmentSummary DB error:", err.message);
-  }
-
-  const equipmentSection =
-    sections.length > 0
-      ? sections.join("\n\n")
-      : "(no equipment data available)";
-
-  return `WEIGHT GUIDANCE PER EQUIPMENT
-You must only suggest weights that are achievable on the specified equipment. For loadable equipment, use exact values from the lists below. For fixed/machine equipment, use multiples of the increment that do not exceed the max.
-
-${equipmentSection}
-
-DUMBBELL CONVENTION
-All dumbbell weights are stored and displayed as the weight of ONE dumbbell. For example, weight: 10 means 10kg in each hand for a pair exercise, or 10kg in one hand for a single dumbbell exercise. Never double the weight for pair exercises.
-
-BODYWEIGHT EXERCISES
-Exercises with no linked equipment always have weight: 0.`;
-}
-
 // Builds a plain-text CSV of the conditioning library for the AI prompt.
 function buildConditioningCSV(conditioningLookup) {
   const entries = Object.entries(conditioningLookup);
@@ -354,50 +364,6 @@ function buildConditioningCSV(conditioningLookup) {
     ([name, e]) => `${name},${e.category},${e.metric},${e.target},${e.sets}`,
   );
   return [header, ...rows].join("\n");
-}
-
-// Builds the wildcard slot instruction based on how many weight exercises are requested.
-function buildWildcardInstruction(
-  weightExercises,
-  sessionType,
-  goalDescription,
-) {
-  const base = 6;
-  const wildcardCount = Math.max(0, weightExercises - base + 1);
-  const goalHint = goalDescription
-    ? ` Use the athlete's goal notes to guide wildcard selection: "${goalDescription}"`
-    : "";
-
-  if (sessionType === "compound") {
-    if (weightExercises <= 4) {
-      const slots = ["Back", "Chest", "Lower Back", "Quads", "Shoulders"].slice(
-        0,
-        weightExercises,
-      );
-      return `${weightExercises} exercises: 1 each from ${slots.join(", ")}.`;
-    }
-    if (wildcardCount === 1) {
-      return `${weightExercises} exercises: 1 each from Back, Chest, Lower Back, Quads, Shoulders, plus ${wildcardCount} Wildcard compound.${goalHint}`;
-    }
-    return `${weightExercises} exercises: 1 each from Back, Chest, Lower Back, Quads, Shoulders, plus ${wildcardCount} Wildcard compounds.${goalHint}`;
-  } else {
-    if (weightExercises <= 5) {
-      const slots = [
-        "Core (always first)",
-        "Biceps",
-        "Triceps",
-        "Shoulders",
-        "Forearms",
-      ].slice(0, weightExercises);
-      return `${weightExercises} exercises: ${slots.join(", ")}.`;
-    }
-    const extraWildcards = weightExercises - 6;
-    const wildcardPool =
-      extraWildcards > 0
-        ? `{Core, Calves, Hamstrings} for the first wildcard, then any undertrained muscle for additional wildcards`
-        : `{Core, Calves, Hamstrings}`;
-    return `${weightExercises} exercises: Core (always first), Biceps, Triceps, Shoulders, Forearms, plus ${wildcardCount} Wildcard(s) from ${wildcardPool}.${goalHint}`;
-  }
 }
 
 // Enriches AI-returned conditioning exercises with target_reps and metric from
@@ -423,43 +389,86 @@ function enrichConditioningExercises(condExs, conditioningLookup) {
   return enriched;
 }
 
-// Enriches an AI-returned exercise array with server-calculated weights, reps,
-// and sets from phaseConfig for a specific week, then validates weights against
-// equipment constraints.
-async function enrichExercisesForWeek(
+// Enriches an exercise array with server-calculated weight, reps, and sets
+// from a SINGLE session config (one element from a phaseConfig week array),
+// then validates weights against equipment constraints. If the session
+// config has a `finisher` block, the finisher is attached to each exercise
+// so the frontend can render the extra set(s) at the end.
+async function enrichExercisesForSession(
   exercises,
-  weekConfig,
+  sessionConfig,
   weightLookup,
   gymId,
   userId,
 ) {
-  const enriched = exercises.map((ex) => ({
-    exercise: ex.exercise,
-    muscles_primary: ex.muscles_primary,
-    sub_component: ex.sub_component,
-    sets: weekConfig.sets,
-    target_reps: weekConfig.reps,
-    weight: calculateExerciseWeight(
+  const enriched = exercises.map((ex) => {
+    const weight = calculateExerciseWeight(
       ex.exercise,
-      weekConfig.percentage,
+      sessionConfig.percentage,
       weightLookup,
-    ),
-  }));
+    );
+
+    const result = {
+      exercise: ex.exercise,
+      muscles_primary: ex.muscles_primary,
+      sub_component: ex.sub_component,
+      sets: sessionConfig.sets,
+      target_reps: sessionConfig.reps,
+      weight,
+    };
+
+    if (sessionConfig.finisher) {
+      result.finisher_weight = calculateExerciseWeight(
+        ex.exercise,
+        sessionConfig.finisher.percentage,
+        weightLookup,
+      );
+      result.finisher_reps = sessionConfig.finisher.reps;
+      result.finisher_sets = sessionConfig.finisher.sets;
+    }
+
+    return result;
+  });
 
   await validateAndCorrectWeights(enriched, gymId, userId);
+
+  // Validate finisher weights separately (validateAndCorrectWeights only
+  // touches the `weight` field).
+  if (enriched.some((e) => e.finisher_weight !== undefined)) {
+    const finisherProxies = enriched
+      .filter((e) => e.finisher_weight !== undefined)
+      .map((e) => ({ exercise: e.exercise, weight: e.finisher_weight }));
+    await validateAndCorrectWeights(finisherProxies, gymId, userId);
+    finisherProxies.forEach((proxy, i) => {
+      const target = enriched.find((e) => e.exercise === proxy.exercise);
+      if (target) target.finisher_weight = proxy.weight;
+    });
+  }
+
   return enriched;
 }
 
 // Inserts weight exercises and conditioning exercises into planned_exercises
-// for a given session.
-async function insertSessionExercises(client, sessionId, weightExs, condExs) {
+// for a given session. groupIds, if provided, is an array the same length as
+// weightExs assigning each exercise a group_id (used for MD weeks 4-6
+// nonstop grouping). isOneRmTest flags the session as a 1RM testing session.
+async function insertSessionExercises(
+  client,
+  sessionId,
+  weightExs,
+  condExs,
+  groupIds = null,
+) {
   for (let i = 0; i < weightExs.length; i++) {
     const ex = weightExs[i];
+    const groupId = groupIds ? groupIds[i] : null;
+
     await client.query(
       `INSERT INTO planned_exercises
          (session_id, exercise_name, muscles_primary, sub_component,
-          order_index, target_sets, target_reps, target_weight, set_style)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          order_index, target_sets, target_reps, target_weight, set_style,
+          group_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         sessionId,
         ex.exercise,
@@ -470,6 +479,7 @@ async function insertSessionExercises(client, sessionId, weightExs, condExs) {
         ex.target_reps,
         ex.weight,
         "standard",
+        groupId,
       ],
     );
   }
@@ -497,59 +507,141 @@ async function insertSessionExercises(client, sessionId, weightExs, condExs) {
   }
 }
 
-// ─── Generate block ───────────────────────────────────────────────────────────
-// POST /ai/generate-block
+// Returns the group_id assignment array for MD weeks 4-6 nonstop grouping.
+// Week 4: 4 pairs (groups 1-4, 2 exercises each).
+// Week 5: 2 groups of 4 (groups 1-2, 4 exercises each).
+// Week 6: 1 group of 8 (group 1, all 8 exercises).
+// Weeks 1-3: no grouping (returns null).
+function getMdGroupIds(weekNumber, exerciseCount) {
+  if (weekNumber === 4) {
+    return Array.from(
+      { length: exerciseCount },
+      (_, i) => Math.floor(i / 2) + 1,
+    );
+  }
+  if (weekNumber === 5) {
+    return Array.from(
+      { length: exerciseCount },
+      (_, i) => Math.floor(i / 4) + 1,
+    );
+  }
+  if (weekNumber === 6) {
+    return Array.from({ length: exerciseCount }, () => 1);
+  }
+  return null;
+}
 
-router.post("/generate-block", async (req, res) => {
+// Per-phase, per-session 1RM test schedule. Returns an array of booleans,
+// one per session in the week, indicating whether that session is a 1RM
+// test session. Only week 1 of a phase ever has test sessions.
+function getOneRmTestFlags(phase, weekNumber, sessionsPerWeek) {
+  if (weekNumber !== 1) return Array(sessionsPerWeek).fill(false);
+
+  if (phase === "maximum_strength") {
+    // Second part of the week — sessions 2 and 3 (index 1, 2) of 3.
+    return [false, true, true];
+  }
+
+  // AA, H, Mixed, MD — sessions 1 and 2 (index 0, 1) of the week.
+  return Array.from({ length: sessionsPerWeek }, (_, i) => i < 2);
+}
+
+// ─── Gym CSV builder ──────────────────────────────────────────────────────────
+
+async function buildGymCSV(gymId, userId) {
+  if (!gymId) {
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score\n(no gym selected)";
+  }
+  try {
+    const result = await pool.query(
+      `SELECT e.exercise, e.muscles_primary, e.muscles_secondary, e.type,
+              e.sub_component, e.emg_score,
+              eq.equipment_name
+       FROM exercises e
+       LEFT JOIN equipment eq ON eq.id = e.equipment_id
+       WHERE e.user_id = $1 AND e.gym_id = $2 AND e.active = TRUE
+       ORDER BY e.muscles_primary, e.emg_score DESC`,
+      [userId, gymId],
+    );
+
+    const header =
+      "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score";
+    if (result.rows.length === 0)
+      return header + "\n(no exercises configured for this gym)";
+
+    const rows = result.rows.map(
+      (e) =>
+        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? "none"},${e.sub_component},${e.emg_score}`,
+    );
+    return [header, ...rows].join("\n");
+  } catch (err) {
+    console.error("buildGymCSV DB error:", err.message);
+    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score\n(error loading exercises)";
+  }
+}
+
+// ─── Auth helper (shared by cron + JWT routes) ───────────────────────────────
+
+function resolveUserId(req, res) {
   const cronSecret = req.headers["x-cron-secret"];
   if (cronSecret) {
     if (cronSecret !== process.env.CRON_SECRET) {
-      return res.status(401).json({ error: "Invalid cron secret" });
+      res.status(401).json({ error: "Invalid cron secret" });
+      return null;
     }
-    req.userId = req.body.user_id;
-  } else {
-    const authHeader = req.headers["authorization"];
-    if (!authHeader)
-      return res.status(401).json({ error: "No token provided" });
-    try {
-      const jwt = require("jsonwebtoken");
-      const token = authHeader.split(" ")[1];
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.userId = decoded.userId;
-    } catch {
-      return res.status(401).json({ error: "Invalid token" });
-    }
+    return req.body.user_id;
+  }
+
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) {
+    res.status(401).json({ error: "No token provided" });
+    return null;
+  }
+  try {
+    const jwt = require("jsonwebtoken");
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    return decoded.userId;
+  } catch {
+    res.status(401).json({ error: "Invalid token" });
+    return null;
+  }
+}
+
+// ─── Generate phase ───────────────────────────────────────────────────────────
+// POST /ai/generate-phase
+// Called ONCE when a new phase starts (triggered by cron.js). The AI selects
+// exercises for the entire phase in a single call. The server then generates
+// every week's sessions from those exercises using phaseConfig's per-week,
+// per-session loading values. No block concept — a 6-week phase generates
+// 6 weeks of sessions from one exercise selection.
+
+router.post("/generate-phase", async (req, res) => {
+  const userId = resolveUserId(req, res);
+  if (!userId) return;
+
+  const { phase, total_weeks, sessions_per_week, preselect_for_md } = req.body;
+  if (!phase || !total_weeks || !sessions_per_week) {
+    return res.status(400).json({
+      error: "phase, total_weeks, and sessions_per_week are required",
+    });
   }
 
   try {
-    const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week,
-              weight_exercises_per_session, conditioning_exercises_per_session,
-              goal_description, training_level
-       FROM users WHERE id = $1`,
-      [req.userId],
-    );
+    const userKey = getUserKey(userId);
 
+    const userResult = await pool.query(
+      `SELECT conditioning_exercises_per_session FROM users WHERE id = $1`,
+      [userId],
+    );
     if (userResult.rows.length === 0)
       return res.status(404).json({ error: "User not found" });
-
-    const {
-      current_phase,
-      current_block,
-      phase_week,
-      weight_exercises_per_session,
-      conditioning_exercises_per_session,
-      goal_description,
-    } = userResult.rows[0];
-    const trainingLevel = normaliseTrainingLevel(
-      userResult.rows[0].training_level,
-    );
-    const weightExercises = weight_exercises_per_session || 6;
-    const conditioningCount = conditioning_exercises_per_session || 3;
+    const conditioningCount =
+      userResult.rows[0].conditioning_exercises_per_session || 3;
 
     const gymResult = await pool.query(
       `SELECT id, gym_name FROM gyms WHERE user_id = $1 AND is_default = TRUE LIMIT 1`,
-      [req.userId],
+      [userId],
     );
     if (gymResult.rows.length === 0) {
       return res.status(400).json({
@@ -559,62 +651,97 @@ router.post("/generate-block", async (req, res) => {
     const gymId = gymResult.rows[0].id;
     const gymName = gymResult.rows[0].gym_name;
 
-    // Verify phaseConfig exists for this phase/level/block before calling the AI
+    // For a transition phase that's pre-selecting MD exercises, build the MD
+    // template instead of the transition template (transition itself has no
+    // dedicated exercise template — it inherits or pre-selects).
+    const effectivePhaseForTemplate = preselect_for_md
+      ? "muscle_definition"
+      : phase;
+    const template = PHASE_SESSION_TEMPLATES[effectivePhaseForTemplate];
+    if (!template && phase !== "transition") {
+      return res.status(400).json({ error: `Unknown phase: ${phase}` });
+    }
+
+    // Verify phaseConfig exists for this phase/user/week before calling the AI
     try {
-      getWeekConfig(current_phase, trainingLevel, current_block, 1);
+      if (phase === "mixed") {
+        getMixedWeekConfig(userKey, 1);
+      } else {
+        getWeekConfig(phase, userKey, 1);
+      }
     } catch (configErr) {
       return res.status(400).json({
         error: `No training config available: ${configErr.message}`,
       });
     }
 
+    // Transition phases that are NOT pre-selecting MD just inherit exercises
+    // from the prior programme — no AI call needed.
+    if (phase === "transition" && !preselect_for_md) {
+      return await generateTransitionInheriting(
+        req,
+        res,
+        userId,
+        userKey,
+        gymId,
+        gymName,
+        total_weeks,
+        sessions_per_week,
+        conditioningCount,
+      );
+    }
+
     const [
       sessionHistory,
       oneRepMaxHistory,
       bodyCompHistory,
-      previousBlockExercises,
       dietHistory,
       moodHistory,
       cardioHistory,
       conditioningLookup,
       weightLookup,
     ] = await Promise.all([
-      getSessionHistory(req.userId),
-      getOneRepMaxHistory(req.userId),
-      getBodyCompHistory(req.userId),
-      getPreviousBlockExercises(req.userId, current_phase, current_block),
-      getDietHistory(req.userId),
-      getMoodHistory(req.userId),
-      getCardioHistory(req.userId),
+      getSessionHistory(userId),
+      getOneRepMaxHistory(userId),
+      getBodyCompHistory(userId),
+      getDietHistory(userId),
+      getMoodHistory(userId),
+      getCardioHistory(userId),
       getConditioningLookup(gymId),
-      buildWeightLookup(req.userId, gymId),
+      buildWeightLookup(userId),
     ]);
 
-    const gymCSV = await buildGymCSV(gymId, req.userId);
+    const gymCSV = await buildGymCSV(gymId, userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
-    const compoundInstruction = buildWildcardInstruction(
-      weightExercises,
-      "compound",
-      goal_description,
-    );
-    const isolationInstruction = buildWildcardInstruction(
-      weightExercises,
-      "isolation",
-      goal_description,
-    );
 
-    const userPrompt = `Select exercises for a training block for the following athlete.
+    const sessionSlotDescriptions = template.sessions
+      .map((s) => `- ${s.type} (${s.exerciseCount} exercises): ${s.slots}`)
+      .join("\n");
+
+    const responseStructure = template.sessions
+      .map(
+        (s) => `  "${s.type}": {
+    "exercises": [
+      { "exercise": "<name>", "muscles_primary": "<primary muscle>", "sub_component": "<sub component>" }
+    ],
+    "conditioning": [
+      { "exercise": "<name>", "sets": <number> }
+    ]
+  }`,
+      )
+      .join(",\n");
+
+    const userPrompt = `Select exercises for a ${total_weeks}-week ${phase} training phase for this athlete.
 The server will calculate all weights, reps, and sets — return exercise selections only.
+These exercises will be used for EVERY week of this phase. Choose them to last the full ${total_weeks} weeks.
+
+SESSION TEMPLATES FOR THIS PHASE
+${sessionSlotDescriptions}
 
 CURRENT STATE
-- Phase: ${current_phase}
-- Block: ${current_block}
-- Phase week: ${phase_week} of 6
-- Training level: ${trainingLevel}
+- Phase: ${phase}
 - Gym: ${gymName}
-- Weight exercises per session: ${weightExercises}
 - Conditioning exercises per session: ${conditioningCount}
-- Athlete notes: ${goal_description || "None"}
 
 EXERCISE LIBRARY
 ${gymCSV}
@@ -628,9 +755,6 @@ ${JSON.stringify(oneRepMaxHistory, null, 2)}
 SESSION HISTORY — LAST 4 WEEKS
 ${JSON.stringify(sessionHistory, null, 2)}
 
-PREVIOUS BLOCK EXERCISES
-${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None — this is the first block"}
-
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
 
@@ -643,51 +767,19 @@ ${moodHistory.length > 0 ? JSON.stringify(moodHistory, null, 2) : "No mood data 
 CARDIO — LAST 2 WEEKS
 ${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio logged"}
 
-Use diet, mood, energy and cardio data to inform exercise selection and ordering. If energy has been consistently low, favour exercises the athlete performs well at. If cardio load has been high, consider recovery when selecting compound movements.
-
-For conditioning: select ${conditioningCount} exercises from the conditioning library. Aim for at least 1 cardio movement and 1 core exercise. Use remaining slots to match the athlete's goal description and phase. Return only the exercise name and sets — targets and metrics are looked up server-side. Exercise names must match the conditioning library exactly.
+For conditioning: select ${conditioningCount} exercises from the conditioning library per session template. Aim for at least 1 cardio movement and 1 core exercise. Exercise names must match the conditioning library exactly.
 
 Return ONLY this exact JSON structure, nothing else:
 {
-  "compound_session": {
-    "exercises": [
-      {
-        "exercise": "<name>",
-        "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>"
-      }
-    ],
-    "conditioning": [
-      {
-        "exercise": "<name>",
-        "sets": <number>
-      }
-    ]
-  },
-  "isolation_session": {
-    "exercises": [
-      {
-        "exercise": "<name>",
-        "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>"
-      }
-    ],
-    "conditioning": [
-      {
-        "exercise": "<name>",
-        "sets": <number>
-      }
-    ]
-  }
+${responseStructure}
 }
 
-Compound: ${compoundInstruction} Then ${conditioningCount} conditioning exercises appended after.
-Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises appended after. No extra fields. No explanation. No markdown.`;
+No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 2000,
-      system: BLOCK_GENERATION_SYSTEM_PROMPT,
+      max_tokens: 2500,
+      system: PHASE_GENERATION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     });
 
@@ -695,106 +787,60 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("");
-    const blockPlan = JSON.parse(cleanJSON(rawText));
+    const phasePlan = JSON.parse(cleanJSON(rawText));
 
-    if (!blockPlan.compound_session || !blockPlan.isolation_session) {
-      throw new Error("Invalid block plan structure from Claude");
+    for (const sessionDef of template.sessions) {
+      if (!phasePlan[sessionDef.type]) {
+        throw new Error(
+          `Invalid phase plan structure from Claude — missing "${sessionDef.type}"`,
+        );
+      }
     }
 
-    // Enrich conditioning once (phase-independent)
-    const enrichedCompConditioning = enrichConditioningExercises(
-      blockPlan.compound_session.conditioning || [],
-      conditioningLookup,
-    );
-    const enrichedIsoConditioning = enrichConditioningExercises(
-      blockPlan.isolation_session.conditioning || [],
-      conditioningLookup,
-    );
+    // Enrich conditioning once per session template (phase-independent —
+    // same conditioning exercises used across all weeks).
+    const enrichedConditioning = {};
+    for (const sessionDef of template.sessions) {
+      enrichedConditioning[sessionDef.type] = enrichConditioningExercises(
+        phasePlan[sessionDef.type].conditioning || [],
+        conditioningLookup,
+      );
+    }
 
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
 
       const progResult = await client.query(
-        `INSERT INTO programmes (user_id, phase, block_number, week_start) VALUES ($1, $2, $3, CURRENT_DATE) RETURNING id`,
-        [req.userId, current_phase, current_block],
+        `INSERT INTO programmes (user_id, phase, week_start, total_weeks)
+         VALUES ($1, $2, CURRENT_DATE, $3) RETURNING id`,
+        [userId, phase, total_weeks],
       );
       const programmeId = progResult.rows[0].id;
 
-      for (let week = 1; week <= 3; week++) {
-        const weekConfig = getWeekConfig(
-          current_phase,
-          trainingLevel,
-          current_block,
-          week,
-        );
-
-        // Server calculates weights from phaseConfig percentage × 1RM,
-        // then validates against equipment constraints
-        const compoundExercises = await enrichExercisesForWeek(
-          blockPlan.compound_session.exercises,
-          weekConfig,
-          weightLookup,
-          gymId,
-          req.userId,
-        );
-
-        const isolationExercises = await enrichExercisesForWeek(
-          blockPlan.isolation_session.exercises,
-          weekConfig,
-          weightLookup,
-          gymId,
-          req.userId,
-        );
-
-        // TODO: Week 1 session 1 should be flagged as a 1RM baseline testing
-        // session (one max-effort set per exercise, 4-8 reps to failure).
-        // The baseline results would then recalculate weights for the
-        // remaining sessions. See BASELINE_TEST_CONFIG in phaseConfig.js.
-
-        const comp1 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-           VALUES ($1, $2, 'compound', 1, $3, $4) RETURNING id`,
-          [req.userId, programmeId, week, gymId],
-        );
-        await insertSessionExercises(
-          client,
-          comp1.rows[0].id,
-          compoundExercises,
-          enrichedCompConditioning,
-        );
-
-        const comp2 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-           VALUES ($1, $2, 'compound', 2, $3, $4) RETURNING id`,
-          [req.userId, programmeId, week, gymId],
-        );
-        await insertSessionExercises(
-          client,
-          comp2.rows[0].id,
-          compoundExercises,
-          enrichedCompConditioning,
-        );
-
-        const iso = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-           VALUES ($1, $2, 'isolation', 1, $3, $4) RETURNING id`,
-          [req.userId, programmeId, week, gymId],
-        );
-        await insertSessionExercises(
-          client,
-          iso.rows[0].id,
-          isolationExercises,
-          enrichedIsoConditioning,
-        );
-      }
+      await generateAllWeeksForProgramme({
+        client,
+        userId,
+        userKey,
+        programmeId,
+        phase,
+        totalWeeks: total_weeks,
+        sessionsPerWeek: sessions_per_week,
+        sessionOrder:
+          template.sessionOrder || template.sessions.map((s) => s.type),
+        phasePlan,
+        enrichedConditioning,
+        gymId,
+        weightLookup,
+      });
 
       await client.query("COMMIT");
       res.status(201).json({
-        message: "Block generated successfully",
+        message: "Phase generated successfully",
         programme_id: programmeId,
-        compound_session: blockPlan.compound_session,
-        isolation_session: blockPlan.isolation_session,
+        phase,
+        total_weeks,
+        plan: phasePlan,
       });
     } catch (err) {
       await client.query("ROLLBACK");
@@ -803,13 +849,347 @@ Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exerci
       client.release();
     }
   } catch (err) {
-    console.error("Generate block error:", err.message);
+    console.error("Generate phase error:", err.message);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
+// Handles transition phases that inherit exercises from the prior programme
+// rather than calling the AI. Copies the most recent programme's week-1
+// exercises and applies transition loading (phaseConfig.transition) across
+// every week of the transition.
+async function generateTransitionInheriting(
+  req,
+  res,
+  userId,
+  userKey,
+  gymId,
+  gymName,
+  totalWeeks,
+  sessionsPerWeek,
+  conditioningCount,
+) {
+  try {
+    const priorProgResult = await pool.query(
+      `SELECT id FROM programmes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [userId],
+    );
+    if (priorProgResult.rows.length === 0) {
+      return res.status(400).json({
+        error:
+          "No prior programme found to inherit exercises from for transition",
+      });
+    }
+    const priorProgrammeId = priorProgResult.rows[0].id;
+    const priorExercisesByType = await getCurrentPhaseExercises(
+      userId,
+      priorProgrammeId,
+    );
+
+    const weightLookup = await buildWeightLookup(userId);
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const progResult = await client.query(
+        `INSERT INTO programmes (user_id, phase, week_start, total_weeks)
+         VALUES ($1, 'transition', CURRENT_DATE, $2) RETURNING id`,
+        [userId, totalWeeks],
+      );
+      const programmeId = progResult.rows[0].id;
+
+      const sessionTypes = Object.keys(priorExercisesByType);
+      const phasePlan = {};
+      const enrichedConditioning = {};
+      for (const type of sessionTypes) {
+        phasePlan[type] = { exercises: priorExercisesByType[type] };
+        enrichedConditioning[type] = []; // transition skips conditioning
+      }
+
+      await generateAllWeeksForProgramme({
+        client,
+        userId,
+        userKey,
+        programmeId,
+        phase: "transition",
+        totalWeeks,
+        sessionsPerWeek,
+        sessionOrder: sessionTypes,
+        phasePlan,
+        enrichedConditioning,
+        gymId,
+        weightLookup,
+      });
+
+      await client.query("COMMIT");
+      res.status(201).json({
+        message: "Transition phase generated (inherited exercises)",
+        programme_id: programmeId,
+        total_weeks: totalWeeks,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error("Generate transition error:", err.message);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+}
+
+// Shared week-generation loop used by both /generate-phase (all weeks at
+// once) and /generate-week (one week at a time, reusing exercises already
+// in the database for this programme).
+async function generateAllWeeksForProgramme({
+  client,
+  userId,
+  userKey,
+  programmeId,
+  phase,
+  totalWeeks,
+  sessionsPerWeek,
+  sessionOrder,
+  phasePlan,
+  enrichedConditioning,
+  gymId,
+  weightLookup,
+}) {
+  for (let week = 1; week <= totalWeeks; week++) {
+    await generateOneWeek({
+      client,
+      userId,
+      userKey,
+      programmeId,
+      phase,
+      week,
+      sessionsPerWeek,
+      sessionOrder,
+      phasePlan,
+      enrichedConditioning,
+      gymId,
+      weightLookup,
+    });
+  }
+}
+
+// Generates the sessions for a single week of a phase. Reads the correct
+// session config from phaseConfig (handling Mixed's dual mxs/h tracks
+// separately), applies MD grouping where relevant, and flags 1RM test
+// sessions per the testing schedule.
+async function generateOneWeek({
+  client,
+  userId,
+  userKey,
+  programmeId,
+  phase,
+  week,
+  sessionsPerWeek,
+  sessionOrder,
+  phasePlan,
+  enrichedConditioning,
+  gymId,
+  weightLookup,
+}) {
+  const testFlags = getOneRmTestFlags(phase, week, sessionsPerWeek);
+
+  for (let sessionIndex = 0; sessionIndex < sessionsPerWeek; sessionIndex++) {
+    const sessionType = sessionOrder[sessionIndex];
+
+    let sessionConfig;
+    if (phase === "mixed") {
+      const mixedWeek = getMixedWeekConfig(userKey, week);
+      const track = sessionType === "mixed_mxs" ? "mxs" : "h";
+      // For mxs sessions, index within the mxs sub-array by how many mxs
+      // sessions have occurred so far this week (0 or 1). For h sessions,
+      // h tracks only have one config per week shared by both h session
+      // types (h_24 and h_6).
+      if (track === "mxs") {
+        const mxsOccurrence =
+          sessionOrder
+            .slice(0, sessionIndex + 1)
+            .filter((t) => t === "mixed_mxs").length - 1;
+        sessionConfig = mixedWeek.mxs[mxsOccurrence] || mixedWeek.mxs[0];
+      } else {
+        sessionConfig = mixedWeek.h[0];
+      }
+    } else if (phase === "transition") {
+      sessionConfig = getWeekConfig("transition", userKey, 1)[0];
+    } else {
+      const weekArray = getWeekConfig(phase, userKey, week);
+      sessionConfig = weekArray[sessionIndex] || weekArray[0];
+    }
+
+    const exercises = phasePlan[sessionType]?.exercises || [];
+    const enrichedExercises = await enrichExercisesForSession(
+      exercises,
+      sessionConfig,
+      weightLookup,
+      gymId,
+      userId,
+    );
+
+    let groupIds = null;
+    if (phase === "muscle_definition") {
+      groupIds = getMdGroupIds(week, enrichedExercises.length);
+    }
+
+    const sessionResult = await client.query(
+      `INSERT INTO sessions
+         (user_id, programme_id, session_type, week_number, gym_id, is_1rm_test)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+      [
+        userId,
+        programmeId,
+        sessionType,
+        week,
+        gymId,
+        testFlags[sessionIndex] || false,
+      ],
+    );
+
+    await insertSessionExercises(
+      client,
+      sessionResult.rows[0].id,
+      enrichedExercises,
+      enrichedConditioning[sessionType] || [],
+      groupIds,
+    );
+  }
+}
+
+// ─── Generate week ────────────────────────────────────────────────────────────
+// POST /ai/generate-week
+// Called for every week AFTER the first in an already-generated phase
+// (triggered by cron.js). No AI call — reuses the exercises already
+// selected for this programme and applies that week's phaseConfig loading.
+
+router.post("/generate-week", async (req, res) => {
+  const userId = resolveUserId(req, res);
+  if (!userId) return;
+
+  const { week_number } = req.body;
+  if (!week_number) {
+    return res.status(400).json({ error: "week_number is required" });
+  }
+
+  try {
+    const userKey = getUserKey(userId);
+
+    const userResult = await pool.query(
+      `SELECT current_phase FROM users WHERE id = $1`,
+      [userId],
+    );
+    if (userResult.rows.length === 0)
+      return res.status(404).json({ error: "User not found" });
+    const { current_phase } = userResult.rows[0];
+
+    const progResult = await pool.query(
+      `SELECT id, total_weeks FROM programmes
+       WHERE user_id = $1 AND phase = $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, current_phase],
+    );
+    if (progResult.rows.length === 0) {
+      return res.status(400).json({
+        error: `No active programme found for phase ${current_phase}`,
+      });
+    }
+    const programmeId = progResult.rows[0].id;
+
+    const gymResult = await pool.query(
+      `SELECT id FROM gyms WHERE user_id = $1 AND is_default = TRUE LIMIT 1`,
+      [userId],
+    );
+    if (gymResult.rows.length === 0)
+      return res.status(400).json({ error: "No default gym configured." });
+    const gymId = gymResult.rows[0].id;
+
+    const conditioningLookup = await getConditioningLookup(gymId);
+    const exercisesByType = await getCurrentPhaseExercises(userId, programmeId);
+    const weightLookup = await buildWeightLookup(userId);
+
+    // Re-fetch conditioning already used for week 1 of this programme so it
+    // stays consistent across the phase, rather than re-querying the AI.
+    const week1CondResult = await pool.query(
+      `SELECT s.session_type, pe.exercise_name, pe.target_sets, pe.target_reps,
+              pe.metric
+       FROM sessions s
+       JOIN planned_exercises pe ON pe.session_id = s.id
+       WHERE s.programme_id = $1 AND s.week_number = 1
+         AND pe.muscles_primary = 'Conditioning'
+       ORDER BY s.session_type, pe.order_index`,
+      [programmeId],
+    );
+    const enrichedConditioning = {};
+    for (const row of week1CondResult.rows) {
+      if (!enrichedConditioning[row.session_type])
+        enrichedConditioning[row.session_type] = [];
+      enrichedConditioning[row.session_type].push({
+        exercise: row.exercise_name,
+        sets: row.target_sets,
+        target_reps: row.target_reps,
+        metric: row.metric,
+      });
+    }
+
+    const template = PHASE_SESSION_TEMPLATES[current_phase];
+    const sessionOrder =
+      template?.sessionOrder ||
+      (template
+        ? template.sessions.map((s) => s.type)
+        : Object.keys(exercisesByType));
+    const sessionsPerWeek = sessionOrder.length;
+
+    const phasePlan = {};
+    for (const type of Object.keys(exercisesByType)) {
+      phasePlan[type] = { exercises: exercisesByType[type] };
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      await generateOneWeek({
+        client,
+        userId,
+        userKey,
+        programmeId,
+        phase: current_phase,
+        week: week_number,
+        sessionsPerWeek,
+        sessionOrder,
+        phasePlan,
+        enrichedConditioning,
+        gymId,
+        weightLookup,
+      });
+
+      await client.query("COMMIT");
+      res.status(201).json({
+        message: "Week generated successfully",
+        programme_id: programmeId,
+        week_number,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error("Generate week error:", err.message);
     res.status(500).json({ error: "Server error", detail: err.message });
   }
 });
 
 // ─── Generate gym session ─────────────────────────────────────────────────────
 // POST /ai/generate-gym-session
+// Swaps a single planned session to a different gym. Re-selects exercises
+// for that one session only (since the exercise library differs per gym),
+// using the same session template and that week's phaseConfig loading.
 
 router.post("/generate-gym-session", requireAuth, async (req, res) => {
   const { session_id, gym_id } = req.body;
@@ -818,6 +1198,8 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
   if (!gym_id) return res.status(400).json({ error: "gym_id is required" });
 
   try {
+    const userKey = getUserKey(req.userId);
+
     const gymResult = await pool.query(
       `SELECT gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
       [gym_id, req.userId],
@@ -827,10 +1209,9 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
     const gymName = gymResult.rows[0].gym_name;
 
     const sessionResult = await pool.query(
-      `SELECT s.*, p.phase, p.block_number, u.phase_week, u.training_level
+      `SELECT s.*, p.phase
        FROM sessions s
        JOIN programmes p ON p.id = s.programme_id
-       JOIN users u ON u.id = s.user_id
        WHERE s.id = $1 AND s.user_id = $2`,
       [session_id, req.userId],
     );
@@ -838,61 +1219,51 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
 
     const session = sessionResult.rows[0];
-    const { session_type, phase, block_number, week_number } = session;
-    const trainingLevel = normaliseTrainingLevel(session.training_level);
+    const { session_type, phase, week_number } = session;
 
     const userResult = await pool.query(
-      `SELECT weight_exercises_per_session, conditioning_exercises_per_session, goal_description FROM users WHERE id = $1`,
+      `SELECT conditioning_exercises_per_session FROM users WHERE id = $1`,
       [req.userId],
     );
-    const {
-      weight_exercises_per_session,
-      conditioning_exercises_per_session,
-      goal_description,
-    } = userResult.rows[0];
-    const weightExercises = weight_exercises_per_session || 6;
-    const conditioningCount = conditioning_exercises_per_session || 3;
+    const conditioningCount =
+      userResult.rows[0].conditioning_exercises_per_session || 3;
 
     const [
       sessionHistory,
       oneRepMaxHistory,
       bodyCompHistory,
-      previousBlockExercises,
       conditioningLookup,
       weightLookup,
     ] = await Promise.all([
       getSessionHistory(req.userId),
       getOneRepMaxHistory(req.userId),
       getBodyCompHistory(req.userId),
-      getPreviousBlockExercises(req.userId, phase, block_number),
       getConditioningLookup(gym_id),
-      buildWeightLookup(req.userId, gym_id),
+      buildWeightLookup(req.userId),
     ]);
 
     const gymCSV = await buildGymCSV(gym_id, req.userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
-    const sessionTypeLabel =
-      session_type === "compound" ? "compound" : "isolation";
-    const weightInstruction = buildWildcardInstruction(
-      weightExercises,
-      sessionTypeLabel,
-      goal_description,
-    );
 
-    const userPrompt = `Select exercises for a single ${sessionTypeLabel} session for the following athlete at ${gymName}.
+    const template = PHASE_SESSION_TEMPLATES[phase];
+    const sessionDef = template?.sessions.find((s) => s.type === session_type);
+    const slotsDescription = sessionDef
+      ? sessionDef.slots
+      : "Select exercises appropriate for this session type and phase.";
+
+    const userPrompt = `Select exercises for a single ${session_type} session for the following athlete at ${gymName}.
 The server will calculate all weights, reps, and sets — return exercise selections only.
 
-This session replaces a planned session at a different gym. Apply the same exercise selection logic — sub-component coverage, progressive overload response, recency, EMG score, and tiebreaker rules all apply.
+This session replaces a planned session at a different gym.
+
+SESSION TEMPLATE
+${slotsDescription}
 
 CURRENT STATE
 - Phase: ${phase}
-- Block: ${block_number}
-- Week: ${week_number} of 3
-- Training level: ${trainingLevel}
+- Week: ${week_number}
 - Gym: ${gymName}
-- Weight exercises: ${weightExercises}
 - Conditioning exercises: ${conditioningCount}
-- Athlete notes: ${goal_description || "None"}
 
 EXERCISE LIBRARY (${gymName} only)
 ${gymCSV}
@@ -906,36 +1277,26 @@ ${JSON.stringify(oneRepMaxHistory, null, 2)}
 SESSION HISTORY — LAST 4 WEEKS
 ${JSON.stringify(sessionHistory, null, 2)}
 
-PREVIOUS BLOCK EXERCISES
-${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None — this is the first block"}
-
 BODY COMPOSITION — LAST 4 WEEKS
 ${JSON.stringify(bodyCompHistory, null, 2)}
 
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
-    {
-      "exercise": "<name>",
-      "muscles_primary": "<primary muscle>",
-      "sub_component": "<sub component>"
-    }
+    { "exercise": "<name>", "muscles_primary": "<primary muscle>", "sub_component": "<sub component>" }
   ],
   "conditioning": [
-    {
-      "exercise": "<name>",
-      "sets": <number>
-    }
+    { "exercise": "<name>", "sets": <number> }
   ]
 }
 
-${weightInstruction} Then ${conditioningCount} conditioning exercises.
+Then ${conditioningCount} conditioning exercises.
 No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1500,
-      system: BLOCK_GENERATION_SYSTEM_PROMPT,
+      system: PHASE_GENERATION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     });
 
@@ -948,16 +1309,21 @@ No extra fields. No explanation. No markdown.`;
     if (!result.exercises || result.exercises.length === 0)
       throw new Error("Invalid session structure from Claude");
 
-    // Calculate weights for this specific week
-    const weekConfig = getWeekConfig(
-      phase,
-      trainingLevel,
-      block_number,
-      week_number,
-    );
-    const enrichedExercises = await enrichExercisesForWeek(
+    let sessionConfig;
+    if (phase === "mixed") {
+      const mixedWeek = getMixedWeekConfig(userKey, week_number);
+      sessionConfig =
+        session_type === "mixed_mxs" ? mixedWeek.mxs[0] : mixedWeek.h[0];
+    } else if (phase === "transition") {
+      sessionConfig = getWeekConfig("transition", userKey, 1)[0];
+    } else {
+      const weekArray = getWeekConfig(phase, userKey, week_number);
+      sessionConfig = weekArray[0];
+    }
+
+    const enrichedExercises = await enrichExercisesForSession(
       result.exercises,
-      weekConfig,
+      sessionConfig,
       weightLookup,
       gym_id,
       req.userId,
@@ -1006,306 +1372,16 @@ No extra fields. No explanation. No markdown.`;
   }
 });
 
-// ─── Generate missing sessions ────────────────────────────────────────────────
-// POST /ai/generate-missing
-
-router.post("/generate-missing", async (req, res) => {
-  const cronSecret = req.headers["x-cron-secret"];
-  if (cronSecret) {
-    if (cronSecret !== process.env.CRON_SECRET)
-      return res.status(401).json({ error: "Invalid cron secret" });
-    req.userId = req.body.user_id;
-  } else {
-    const authHeader = req.headers["authorization"];
-    if (!authHeader)
-      return res.status(401).json({ error: "No token provided" });
-    try {
-      const jwt = require("jsonwebtoken");
-      const token = authHeader.split(" ")[1];
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.userId = decoded.userId;
-    } catch {
-      return res.status(401).json({ error: "Invalid token" });
-    }
-  }
-
-  const { programme_id, weeks_needed, existing_plan } = req.body;
-  if (!programme_id || !weeks_needed || weeks_needed.length === 0) {
-    return res
-      .status(400)
-      .json({ error: "programme_id and weeks_needed are required" });
-  }
-
-  try {
-    const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week,
-              weight_exercises_per_session, conditioning_exercises_per_session,
-              goal_description, training_level
-       FROM users WHERE id = $1`,
-      [req.userId],
-    );
-    if (userResult.rows.length === 0)
-      return res.status(404).json({ error: "User not found" });
-
-    const {
-      current_phase,
-      current_block,
-      phase_week,
-      weight_exercises_per_session,
-      conditioning_exercises_per_session,
-      goal_description,
-    } = userResult.rows[0];
-    const trainingLevel = normaliseTrainingLevel(
-      userResult.rows[0].training_level,
-    );
-    const weightExercises = weight_exercises_per_session || 6;
-    const conditioningCount = conditioning_exercises_per_session || 3;
-
-    const gymResult = await pool.query(
-      `SELECT id, gym_name FROM gyms WHERE user_id = $1 AND is_default = TRUE LIMIT 1`,
-      [req.userId],
-    );
-    if (gymResult.rows.length === 0)
-      return res.status(400).json({ error: "No default gym configured." });
-    const gymId = gymResult.rows[0].id;
-    const gymName = gymResult.rows[0].gym_name;
-
-    const [
-      sessionHistory,
-      oneRepMaxHistory,
-      bodyCompHistory,
-      previousBlockExercises,
-      dietHistory,
-      moodHistory,
-      cardioHistory,
-      conditioningLookup,
-      weightLookup,
-    ] = await Promise.all([
-      getSessionHistory(req.userId),
-      getOneRepMaxHistory(req.userId),
-      getBodyCompHistory(req.userId),
-      getPreviousBlockExercises(req.userId, current_phase, current_block),
-      getDietHistory(req.userId),
-      getMoodHistory(req.userId),
-      getCardioHistory(req.userId),
-      getConditioningLookup(gymId),
-      buildWeightLookup(req.userId, gymId),
-    ]);
-
-    const gymCSV = await buildGymCSV(gymId, req.userId);
-    const condCSV = buildConditioningCSV(conditioningLookup);
-    const compoundInstruction = buildWildcardInstruction(
-      weightExercises,
-      "compound",
-      goal_description,
-    );
-    const isolationInstruction = buildWildcardInstruction(
-      weightExercises,
-      "isolation",
-      goal_description,
-    );
-
-    const existingPlanSection = existing_plan
-      ? `EXISTING PLAN (use as baseline — keep exercises unless avoidance notes or quantity changes require substitution)\n${JSON.stringify(existing_plan, null, 2)}`
-      : "EXISTING PLAN: None available — select fresh exercises following standard rules.";
-
-    const userPrompt = `Select exercises for missing sessions for the following athlete.
-The server will calculate all weights, reps, and sets — return exercise selections only.
-Use the existing plan as a baseline and only change exercises where the athlete notes explicitly require avoidance, or where the exercise count has changed and wildcard slots need adjusting.
-
-CURRENT STATE
-- Phase: ${current_phase}
-- Block: ${current_block}
-- Phase week: ${phase_week} of 6
-- Training level: ${trainingLevel}
-- Gym: ${gymName}
-- Weeks to generate: ${weeks_needed.join(", ")}
-- Weight exercises per session: ${weightExercises}
-- Conditioning exercises per session: ${conditioningCount}
-- Athlete notes: ${goal_description || "None"}
-
-${existingPlanSection}
-
-EXERCISE LIBRARY
-${gymCSV}
-
-CONDITIONING LIBRARY
-${condCSV}
-
-ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
-${JSON.stringify(oneRepMaxHistory, null, 2)}
-
-SESSION HISTORY — LAST 4 WEEKS
-${JSON.stringify(sessionHistory, null, 2)}
-
-PREVIOUS BLOCK EXERCISES
-${previousBlockExercises.length > 0 ? previousBlockExercises.join(", ") : "None — this is the first block"}
-
-BODY COMPOSITION — LAST 4 WEEKS
-${JSON.stringify(bodyCompHistory, null, 2)}
-
-DIET — LAST 2 WEEKS
-${dietHistory.length > 0 ? JSON.stringify(dietHistory, null, 2) : "No diet data logged"}
-
-MOOD AND ENERGY — LAST 2 WEEKS
-${moodHistory.length > 0 ? JSON.stringify(moodHistory, null, 2) : "No mood data logged"}
-
-CARDIO — LAST 2 WEEKS
-${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio logged"}
-
-Return ONLY this exact JSON structure, nothing else:
-{
-  "compound_session": {
-    "exercises": [
-      {
-        "exercise": "<name>",
-        "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>"
-      }
-    ],
-    "conditioning": [
-      {
-        "exercise": "<name>",
-        "sets": <number>
-      }
-    ]
-  },
-  "isolation_session": {
-    "exercises": [
-      {
-        "exercise": "<name>",
-        "muscles_primary": "<primary muscle>",
-        "sub_component": "<sub component>"
-      }
-    ],
-    "conditioning": [
-      {
-        "exercise": "<name>",
-        "sets": <number>
-      }
-    ]
-  }
-}
-
-Compound: ${compoundInstruction} Then ${conditioningCount} conditioning exercises.
-Isolation: ${isolationInstruction} Then ${conditioningCount} conditioning exercises. No extra fields. No explanation. No markdown.`;
-
-    const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2000,
-      system: BLOCK_GENERATION_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-
-    const rawText = message.content
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-    const blockPlan = JSON.parse(cleanJSON(rawText));
-
-    if (!blockPlan.compound_session || !blockPlan.isolation_session)
-      throw new Error("Invalid block plan structure from Claude");
-
-    const enrichedCompConditioning = enrichConditioningExercises(
-      blockPlan.compound_session.conditioning || [],
-      conditioningLookup,
-    );
-    const enrichedIsoConditioning = enrichConditioningExercises(
-      blockPlan.isolation_session.conditioning || [],
-      conditioningLookup,
-    );
-
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-
-      for (const week of weeks_needed) {
-        const weekConfig = getWeekConfig(
-          current_phase,
-          trainingLevel,
-          current_block,
-          week,
-        );
-
-        const compoundExercises = await enrichExercisesForWeek(
-          blockPlan.compound_session.exercises,
-          weekConfig,
-          weightLookup,
-          gymId,
-          req.userId,
-        );
-
-        const isolationExercises = await enrichExercisesForWeek(
-          blockPlan.isolation_session.exercises,
-          weekConfig,
-          weightLookup,
-          gymId,
-          req.userId,
-        );
-
-        const comp1 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-           VALUES ($1, $2, 'compound', 1, $3, $4) RETURNING id`,
-          [req.userId, programme_id, week, gymId],
-        );
-        await insertSessionExercises(
-          client,
-          comp1.rows[0].id,
-          compoundExercises,
-          enrichedCompConditioning,
-        );
-
-        const comp2 = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-           VALUES ($1, $2, 'compound', 2, $3, $4) RETURNING id`,
-          [req.userId, programme_id, week, gymId],
-        );
-        await insertSessionExercises(
-          client,
-          comp2.rows[0].id,
-          compoundExercises,
-          enrichedCompConditioning,
-        );
-
-        const iso = await client.query(
-          `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-           VALUES ($1, $2, 'isolation', 1, $3, $4) RETURNING id`,
-          [req.userId, programme_id, week, gymId],
-        );
-        await insertSessionExercises(
-          client,
-          iso.rows[0].id,
-          isolationExercises,
-          enrichedIsoConditioning,
-        );
-      }
-
-      await client.query("COMMIT");
-      res.status(201).json({
-        message: "Missing sessions generated successfully",
-        weeks: weeks_needed,
-        compound_session: blockPlan.compound_session,
-        isolation_session: blockPlan.isolation_session,
-      });
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.error("Generate missing error:", err.message);
-    res.status(500).json({ error: "Server error", detail: err.message });
-  }
-});
-
 // ─── Extra session ────────────────────────────────────────────────────────────
 // POST /ai/extra-session
 
 router.post("/extra-session", requireAuth, async (req, res) => {
-  const { gym_id, session_type = "compound" } = req.body;
+  const { gym_id, session_type } = req.body;
   if (!gym_id) return res.status(400).json({ error: "gym_id is required" });
+
   try {
+    const userKey = getUserKey(req.userId);
+
     const gymCheck = await pool.query(
       `SELECT id, gym_name FROM gyms WHERE id = $1 AND user_id = $2`,
       [gym_id, req.userId],
@@ -1316,44 +1392,39 @@ router.post("/extra-session", requireAuth, async (req, res) => {
     const gymName = gymCheck.rows[0].gym_name;
 
     const userResult = await pool.query(
-      `SELECT current_phase, current_block, phase_week,
-              weight_exercises_per_session, conditioning_exercises_per_session,
-              goal_description, training_level
+      `SELECT current_phase, phase_week, conditioning_exercises_per_session
        FROM users WHERE id = $1`,
       [req.userId],
     );
     if (userResult.rows.length === 0)
       return res.status(404).json({ error: "User not found" });
 
-    const {
-      current_phase,
-      current_block,
-      phase_week,
-      weight_exercises_per_session,
-      conditioning_exercises_per_session,
-      goal_description,
-    } = userResult.rows[0];
-    const trainingLevel = normaliseTrainingLevel(
-      userResult.rows[0].training_level,
-    );
-    const weightExercises = weight_exercises_per_session || 6;
+    const { current_phase, phase_week, conditioning_exercises_per_session } =
+      userResult.rows[0];
     const conditioningCount = conditioning_exercises_per_session || 3;
 
-    // Determine which week config to use for an extra session.
-    // phase_week 1-3 → block 1, phase_week 4-6 → block 2, phase_week 7+ → rest
-    let weekConfig;
-    if (phase_week >= 7) {
-      // Rest week — use flat rest config
-      weekConfig = { percentage: 0.45, reps: 12, sets: 3 };
+    const template = PHASE_SESSION_TEMPLATES[current_phase];
+    const effectiveSessionType =
+      session_type || (template ? template.sessions[0].type : "full_body");
+    const sessionDef = template?.sessions.find(
+      (s) => s.type === effectiveSessionType,
+    );
+    const slotsDescription = sessionDef
+      ? sessionDef.slots
+      : "Select exercises appropriate for this phase, based on what has been undertrained recently.";
+
+    let sessionConfig;
+    if (current_phase === "mixed") {
+      const mixedWeek = getMixedWeekConfig(userKey, phase_week);
+      sessionConfig =
+        effectiveSessionType === "mixed_mxs"
+          ? mixedWeek.mxs[0]
+          : mixedWeek.h[0];
+    } else if (current_phase === "transition") {
+      sessionConfig = getWeekConfig("transition", userKey, 1)[0];
     } else {
-      const blockNumber = phase_week <= 3 ? 1 : 2;
-      const weekInBlock = phase_week <= 3 ? phase_week : phase_week - 3;
-      weekConfig = getWeekConfig(
-        current_phase,
-        trainingLevel,
-        blockNumber,
-        weekInBlock,
-      );
+      const weekArray = getWeekConfig(current_phase, userKey, phase_week);
+      sessionConfig = weekArray[0];
     }
 
     const [
@@ -1373,7 +1444,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       getMoodHistory(req.userId),
       getCardioHistory(req.userId),
       getConditioningLookup(gymId),
-      buildWeightLookup(req.userId, gymId),
+      buildWeightLookup(req.userId),
     ]);
 
     const lastSession = sessionHistory[0];
@@ -1387,25 +1458,18 @@ router.post("/extra-session", requireAuth, async (req, res) => {
     const gymCSV = await buildGymCSV(gymId, req.userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
 
-    const weightInstruction = buildWildcardInstruction(
-      weightExercises,
-      session_type,
-      goal_description,
-    );
-
-    const userPrompt = `The athlete has arrived at the gym for an extra ${session_type} session today. Select the ${weightExercises} best weight exercises based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
+    const userPrompt = `The athlete has arrived at the gym for an extra ${effectiveSessionType} session today. Select exercises based on what has been undertrained recently, recovery needs, and training history. Then select ${conditioningCount} conditioning exercises.
 The server will calculate all weights, reps, and sets — return exercise selections only.
+
+SESSION TEMPLATE
+${slotsDescription}
 
 CURRENT STATE
 - Phase: ${current_phase}
-- Block: ${current_block}
-- Phase week: ${phase_week} of 6
-- Training level: ${trainingLevel}
+- Phase week: ${phase_week}
 - Gym: ${gymName}
 - Days since last session: ${daysSinceLast}
-- Weight exercises: ${weightExercises}
 - Conditioning exercises: ${conditioningCount}
-- Athlete notes: ${goal_description || "None"}
 
 EXERCISE LIBRARY
 ${gymCSV}
@@ -1431,31 +1495,24 @@ ${moodHistory.length > 0 ? JSON.stringify(moodHistory, null, 2) : "No mood data 
 CARDIO — LAST 2 WEEKS
 ${cardioHistory.length > 0 ? JSON.stringify(cardioHistory, null, 2) : "No cardio logged"}
 
-Use today's mood and energy scores to inform exercise selection. If energy is low, select exercises the athlete performs well at. If cardio load has been heavy this week, favour upper body compound movements to allow leg recovery.
+Use today's mood and energy scores to inform exercise selection. If energy is low, select exercises the athlete performs well at. If cardio load has been heavy this week, favour upper body movements to allow leg recovery.
 
 Return ONLY this exact JSON structure, nothing else:
 {
   "exercises": [
-    {
-      "exercise": "<name>",
-      "muscles_primary": "<primary muscle>",
-      "sub_component": "<sub component>"
-    }
+    { "exercise": "<name>", "muscles_primary": "<primary muscle>", "sub_component": "<sub component>" }
   ],
   "conditioning": [
-    {
-      "exercise": "<name>",
-      "sets": <number>
-    }
+    { "exercise": "<name>", "sets": <number> }
   ]
 }
 
-${weightInstruction} Then ${conditioningCount} conditioning exercises. No extra fields. No explanation. No markdown.`;
+Then ${conditioningCount} conditioning exercises. No extra fields. No explanation. No markdown.`;
 
     const message = await anthropic.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 1500,
-      system: BLOCK_GENERATION_SYSTEM_PROMPT,
+      system: PHASE_GENERATION_SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     });
 
@@ -1468,9 +1525,9 @@ ${weightInstruction} Then ${conditioningCount} conditioning exercises. No extra 
     if (!result.exercises || result.exercises.length === 0)
       throw new Error("Invalid session structure from Claude");
 
-    const enrichedExercises = await enrichExercisesForWeek(
+    const enrichedExercises = await enrichExercisesForSession(
       result.exercises,
-      weekConfig,
+      sessionConfig,
       weightLookup,
       gymId,
       req.userId,
@@ -1493,8 +1550,8 @@ ${weightInstruction} Then ${conditioningCount} conditioning exercises. No extra 
       await client.query("BEGIN");
 
       const sessionResult = await client.query(
-        `INSERT INTO sessions (user_id, programme_id, session_type, occurrence, week_number, gym_id, status, started_at)
-         VALUES ($1, $2, 'extra', 1, $3, $4, 'in_progress', NOW()) RETURNING id`,
+        `INSERT INTO sessions (user_id, programme_id, session_type, week_number, gym_id, status, started_at)
+         VALUES ($1, $2, 'extra', $3, $4, 'in_progress', NOW()) RETURNING id`,
         [req.userId, programmeId, phase_week, gymId],
       );
 
@@ -1526,6 +1583,7 @@ ${weightInstruction} Then ${conditioningCount} conditioning exercises. No extra 
 
 // ─── Exercise metadata lookup ─────────────────────────────────────────────────
 // POST /ai/exercise-metadata
+// Unchanged from previous version — no phase/level dependency.
 
 router.post("/exercise-metadata", requireAuth, async (req, res) => {
   const { exercise_name } = req.body;
@@ -1569,6 +1627,7 @@ No explanation. No markdown. Valid JSON only.`,
 
 // ─── Suggest exercises ────────────────────────────────────────────────────────
 // POST /ai/suggest-exercises
+// Unchanged from previous version — no phase/level dependency.
 
 router.post("/suggest-exercises", requireAuth, async (req, res) => {
   const { gym_id } = req.body;
@@ -1599,7 +1658,6 @@ router.post("/suggest-exercises", requireAuth, async (req, res) => {
             .join(", ")
         : "General gym equipment";
 
-    // Build equipment lookup for resolving equipment_name → equipment_id
     const equipLookup = {};
     for (const eq of equipmentResult.rows) {
       equipLookup[eq.equipment_name.toLowerCase()] = eq.id;
@@ -1647,7 +1705,6 @@ Group logically but return as a flat array. No explanation. No markdown. Valid J
       .join("");
     const result = JSON.parse(cleanJSON(rawText));
 
-    // Resolve equipment_name to equipment_id for each exercise
     for (const ex of result.exercises || []) {
       if (ex.equipment_name) {
         ex.equipment_id = equipLookup[ex.equipment_name.toLowerCase()] || null;
@@ -1665,6 +1722,7 @@ Group logically but return as a flat array. No explanation. No markdown. Valid J
 
 // ─── Get latest weekly feedback ───────────────────────────────────────────────
 // GET /ai/weekly-feedback
+// Unchanged from previous version.
 
 router.get("/weekly-feedback", requireAuth, async (req, res) => {
   try {
@@ -1679,59 +1737,23 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
   }
 });
 
-// ─── Gym CSV builder ──────────────────────────────────────────────────────────
+// ─── System prompt ────────────────────────────────────────────────────────────
 
-async function buildGymCSV(gymId, userId) {
-  if (!gymId) {
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight\n(no gym selected)";
-  }
-  try {
-    const result = await pool.query(
-      `SELECT e.exercise, e.muscles_primary, e.muscles_secondary, e.type,
-              e.sub_component, e.emg_score, e.target_weight,
-              eq.equipment_name
-       FROM exercises e
-       LEFT JOIN equipment eq ON eq.id = e.equipment_id
-       WHERE e.user_id = $1 AND e.gym_id = $2 AND e.active = TRUE
-       ORDER BY e.muscles_primary, e.emg_score DESC`,
-      [userId, gymId],
-    );
-
-    const header =
-      "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight";
-    if (result.rows.length === 0)
-      return header + "\n(no exercises configured for this gym)";
-
-    const rows = result.rows.map(
-      (e) =>
-        `${e.exercise},${e.muscles_primary},${e.muscles_secondary},${e.type},${e.equipment_name ?? "none"},${e.sub_component},${e.emg_score},${e.target_weight ?? "null"}`,
-    );
-    return [header, ...rows].join("\n");
-  } catch (err) {
-    console.error("buildGymCSV DB error:", err.message);
-    return "exercise,muscles_primary,muscles_secondary,type,equipment_name,sub_component,emg_score,target_weight\n(error loading exercises)";
-  }
-}
-
-// ─── System prompts ───────────────────────────────────────────────────────────
-
-const BLOCK_GENERATION_SYSTEM_PROMPT = `You are a personal gym coach and exercise selector. You follow periodisation principles from Tudor Bompa's Serious Strength Training.
+const PHASE_GENERATION_SYSTEM_PROMPT = `You are a personal gym coach and exercise selector. You follow periodisation principles from Tudor Bompa's Serious Strength Training.
 
 ROLE
 You select and order exercises. The server calculates all weights, reps, and sets from periodised loading patterns (phaseConfig × 1RM). Do not include weights, reps, or sets in your response. Your focus is choosing the right exercises for the athlete's current phase, history, and goals.
 
-TRAINING STRUCTURE
-- Sessions alternate Compound → Isolation → Compound (repeating based on weekly session count)
-- Each session has two parts: weight exercises followed by conditioning exercises
-- The number of weight exercises and conditioning exercises per session is specified in the user prompt
-- Compound session weight exercises: 1 each from Back, Chest, Lower Back, Quads, Shoulders, plus Wildcard slots for any count above 5
-- Isolation session weight exercises: Core (always first), Biceps, Triceps, Shoulders, Forearms, plus Wildcard slots for any count above 5
-- Conditioning exercises are always appended after weight exercises — select from the conditioning library provided
+EXERCISES PERSIST FOR THE FULL PHASE
+Unlike older versions of this app, there is no mid-phase exercise rotation. The exercises you select will be used for every week of the phase (3 or 6 weeks). Choose exercises that are sustainable and appropriate across the full duration — do not pick exercises only suitable for a single week's intensity.
+
+SESSION TEMPLATES
+Each phase has its own session structure, provided in the user prompt as "SESSION TEMPLATES FOR THIS PHASE". Follow the muscle/role slots exactly as described. Where a template says two session types must share specific exercises (e.g. Mixed phase's H sessions), select those shared exercises once and reuse them as instructed.
 
 EXERCISE SELECTION RULES
-1. SUB-COMPONENT COVERAGE — exclude sub-components used in previous block
+1. SUB-COMPONENT COVERAGE — avoid repeating the same sub-component used in the athlete's previous phase
 2. PROGRESSIVE OVERLOAD — favour exercises with stronger historical performance
-3. RECENCY — deprioritise exercises from last block unless EMG gap is 2+ points
+3. RECENCY — deprioritise exercises from the immediately preceding phase unless EMG gap is 2+ points
 4. EMG SCORE — prefer higher scores when other factors are equal
 5. TIEBREAKER — use table order
 
@@ -1745,24 +1767,12 @@ PHASE CONTEXT
 Each phase has a different training goal that should influence exercise selection:
 - Anatomical Adaptation: Movement quality and connective tissue preparation. Favour exercises with good form accessibility and full range of motion.
 - Hypertrophy: Muscle size and density. Favour exercises that maximise time under tension. Prefer equipment supporting controlled movement under moderate loads.
+- Mixed: MxS-type sessions favour heavy compound movements (barbell, loadable equipment). H-type sessions favour controlled accessory work.
 - Maximum Strength: Force production and neural adaptation. Favour heavy compound movements. Prefer barbell and loadable equipment that supports heavy loading.
-- Muscle Definition: Metabolic conditioning at high reps. All equipment types permitted. Favour exercises suitable for sustained high-rep endurance work.
+- Muscle Definition: Metabolic conditioning at high reps. All equipment types permitted. Favour exercises suitable for sustained high-rep endurance work and, in later weeks, exercises that pair well together for nonstop execution.
 
-ATHLETE NOTES
-Read the "Athlete notes" field in the user prompt carefully. It may contain avoidance instructions, muscle preferences, or both.
-
-AVOIDANCE: If it contains explicit avoidance instructions (e.g. "avoid", "do not", "exclude", "no X", "dodgy knee", "bad back") apply them strictly — do not select any exercise targeting the affected muscle group or body part. Ignore vague mentions of discomfort, soreness, or tiredness — only act on clear directives.
-
-PREFERENCES: If it mentions muscles or body parts to focus on (e.g. "focus on triceps", "prioritise calves", "want bigger arms"), thread that preference through ALL exercise selection — not just wildcard slots. For mandatory muscle slots, choose the exercise variant that best involves the preferred muscle as a secondary mover. For example, if the athlete wants triceps focus, prefer Chest Press (triceps secondary) over Chest Fly (no triceps) for the Chest slot. Fill wildcard slots with preferred muscles first, then fall back to standard undertrained logic.
-
-Be tolerant of spelling mistakes and interpret the intent.
-BLOCK EXCLUSION — no exercise from Block 1 may appear in Block 2
-
-CONDITIONING SELECTION RULES
-- Always include at least 1 cardio category exercise and 1 core category exercise
-- Use remaining slots for mobility or trx based on athlete goals and phase
-- Only return the exercise name and sets — targets and metrics are looked up server-side
-- Exercise names must match the conditioning library exactly
+HAMSTRING CAUTION
+Favour controlled, lower-risk hamstring exercises. Bompa's tables consistently load hamstrings more conservatively than other muscle groups — prefer machine or supported variants over free-weight ballistic movements where the template allows a choice.
 
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 

@@ -1,406 +1,165 @@
 // backend/cron.js
-// Sunday evening cron job — advances phase week, generates weekly coaching report,
-// and emails it to the user. Runs every Sunday at 10:30PM UTC via node-cron in index.js.
+// Sunday evening cron job — advances cycle position/phase week, generates
+// weekly coaching report, and emails it to the user. Runs every Sunday at
+// 10:30PM UTC via node-cron in index.js.
+//
+// Phase advancement is driven entirely by cycleConfig.js. There is no
+// longer a `cycles` DB table (dropped — it duplicated what cycleConfig.js
+// now defines in code) and no separate "rest week" mechanism (Transition
+// entries in cycleConfig.js serve this purpose).
 
 require("dotenv").config();
 const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("./db");
 const { sendWeeklyReport } = require("./email");
 const { SYSTEM_PROMPT, buildUserPrompt } = require("./prompts/sundayReport");
-const { PHASE_CONFIG } = require("./phaseConfig");
-const { snapToValidWeight } = require("./weightCalc");
+const { getCycleEntry, getNextCycleEntry } = require("./cycleConfig");
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Phases that get a rest week inserted after completion
-const PHASES_WITH_REST_WEEK = ["hypertrophy", "maximum_strength"];
-
-// ─── Phase transition weight recalculation ────────────────────────────────────
-// Runs before block generation fires at the start of a new phase.
-// Derives an implied 1RM from each exercise's current target weight using the
-// outgoing phase percentage, then calculates the new target using the incoming
-// phase percentage. Snaps DOWN to the nearest valid equipment weight.
-
-async function recalculateTargetWeightsForPhaseTransition(
-  userId,
-  outgoingPhase,
-  incomingPhase,
-) {
-  console.log(
-    `Recalculating target weights for user ${userId}: ${outgoingPhase} → ${incomingPhase}`,
-  );
-
-  const outgoingPercentage = PHASE_CONFIG[outgoingPhase]?.percentage;
-  const incomingPercentage = PHASE_CONFIG[incomingPhase]?.percentage;
-
-  if (!outgoingPercentage || !incomingPercentage) {
-    console.error(
-      `Unknown phase in transition: ${outgoingPhase} → ${incomingPhase}`,
-    );
-    return;
-  }
-
-  const exerciseResult = await pool.query(
-    `SELECT e.id, e.exercise, e.target_weight
-     FROM exercises e
-     WHERE e.user_id = $1
-       AND e.target_weight IS NOT NULL
-       AND e.active = TRUE`,
-    [userId],
-  );
-
-  if (exerciseResult.rows.length === 0) {
-    console.log(
-      `No exercises with target weights found for user ${userId} — skipping recalculation`,
-    );
-    return;
-  }
-
-  let updated = 0;
-  let skipped = 0;
-
-  for (const ex of exerciseResult.rows) {
-    const currentTarget = parseFloat(ex.target_weight);
-    const implied1RM = currentTarget / outgoingPercentage;
-    const newTargetRaw = implied1RM * incomingPercentage;
-    const newTarget = await snapToValidWeight(newTargetRaw, ex.id, userId);
-
-    if (newTarget > 0 && newTarget !== currentTarget) {
-      await pool.query(
-        `UPDATE exercises SET target_weight = $1 WHERE id = $2`,
-        [newTarget, ex.id],
-      );
-      updated++;
-    } else {
-      skipped++;
-    }
-  }
-
-  console.log(
-    `✓ Phase transition recalculation complete for user ${userId}: ${updated} updated, ${skipped} unchanged`,
-  );
-}
-
 // ─── Phase advancement ────────────────────────────────────────────────────────
-// Reads from the cycles table instead of a hardcoded sequence.
-// Rest weeks are inserted after Hypertrophy and Max Strength phases only.
-// phase_week counts training weeks (1 to duration_weeks).
-// When phase_week exceeds duration_weeks, the phase is complete.
+// Reads cycle_position and phase_week directly from the user row.
+// cycle_position is an index into CYCLE_CONFIG (see cycleConfig.js).
+// phase_week is 1-based, counting weeks within the current cycle entry.
 
 async function advancePhaseWeek(user) {
-  const { id, current_phase, current_block, phase_week } = user;
+  const { id, cycle_position, phase_week } = user;
+  const entry = getCycleEntry(cycle_position);
+
   console.log(
-    `Advancing phase week for user ${id}: phase=${current_phase} block=${current_block} week=${phase_week}`,
+    `Advancing user ${id}: phase=${entry.phase} (position ${cycle_position}) week=${phase_week}/${entry.weeks}`,
   );
 
-  // Get the current in_progress cycle row to know the duration
-  const cycleResult = await pool.query(
-    `SELECT id, phase, phase_order, duration_weeks
-     FROM cycles
-     WHERE user_id = $1 AND status = 'in_progress'
-     ORDER BY phase_order ASC
-     LIMIT 1`,
-    [id],
-  );
+  if (phase_week < entry.weeks) {
+    // Still within the current phase — just move to the next week and
+    // generate that week's sessions using the exercises already selected
+    // for this phase.
+    const newWeek = phase_week + 1;
+    await pool.query(`UPDATE users SET phase_week = $1 WHERE id = $2`, [
+      newWeek,
+      id,
+    ]);
+    console.log(`✓ Phase week advanced to ${newWeek} for user ${id}`);
 
-  // Fall back to 6 if no cycle row found (safety net for legacy users)
-  const durationWeeks =
-    cycleResult.rows.length > 0
-      ? parseInt(cycleResult.rows[0].duration_weeks)
-      : 6;
-  const currentCycleRow =
-    cycleResult.rows.length > 0 ? cycleResult.rows[0] : null;
-
-  // Block boundary: midpoint of duration_weeks
-  const blockBoundary = durationWeeks / 2;
-
-  // Check if we are in a rest week (phase_week > durationWeeks signals
-  // rest week is in progress — we use a sentinel value)
-  const isRestWeek = user.in_rest_week === true;
-
-  if (isRestWeek) {
-    // Rest week is over — advance to the next phase
-    await startNextPhase(user, currentCycleRow);
-    return;
-  }
-
-  if (phase_week >= durationWeeks) {
-    // Training weeks complete for this phase
-    const needsRestWeek = PHASES_WITH_REST_WEEK.includes(current_phase);
-
-    if (needsRestWeek) {
-      // Insert rest week sessions and mark user as in_rest_week
-      await createRestWeekSessions(user);
-      await pool.query(`UPDATE users SET in_rest_week = TRUE WHERE id = $1`, [
-        id,
-      ]);
-      console.log(`✓ Rest week started for user ${id}`);
-    } else {
-      // No rest week for this phase — advance directly
-      await startNextPhase(user, currentCycleRow);
-    }
-    return;
-  }
-
-  // Normal week increment
-  const newWeek = phase_week + 1;
-  await pool.query(`UPDATE users SET phase_week = $1 WHERE id = $2`, [
-    newWeek,
-    id,
-  ]);
-  console.log(`✓ Phase week advanced to ${newWeek}`);
-
-  // Block 2 trigger: when we hit the week after the block boundary
-  if (newWeek === blockBoundary + 1) {
-    await pool.query(`UPDATE users SET current_block = 2 WHERE id = $1`, [id]);
-    await triggerBlockGeneration({
+    await triggerWeekGeneration({
       ...user,
-      current_block: 2,
       phase_week: newWeek,
     });
+    return;
   }
+
+  // Phase complete — advance to the next cycle entry, wrapping around the
+  // end of the year via modulo (handled inside getNextCycleEntry).
+  await startNextPhase(user);
 }
 
 // ─── Start next phase ─────────────────────────────────────────────────────────
 
-async function startNextPhase(user, currentCycleRow) {
-  const { id, current_phase } = user;
+async function startNextPhase(user) {
+  const { id, cycle_position } = user;
 
-  // Mark current cycle row as complete
-  if (currentCycleRow) {
-    await pool.query(`UPDATE cycles SET status = 'complete' WHERE id = $1`, [
-      currentCycleRow.id,
-    ]);
-  }
+  const nextEntry = getNextCycleEntry(cycle_position);
+  const nextPosition =
+    (cycle_position + 1) % require("./cycleConfig").CYCLE_CONFIG.length;
 
-  // Find the next pending cycle row
-  const nextCycleResult = await pool.query(
-    `SELECT id, phase, phase_order, duration_weeks
-     FROM cycles
-     WHERE user_id = $1 AND status = 'pending'
-     ORDER BY phase_order ASC
-     LIMIT 1`,
-    [id],
-  );
-
-  if (nextCycleResult.rows.length === 0) {
-    // Cycle is complete — no more phases
-    console.log(
-      `Cycle complete for user ${id} — no further phases. User will enter cycle planning on next login.`,
-    );
-    await pool.query(
-      `UPDATE users
-       SET in_rest_week = FALSE
-       WHERE id = $1`,
-      [id],
-    );
-    return;
-  }
-
-  const nextPhaseRow = nextCycleResult.rows[0];
-  const newPhase = nextPhaseRow.phase;
-
-  // Recalculate target weights before block generation reads them
-  await recalculateTargetWeightsForPhaseTransition(id, current_phase, newPhase);
-
-  // Mark the next cycle row as in_progress
-  await pool.query(`UPDATE cycles SET status = 'in_progress' WHERE id = $1`, [
-    nextPhaseRow.id,
-  ]);
-
-  // Update user state
   await pool.query(
     `UPDATE users
      SET current_phase = $1,
-         current_block = 1,
+         cycle_position = $2,
          phase_week = 1,
-         phase_start_date = CURRENT_DATE,
-         in_rest_week = FALSE
-     WHERE id = $2`,
-    [newPhase, id],
+         phase_start_date = CURRENT_DATE
+     WHERE id = $3`,
+    [nextEntry.phase, nextPosition, id],
   );
 
-  console.log(`✓ Advanced to new phase: ${newPhase}`);
+  console.log(
+    `✓ User ${id} advanced to new phase: ${nextEntry.phase} (position ${nextPosition})`,
+  );
 
-  await triggerBlockGeneration({
+  await triggerPhaseGeneration({
     ...user,
-    current_phase: newPhase,
-    current_block: 1,
+    current_phase: nextEntry.phase,
+    cycle_position: nextPosition,
     phase_week: 1,
   });
 }
 
-// ─── Block generation trigger ─────────────────────────────────────────────────
+// ─── Phase generation trigger (new phase starting — full phase generated) ────
+// Called once when a new phase begins. The AI selects exercises for the
+// entire phase in one call; the server then generates every week's sessions
+// from those exercises using phaseConfig's per-week, per-session values.
+//
+// Transition look-ahead: if the phase about to start is itself a transition,
+// and the entry AFTER it is muscle_definition, the route is told to
+// pre-select MD exercises rather than inheriting from the prior phase.
 
-async function triggerBlockGeneration(user) {
+async function triggerPhaseGeneration(user) {
+  const entry = getCycleEntry(user.cycle_position);
   console.log(
-    `Triggering block generation for user ${user.id} phase=${user.current_phase} block=${user.current_block}`,
+    `Triggering phase generation for user ${user.id}: phase=${entry.phase}, weeks=${entry.weeks}, sessionsPerWeek=${entry.sessionsPerWeek}`,
   );
+
+  let preselectForMd = false;
+  if (entry.phase === "transition") {
+    const lookahead = getNextCycleEntry(user.cycle_position);
+    preselectForMd = lookahead.phase === "muscle_definition";
+  }
+
   try {
     const port = process.env.PORT || 3000;
-    const response = await fetch(`http://localhost:${port}/ai/generate-block`, {
+    const response = await fetch(`http://localhost:${port}/ai/generate-phase`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-cron-secret": process.env.CRON_SECRET,
       },
-      body: JSON.stringify({ user_id: user.id }),
+      body: JSON.stringify({
+        user_id: user.id,
+        phase: entry.phase,
+        total_weeks: entry.weeks,
+        sessions_per_week: entry.sessionsPerWeek,
+        preselect_for_md: preselectForMd,
+      }),
     });
     if (!response.ok) {
       const err = await response.json();
-      throw new Error(err.error || "Block generation failed");
+      throw new Error(err.error || "Phase generation failed");
     }
-    console.log(`✓ Block generation complete for user ${user.id}`);
+    console.log(`✓ Phase generation complete for user ${user.id}`);
   } catch (err) {
-    console.error("Block generation failed:", err.message);
+    console.error("Phase generation failed:", err.message);
   }
 }
 
-// ─── Rest week session creation ───────────────────────────────────────────────
-// Copies the last week of the current block at reduced load.
-// Rest week target = current target_weight × (rest% / current_phase%)
+// ─── Week generation trigger (continuing within an already-generated phase) ──
+// Called when moving to a new week within the same phase. The exercises were
+// already selected when the phase started — this just generates the next
+// week's sessions with that week's phaseConfig values.
 
-async function createRestWeekSessions(user) {
-  console.log(`Creating rest week sessions for user ${user.id}`);
+async function triggerWeekGeneration(user) {
+  console.log(
+    `Triggering week generation for user ${user.id}: week=${user.phase_week}`,
+  );
   try {
-    // Get the cycle duration to find the last week of the current phase
-    const cycleResult = await pool.query(
-      `SELECT duration_weeks FROM cycles
-       WHERE user_id = $1 AND status = 'in_progress'
-       ORDER BY phase_order ASC LIMIT 1`,
-      [user.id],
-    );
-    const durationWeeks =
-      cycleResult.rows.length > 0
-        ? parseInt(cycleResult.rows[0].duration_weeks)
-        : 6;
-    const lastTrainingWeek = durationWeeks;
-
-    const progResult = await pool.query(
-      `SELECT id FROM programmes
-       WHERE user_id = $1 AND phase = $2 AND block_number = 2
-       ORDER BY created_at DESC LIMIT 1`,
-      [user.id, user.current_phase],
-    );
-
-    if (progResult.rows.length === 0) {
-      console.error("No Block 2 programme found for rest week creation");
-      return;
+    const port = process.env.PORT || 3000;
+    const response = await fetch(`http://localhost:${port}/ai/generate-week`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-cron-secret": process.env.CRON_SECRET,
+      },
+      body: JSON.stringify({
+        user_id: user.id,
+        week_number: user.phase_week,
+      }),
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.error || "Week generation failed");
     }
-
-    const programmeId = progResult.rows[0].id;
-
-    const lastWeekSessions = await pool.query(
-      `SELECT s.id, s.session_type, s.occurrence,
-              json_agg(pe.* ORDER BY pe.order_index) AS exercises
-       FROM sessions s
-       JOIN planned_exercises pe ON pe.session_id = s.id
-       WHERE s.programme_id = $1 AND s.week_number = $2
-       GROUP BY s.id`,
-      [programmeId, lastTrainingWeek],
-    );
-
-    if (lastWeekSessions.rows.length === 0) {
-      console.error(
-        `No week ${lastTrainingWeek} sessions found for rest week creation`,
-      );
-      return;
-    }
-
-    const currentPhaseConfig = PHASE_CONFIG[user.current_phase];
-    const restPhaseConfig = PHASE_CONFIG.rest;
-    const restRatio =
-      restPhaseConfig.percentage / (currentPhaseConfig?.percentage || 0.75);
-
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-
-      // Rest week uses a week_number one beyond durationWeeks as a sentinel
-      const restWeekNumber = durationWeeks + 1;
-
-      for (const lastWeekSession of lastWeekSessions.rows) {
-        const gymResult = await client.query(
-          `SELECT gym_id FROM sessions WHERE id = $1`,
-          [lastWeekSession.id],
-        );
-        const gymId = gymResult.rows[0]?.gym_id || null;
-
-        const sessionResult = await client.query(
-          `INSERT INTO sessions
-             (user_id, programme_id, session_type, occurrence, week_number, gym_id)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING id`,
-          [
-            user.id,
-            programmeId,
-            lastWeekSession.session_type,
-            lastWeekSession.occurrence,
-            restWeekNumber,
-            gymId,
-          ],
-        );
-        const sessionId = sessionResult.rows[0].id;
-
-        for (const ex of lastWeekSession.exercises) {
-          const exResult = await client.query(
-            `SELECT target_weight FROM exercises
-             WHERE user_id = $1 AND exercise = $2 LIMIT 1`,
-            [user.id, ex.exercise_name],
-          );
-
-          const baseWeight =
-            exResult.rows.length > 0 && exResult.rows[0].target_weight
-              ? parseFloat(exResult.rows[0].target_weight)
-              : parseFloat(ex.target_weight);
-
-          const rawRestWeight = Math.round(baseWeight * restRatio * 100) / 100;
-
-          const exIdResult = await client.query(
-            `SELECT id FROM exercises WHERE user_id = $1 AND exercise = $2 LIMIT 1`,
-            [user.id, ex.exercise_name],
-          );
-
-          let targetWeight;
-          if (exIdResult.rows.length > 0) {
-            targetWeight = await snapToValidWeight(
-              rawRestWeight,
-              exIdResult.rows[0].id,
-              user.id,
-            );
-          } else {
-            targetWeight = Math.round(rawRestWeight * 2) / 2;
-          }
-
-          await client.query(
-            `INSERT INTO planned_exercises
-               (session_id, exercise_name, muscles_primary, sub_component,
-                order_index, target_sets, target_reps, target_weight)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [
-              sessionId,
-              ex.exercise_name,
-              ex.muscles_primary,
-              ex.sub_component,
-              ex.order_index,
-              restPhaseConfig.sets,
-              restPhaseConfig.targetReps,
-              targetWeight,
-            ],
-          );
-        }
-      }
-
-      await client.query("COMMIT");
-      console.log(`✓ Rest week sessions created for user ${user.id}`);
-    } catch (err) {
-      await client.query("ROLLBACK");
-      throw err;
-    } finally {
-      client.release();
-    }
+    console.log(`✓ Week generation complete for user ${user.id}`);
   } catch (err) {
-    console.error("Rest week session creation failed:", err.message);
+    console.error("Week generation failed:", err.message);
   }
 }
 
@@ -410,10 +169,8 @@ async function runSundayReport(exitWhenDone = false) {
   console.log("Sunday report job started:", new Date().toISOString());
   try {
     const usersResult = await pool.query(
-      `SELECT id, username, email, current_phase, current_block,
-              phase_week, in_rest_week, agent_tone,
-              goal_size, goal_strength, goal_definition, goal_fitness,
-              training_level, weekly_sessions, goal_description
+      `SELECT id, username, email, current_phase, cycle_position,
+              phase_week, agent_tone
        FROM users`,
     );
 
@@ -437,13 +194,17 @@ async function runSundayReport(exitWhenDone = false) {
 }
 
 // ─── Report generation ────────────────────────────────────────────────────────
+// Unchanged from the previous version aside from removing the dropped user
+// columns from the surrounding query. Report content itself (body comp,
+// diet, mood, cardio, PO, 1RM history) is out of scope for the phase/cycle
+// rebuild and is not modified here.
 
 async function generateReportForUser(user, overrideWeekStartDate = null) {
   console.log(`Generating report for user ${user.id}...`);
 
   const sessionResult = await pool.query(
     `SELECT
-       s.id, s.session_type, s.occurrence, s.week_number,
+       s.id, s.session_type, s.week_number,
        g.gym_name AS gym,
        s.status, s.notes, s.started_at, s.completed_at,
        json_agg(
