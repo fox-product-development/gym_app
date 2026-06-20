@@ -176,6 +176,26 @@ const maximumStrengthUser1 = {
     { percentage: 0.9, reps: 3, sets: 4 },
     { percentage: 0.9, reps: 3, sets: 4 },
   ],
+  week_4: [
+    { percentage: 0.75, reps: 8, sets: 3 },
+    { percentage: 0.75, reps: 8, sets: 4 },
+    { percentage: 0.8, reps: 8, sets: 4 },
+  ],
+  week_5: [
+    { percentage: 0.8, reps: 6, sets: 4 },
+    { percentage: 0.85, reps: 6, sets: 4 },
+    {
+      percentage: 0.85,
+      reps: 6,
+      sets: 3,
+      finisher: { percentage: 0.9, reps: 3, sets: 1 },
+    },
+  ],
+  week_6: [
+    { percentage: 0.9, reps: 3, sets: 4 },
+    { percentage: 0.95, reps: 2, sets: 4 },
+    { percentage: 0.95, reps: 2, sets: 4 },
+  ],
 };
 
 // ─── Muscle Definition values — user1 only (Table 14.1, Recreational) ───────
