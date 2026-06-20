@@ -549,19 +549,26 @@ function getMdGroupIds(weekNumber, exerciseCount) {
   return null;
 }
 
-// Per-phase, per-session 1RM test schedule. Returns an array of booleans,
-// one per session in the week, indicating whether that session is a 1RM
-// test session. Only week 1 of a phase ever has test sessions.
-function getOneRmTestFlags(phase, weekNumber, sessionsPerWeek) {
-  if (weekNumber !== 1) return Array(sessionsPerWeek).fill(false);
-
-  if (phase === "maximum_strength") {
-    // Second part of the week — sessions 2 and 3 (index 1, 2) of 3.
-    return [false, true, true];
+// Per-phase, per-session 1RM test schedule. Tests are retaken every 3
+// weeks — so week 1 always, and week 4 as well for 6-week phases (3-week
+// phases naturally retest at week 1 of the next phase instead). Within a
+// test week, the FIRST occurrence of each distinct session type in
+// sessionOrder is flagged — not a fixed session count — so phases with one
+// repeated session type (AA, MxS, MD) get exactly one test session, and
+// phases with multiple distinct types (Hypertrophy, Mixed) get one test
+// per distinct type. Transition never tests.
+function getOneRmTestFlags(phase, weekNumber, sessionOrder) {
+  const isTestWeek = weekNumber === 1 || weekNumber === 4;
+  if (phase === "transition" || !isTestWeek) {
+    return Array(sessionOrder.length).fill(false);
   }
 
-  // AA, H, Mixed, MD — sessions 1 and 2 (index 0, 1) of the week.
-  return Array.from({ length: sessionsPerWeek }, (_, i) => i < 2);
+  const seenTypes = new Set();
+  return sessionOrder.map((type) => {
+    if (seenTypes.has(type)) return false;
+    seenTypes.add(type);
+    return true;
+  });
 }
 
 // ─── Gym CSV builder ──────────────────────────────────────────────────────────
@@ -1019,7 +1026,7 @@ async function generateOneWeek({
   gymId,
   weightLookup,
 }) {
-  const testFlags = getOneRmTestFlags(phase, week, sessionsPerWeek);
+  const testFlags = getOneRmTestFlags(phase, week, sessionOrder);
 
   for (let sessionIndex = 0; sessionIndex < sessionsPerWeek; sessionIndex++) {
     const sessionType = sessionOrder[sessionIndex];

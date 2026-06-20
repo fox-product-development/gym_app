@@ -1,6 +1,7 @@
 // backend/scripts/reset-testuser.js
-// Wipes all training data for testuser (user_id = 3) and resets their profile
-// to a clean state as if they just registered.
+// Wipes training/programme data for testuser (user_id = 3) and resets their
+// phase position to the start of the cycle. Does NOT touch gyms, equipment,
+// or exercises — those are assumed already set up and are left intact.
 //
 // Usage (from backend/ directory):
 //   node scripts/reset-testuser.js
@@ -16,9 +17,8 @@ async function run() {
   try {
     await client.query("BEGIN");
 
-    console.log("Resetting testuser (id=3)...\n");
+    console.log("Resetting testuser (id=3) training data...\n");
 
-    // Delete in dependency order
     const tables = [
       {
         label: "logged_sets",
@@ -30,7 +30,6 @@ async function run() {
       },
       { label: "sessions", sql: `DELETE FROM sessions WHERE user_id = $1` },
       { label: "programmes", sql: `DELETE FROM programmes WHERE user_id = $1` },
-      { label: "cycles", sql: `DELETE FROM cycles WHERE user_id = $1` },
       {
         label: "one_rep_max_history",
         sql: `DELETE FROM one_rep_max_history WHERE user_id = $1`,
@@ -39,20 +38,6 @@ async function run() {
         label: "weekly_feedback",
         sql: `DELETE FROM weekly_feedback WHERE user_id = $1`,
       },
-      {
-        label: "body_composition",
-        sql: `DELETE FROM body_composition WHERE user_id = $1`,
-      },
-      { label: "diet_logs", sql: `DELETE FROM diet_logs WHERE user_id = $1` },
-      { label: "mood_logs", sql: `DELETE FROM mood_logs WHERE user_id = $1` },
-      {
-        label: "cardio_logs",
-        sql: `DELETE FROM cardio_logs WHERE user_id = $1`,
-      },
-      { label: "exercises", sql: `DELETE FROM exercises WHERE user_id = $1` },
-      { label: "plates", sql: `DELETE FROM plates WHERE user_id = $1` },
-      { label: "equipment", sql: `DELETE FROM equipment WHERE user_id = $1` },
-      { label: "gyms", sql: `DELETE FROM gyms WHERE user_id = $1` },
     ];
 
     for (const t of tables) {
@@ -60,31 +45,21 @@ async function run() {
       console.log(`  ✓ ${t.label}: ${result.rowCount} rows deleted`);
     }
 
-    // Reset user profile to clean state
+    // Reset phase position to the start of the cycle. Only touches columns
+    // that exist on the current users table.
     await client.query(
       `UPDATE users
-       SET goal_size = NULL,
-           goal_strength = NULL,
-           goal_definition = NULL,
-           goal_fitness = NULL,
-           training_level = NULL,
-           weekly_sessions = NULL,
-           weight_exercises_per_session = 6,
-           conditioning_exercises_per_session = 3,
-           goal_description = NULL,
-           agent_tone = 'neutral',
-           current_phase = 'anatomical_adaptation',
-           current_block = 1,
+       SET current_phase = 'anatomical_adaptation',
+           cycle_position = 0,
            phase_week = 1,
-           phase_start_date = CURRENT_DATE,
-           in_rest_week = FALSE
+           phase_start_date = CURRENT_DATE
        WHERE id = $1`,
       [USER_ID],
     );
-    console.log("\n  ✓ User profile reset to defaults");
+    console.log("\n  ✓ User phase position reset to cycle start");
 
     await client.query("COMMIT");
-    console.log("\n✅ Testuser reset complete. Ready for fresh onboarding.");
+    console.log("\n✅ Testuser training data reset complete.");
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Reset failed, rolled back:", err.message);
