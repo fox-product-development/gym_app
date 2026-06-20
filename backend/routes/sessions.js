@@ -31,6 +31,7 @@ const {
   getSessionConfig,
   getMixedWeekConfig,
 } = require("../phaseConfig");
+const { validateAndCorrectWeights } = require("./ai");
 
 const router = express.Router();
 
@@ -475,16 +476,32 @@ async function recalculateFromOneRmTest(client, session, userId) {
       continue;
     }
 
+    // Build raw weights first, then validate the whole batch against
+    // equipment increments/max weights in one pass — same rule every other
+    // weight calculation in the app follows (see ai.js's
+    // enrichExercisesForSession), so a recalculated weight never suggests
+    // a dumbbell/plate combination that doesn't physically exist.
+    const toUpdate = [];
     for (const ex of exercisesResult.rows) {
       const oneRm = freshOneRmByExercise[ex.exercise_name.toLowerCase()];
       if (!oneRm) continue; // exercise wasn't part of this 1RM test
 
-      const newWeight = oneRm * sessionConfig.percentage;
+      toUpdate.push({
+        id: ex.id,
+        exercise: ex.exercise_name,
+        weight: oneRm * sessionConfig.percentage,
+      });
+    }
 
-      await client.query(
-        `UPDATE planned_exercises SET target_weight = $1 WHERE id = $2`,
-        [Math.round(newWeight * 10) / 10, ex.id],
-      );
+    if (toUpdate.length > 0) {
+      await validateAndCorrectWeights(toUpdate, session.gym_id, userId);
+
+      for (const ex of toUpdate) {
+        await client.query(
+          `UPDATE planned_exercises SET target_weight = $1 WHERE id = $2`,
+          [ex.weight, ex.id],
+        );
+      }
     }
   }
 

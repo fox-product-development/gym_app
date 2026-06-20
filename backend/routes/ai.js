@@ -1721,3 +1721,4 @@ Favour controlled, lower-risk hamstring exercises. Bompa's tables consistently l
 You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.`;
 
 module.exports = router;
+module.exports.validateAndCorrectWeights = validateAndCorrectWeights;
