@@ -102,14 +102,6 @@ export async function getProfile() {
 
 export async function updateProfile(data: {
   agent_tone?: string;
-  goal_size?: number;
-  goal_strength?: number;
-  goal_definition?: number;
-  goal_fitness?: number;
-  training_level?: string;
-  weekly_sessions?: number;
-  goal_description?: string;
-  weight_exercises_per_session?: number;
   conditioning_exercises_per_session?: number;
 }) {
   return request("/user/profile", "PATCH", data);
@@ -127,8 +119,7 @@ export async function getSession(id: number) {
 
 export async function createSession(data: {
   programme_id?: number;
-  session_type: "compound" | "isolation" | "extra";
-  occurrence: number;
+  session_type: string;
   week_number: number;
   gym_id?: number;
   exercises: {
@@ -170,10 +161,6 @@ export async function reopenSession(id: number) {
   return request(`/sessions/${id}/reopen`, "PATCH");
 }
 
-export async function replanSessions() {
-  return request("/sessions/replan", "POST", {});
-}
-
 // ─── Body composition ─────────────────────────────────────────────────────────
 
 export async function logBodyComp(data: {
@@ -211,8 +198,8 @@ export async function getOneRepMaxHistory(exercise: string) {
 
 // ─── AI ───────────────────────────────────────────────────────────────────────
 
-export async function generateBlock() {
-  return request("/ai/generate-block", "POST", {});
+export async function generatePhase() {
+  return request("/ai/generate-phase", "POST", {});
 }
 
 export async function generateGymSession(session_id: number, gym_id: number) {
@@ -221,7 +208,7 @@ export async function generateGymSession(session_id: number, gym_id: number) {
 
 export async function generateExtraSession(
   gym_id: number,
-  session_type: "compound" | "isolation",
+  session_type?: string,
 ) {
   return request("/ai/extra-session", "POST", { gym_id, session_type });
 }
@@ -259,27 +246,6 @@ export async function generateWeeklyReport() {
     reportDate = lastSunday.toISOString().split("T")[0];
   }
   return request("/report/generate", "POST", { week_start_date: reportDate });
-}
-
-// ─── Cycles ───────────────────────────────────────────────────────────────────
-
-export async function getCycles() {
-  return request("/cycles");
-}
-
-export async function saveCycle(data: {
-  phases: { phase: string }[];
-  duration_weeks: number;
-}) {
-  return request("/cycles", "POST", data);
-}
-
-export async function deleteCycle() {
-  return request("/cycles", "DELETE");
-}
-
-export async function proposeCycle() {
-  return request("/ai/propose-cycle", "POST", {});
 }
 
 // ─── Diet ─────────────────────────────────────────────────────────────────────

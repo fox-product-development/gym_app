@@ -46,10 +46,9 @@ interface PlannedExercise {
 
 interface Session {
   id: number;
-  session_type: "compound" | "isolation" | "extra";
-  occurrence: number;
+  session_type: string;
   week_number: number;
-  gym: string;
+  gym_name: string;
   status: "planned" | "in_progress" | "complete";
   notes: string | null;
   planned_exercises: PlannedExercise[] | null;
@@ -57,7 +56,6 @@ interface Session {
 
 interface UserProfile {
   current_phase: string;
-  current_block: number;
   phase_week: number;
 }
 
@@ -77,6 +75,40 @@ interface CardioEntry {
   avg_pace_seconds: number | null;
   notes: string | null;
   logged_at: string;
+}
+
+// ─── Session type display labels ──────────────────────────────────────────────
+
+const SESSION_TYPE_LABELS: Record<string, string> = {
+  full_body: "Full Body",
+  upper: "Upper",
+  lower: "Lower",
+  mixed_mxs: "Mixed - Strength",
+  mixed_h_24: "Mixed - Hypertrophy",
+  mixed_h_6: "Mixed - Hypertrophy",
+  extra: "Extra Session",
+};
+
+function getSessionTypeLabel(sessionType: string): string {
+  return SESSION_TYPE_LABELS[sessionType] || sessionType;
+}
+
+// ─── Extra session type options, by phase ─────────────────────────────────────
+// Only the session types that exist in each phase's template are offered.
+// Mixed phase has two H-track variants (mixed_h_24, mixed_h_6) that share
+// the same exercises — only mixed_h_24 is offered, since an extra session
+// would follow the day-6 session, and the 4-day week makes this an edge case.
+
+const EXTRA_SESSION_OPTIONS: Record<string, string[]> = {
+  anatomical_adaptation: ["full_body"],
+  hypertrophy: ["upper", "lower"],
+  mixed: ["mixed_mxs", "mixed_h_24"],
+  maximum_strength: ["full_body"],
+  muscle_definition: ["full_body"],
+};
+
+function getExtraSessionOptions(phase: string): string[] {
+  return EXTRA_SESSION_OPTIONS[phase] || ["full_body"];
 }
 
 // ─── Reusable primitives ─────────────────────────────────────────────────────
@@ -239,9 +271,7 @@ function StartSessionModal({
                   marginBottom: 20,
                 }}
               >
-                {session.session_type === "compound"
-                  ? `Compound · Session ${session.occurrence}`
-                  : "Isolation"}
+                {getSessionTypeLabel(session.session_type)}
               </Text>
 
               {defaultGym && (
@@ -468,12 +498,7 @@ function ReopenSessionModal({
 
   if (!session) return null;
 
-  const sessionLabel =
-    session.session_type === "compound"
-      ? `Compound · Session ${session.occurrence}`
-      : session.session_type === "isolation"
-        ? "Isolation"
-        : "Extra Session";
+  const sessionLabel = getSessionTypeLabel(session.session_type);
 
   return (
     <Modal
@@ -598,23 +623,31 @@ function ExtraSessionModal({
   onClose,
   onGenerated,
   gyms,
+  currentPhase,
 }: {
   visible: boolean;
   onClose: () => void;
   onGenerated: (sessionId: number) => void;
   gyms: Gym[];
+  currentPhase: string;
 }) {
-  const [step, setStep] = useState<ExtraModalStep>("session_type");
-  const [selectedSessionType, setSelectedSessionType] = useState<
-    "compound" | "isolation" | null
-  >(null);
+  const sessionTypeOptions = getExtraSessionOptions(currentPhase);
+  const skipTypeStep = sessionTypeOptions.length <= 1;
+
+  const [step, setStep] = useState<ExtraModalStep>(
+    skipTypeStep ? "gym" : "session_type",
+  );
+  const [selectedSessionType, setSelectedSessionType] = useState<string | null>(
+    skipTypeStep ? sessionTypeOptions[0] : null,
+  );
   const [selectedGym, setSelectedGym] = useState<Gym | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   function handleOpen() {
-    setStep("session_type");
-    setSelectedSessionType(null);
+    const skip = sessionTypeOptions.length <= 1;
+    setStep(skip ? "gym" : "session_type");
+    setSelectedSessionType(skip ? sessionTypeOptions[0] : null);
     setSelectedGym(gyms.find((g) => g.is_default) || gyms[0] || null);
     setError("");
   }
@@ -636,23 +669,6 @@ function ExtraSessionModal({
       setLoading(false);
     }
   }
-
-  const SESSION_TYPES: {
-    type: "compound" | "isolation";
-    label: string;
-    description: string;
-  }[] = [
-    {
-      type: "compound",
-      label: "Compound",
-      description: "Back, chest, legs, shoulders — big muscle groups",
-    },
-    {
-      type: "isolation",
-      label: "Isolation",
-      description: "Arms, core, shoulders — smaller targeted muscles",
-    },
-  ];
 
   return (
     <Modal
@@ -708,7 +724,7 @@ function ExtraSessionModal({
                 What type of session?
               </Text>
 
-              {SESSION_TYPES.map(({ type, label, description }) => (
+              {sessionTypeOptions.map((type) => (
                 <Pressable
                   key={type}
                   onPress={() => {
@@ -732,12 +748,7 @@ function ExtraSessionModal({
                       color: Colors.text,
                     }}
                   >
-                    {label}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 12, color: Colors.ter, marginTop: 2 }}
-                  >
-                    {description}
+                    {getSessionTypeLabel(type)}
                   </Text>
                 </Pressable>
               ))}
@@ -763,8 +774,10 @@ function ExtraSessionModal({
                   marginBottom: 6,
                 }}
               >
-                Extra Session ·{" "}
-                {selectedSessionType === "compound" ? "Compound" : "Isolation"}
+                Extra Session
+                {selectedSessionType
+                  ? ` · ${getSessionTypeLabel(selectedSessionType)}`
+                  : ""}
               </Text>
               <Text
                 style={{
@@ -821,15 +834,19 @@ function ExtraSessionModal({
                 );
               })}
 
-              <Pressable
-                onPress={() => {
-                  setStep("session_type");
-                  setError("");
-                }}
-                style={{ marginTop: 8, alignItems: "center" }}
-              >
-                <Text style={{ fontSize: 14, color: Colors.ter }}>← Back</Text>
-              </Pressable>
+              {!skipTypeStep && (
+                <Pressable
+                  onPress={() => {
+                    setStep("session_type");
+                    setError("");
+                  }}
+                  style={{ marginTop: 8, alignItems: "center" }}
+                >
+                  <Text style={{ fontSize: 14, color: Colors.ter }}>
+                    ← Back
+                  </Text>
+                </Pressable>
+              )}
             </>
           )}
 
@@ -866,7 +883,9 @@ function ExtraSessionModal({
                   marginBottom: 24,
                 }}
               >
-                {selectedSessionType === "compound" ? "Compound" : "Isolation"}{" "}
+                {selectedSessionType
+                  ? getSessionTypeLabel(selectedSessionType)
+                  : ""}{" "}
                 · {selectedGym?.gym_name} · AI will select the best exercises
                 based on your training history.
               </Text>
@@ -979,19 +998,8 @@ function SessionCard({
   const isDone = session.status === "complete";
   const exercises = session.planned_exercises || [];
 
-  const sessionLabel =
-    session.session_type === "compound"
-      ? `Compound · Session ${session.occurrence}`
-      : session.session_type === "isolation"
-        ? "Isolation"
-        : "Extra Session";
-
-  const badgeLabel =
-    session.session_type === "compound"
-      ? "CPD"
-      : session.session_type === "isolation"
-        ? "ISO"
-        : "XTR";
+  const sessionLabel = getSessionTypeLabel(session.session_type);
+  const badgeLabel = session.session_type.slice(0, 3).toUpperCase();
 
   const statusColor = isDone
     ? Colors.ter
@@ -1084,11 +1092,6 @@ function SessionCard({
             }}
           >
             <Tag color={statusColor}>{statusLabel}</Tag>
-            {session.gym === "home" && isActive && (
-              <Tag color={Colors.warn} bg="rgba(242,181,100,0.12)">
-                🏠 Home
-              </Tag>
-            )}
             <Text
               style={{ fontFamily: "Courier", fontSize: 11, color: Colors.ter }}
             >
@@ -1713,9 +1716,9 @@ function CardioModal({
 const PHASE_LABELS: Record<string, string> = {
   anatomical_adaptation: "Anatomical Adaptation",
   hypertrophy: "Hypertrophy",
+  mixed: "Mixed",
   maximum_strength: "Maximum Strength",
   muscle_definition: "Muscle Definition",
-  rest: "Rest Week",
 };
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
@@ -1804,12 +1807,7 @@ export default function WeekScreen() {
 
   const completedCount = sessions.filter((s) => s.status === "complete").length;
 
-  const plannedSessions = [
-    sessions.find((s) => s.session_type === "compound" && s.occurrence === 1),
-    sessions.find((s) => s.session_type === "isolation"),
-    sessions.find((s) => s.session_type === "compound" && s.occurrence === 2),
-  ].filter(Boolean) as Session[];
-
+  const plannedSessions = sessions.filter((s) => s.session_type !== "extra");
   const extraSessions = sessions.filter((s) => s.session_type === "extra");
   const orderedSessions = [...plannedSessions, ...extraSessions];
   const phaseLabel = profile
@@ -1832,7 +1830,7 @@ export default function WeekScreen() {
             }}
           >
             {profile
-              ? `${phaseLabel} · Block ${profile.current_block} · Week ${profile.phase_week}`
+              ? `${phaseLabel} · Week ${profile.phase_week}`
               : "Loading..."}
           </Text>
           <View
@@ -2166,20 +2164,6 @@ export default function WeekScreen() {
             </Pressable>
           </View>
         )}
-
-        <View style={{ paddingBottom: 24, alignItems: "center" }}>
-          <Text
-            style={{
-              fontFamily: "Courier",
-              fontSize: 10,
-              color: Colors.ter,
-              letterSpacing: 0.6,
-              textTransform: "uppercase",
-            }}
-          >
-            Next block generates Sun · 8 PM
-          </Text>
-        </View>
       </ScrollView>
 
       <StartSessionModal
@@ -2205,6 +2189,7 @@ export default function WeekScreen() {
         onClose={() => setExtraModalVisible(false)}
         onGenerated={handleExtraGenerated}
         gyms={gyms}
+        currentPhase={profile?.current_phase || ""}
       />
 
       <CardioModal

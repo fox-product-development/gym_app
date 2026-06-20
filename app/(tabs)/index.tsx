@@ -4,9 +4,13 @@
 // 1. No default gym → gym settings
 // 2. No equipment → gym settings
 // 3. No exercises → gym settings
-// 4. No 1RM data → calibration
-// 5. No sessions → trigger block generation
-// 6. All good → normal dashboard
+// 4. No sessions → trigger phase generation
+// 5. All good → normal dashboard
+//
+// 1RM data is no longer checked here. The first phase generates with
+// target_weight = 0 for any exercise with no history. The in-phase 1RM
+// test sessions (week 1, sessions 1-2 of every phase) populate real
+// weights once completed — see recalculateFromOneRmTest in sessions.js.
 
 import { useState, useCallback } from "react";
 import {
@@ -29,16 +33,13 @@ import {
   getGyms,
   getEquipment,
   getExercises,
-  getCycles,
-  generateBlock,
-  getAllOneRepMax,
+  generatePhase,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Profile {
   current_phase: string;
-  current_block: number;
   phase_week: number;
   phase_start_date: string;
 }
@@ -53,9 +54,8 @@ interface BodyCompEntry {
 interface Session {
   id: number;
   session_type: string;
-  occurrence: number;
   status: string;
-  gym: string;
+  gym_name: string;
   planned_exercises: any[];
 }
 
@@ -69,45 +69,20 @@ type SetupState =
   | "needs_gym"
   | "needs_equipment"
   | "needs_exercises"
-  | "needs_calibration"
   | "generating";
 
-// ─── Reusable primitives ─────────────────────────────────────────────────────
+const SESSION_TYPE_LABELS: Record<string, string> = {
+  full_body: "Full Body",
+  upper: "Upper",
+  lower: "Lower",
+  mixed_mxs: "Mixed - Strength",
+  mixed_h_24: "Mixed - Hypertrophy",
+  mixed_h_6: "Mixed - Hypertrophy",
+  extra: "Extra Session",
+};
 
-function Tag({
-  children,
-  color = Colors.sec,
-  bg,
-}: {
-  children: React.ReactNode;
-  color?: string;
-  bg?: string;
-}) {
-  return (
-    <View
-      style={{
-        alignSelf: "flex-start",
-        borderRadius: 4,
-        paddingHorizontal: 7,
-        paddingVertical: 3,
-        backgroundColor: bg || "transparent",
-        borderWidth: bg ? 0 : 0.5,
-        borderColor: Colors.line2,
-      }}
-    >
-      <Text
-        style={{
-          fontFamily: "Courier",
-          fontSize: 10,
-          letterSpacing: 0.6,
-          textTransform: "uppercase",
-          color,
-        }}
-      >
-        {children}
-      </Text>
-    </View>
-  );
+function getSessionTypeLabel(sessionType: string): string {
+  return SESSION_TYPE_LABELS[sessionType] || sessionType;
 }
 
 function Card({
@@ -143,8 +118,6 @@ function Divider({ inset = 0 }: { inset?: number }) {
   );
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function formatAxisDate(dateStr: string): string {
   const d = new Date(dateStr);
   const day = d.getDate().toString().padStart(2, "0");
@@ -169,8 +142,6 @@ function computeYAxis(points: number[]): {
   const yMid = (yMin + yMax) / 2;
   return { yMin, yMax, yMid };
 }
-
-// ─── Line chart ───────────────────────────────────────────────────────────────
 
 function LineChart({
   points,
@@ -341,18 +312,15 @@ function LineChart({
   );
 }
 
-// ─── Phase badge ──────────────────────────────────────────────────────────────
-
 const PHASE_LABELS: Record<string, string> = {
   anatomical_adaptation: "Anatomical Adaptation",
   hypertrophy: "Hypertrophy",
+  mixed: "Mixed",
   maximum_strength: "Maximum Strength",
   muscle_definition: "Muscle Definition",
-  rest: "Rest Week",
 };
 
 function PhaseBadge({ profile }: { profile: Profile }) {
-  const pct = Math.round((profile.phase_week / 6) * 100);
   const label = PHASE_LABELS[profile.current_phase] || profile.current_phase;
 
   return (
@@ -404,26 +372,13 @@ function PhaseBadge({ profile }: { profile: Profile }) {
         >
           {label}{" "}
           <Text style={{ color: Colors.ter, fontWeight: "400", fontSize: 14 }}>
-            · Week {profile.phase_week} of 6
+            · Week {profile.phase_week}
           </Text>
         </Text>
       </View>
-      <Text
-        style={{
-          fontFamily: "Courier",
-          fontSize: 24,
-          fontWeight: "600",
-          color: Colors.text,
-        }}
-      >
-        {pct}
-        <Text style={{ color: Colors.ter, fontSize: 14 }}>%</Text>
-      </Text>
     </View>
   );
 }
-
-// ─── Start session button ─────────────────────────────────────────────────────
 
 function StartSessionButton({ sessions }: { sessions: Session[] }) {
   const nextSession =
@@ -450,10 +405,7 @@ function StartSessionButton({ sessions }: { sessions: Session[] }) {
     );
   }
 
-  const label =
-    nextSession.session_type === "compound"
-      ? `Compound · Session ${nextSession.occurrence}`
-      : "Isolation Session";
+  const label = getSessionTypeLabel(nextSession.session_type);
   const isInProgress = nextSession.status === "in_progress";
 
   return (
@@ -511,8 +463,6 @@ function StartSessionButton({ sessions }: { sessions: Session[] }) {
     </Pressable>
   );
 }
-
-// ─── Body comp cards ──────────────────────────────────────────────────────────
 
 function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
   const weightEntries = entries.filter((e) => e.weight_kg !== null);
@@ -780,8 +730,6 @@ function BodyCompCards({ entries }: { entries: BodyCompEntry[] }) {
   );
 }
 
-// ─── Markdown styles ──────────────────────────────────────────────────────────
-
 const markdownStyles = {
   body: { color: Colors.sec, fontSize: 13, lineHeight: 20 },
   heading1: {
@@ -815,8 +763,6 @@ const markdownStyles = {
   list_item: { color: Colors.sec, fontSize: 13, lineHeight: 20 },
   paragraph: { marginTop: 0, marginBottom: 8 },
 };
-
-// ─── AI report card ───────────────────────────────────────────────────────────
 
 function AIReportCard({
   feedback,
@@ -1035,8 +981,6 @@ function AIReportCard({
   );
 }
 
-// ─── Recent sessions ──────────────────────────────────────────────────────────
-
 function RecentSessions({ sessions }: { sessions: Session[] }) {
   const completed = sessions.filter((s) => s.status === "complete").slice(0, 3);
 
@@ -1075,11 +1019,7 @@ function RecentSessions({ sessions }: { sessions: Session[] }) {
         </Text>
       </View>
       {completed.map((s, i) => {
-        const label =
-          s.session_type === "compound"
-            ? `Compound · Session ${s.occurrence}`
-            : "Isolation";
-        const gymLabel = s.gym === "home" ? "Home Gym" : "Work Gym";
+        const label = getSessionTypeLabel(s.session_type);
         const exCount = s.planned_exercises?.length || 0;
         return (
           <View
@@ -1114,7 +1054,7 @@ function RecentSessions({ sessions }: { sessions: Session[] }) {
                   textTransform: "uppercase",
                 }}
               >
-                {s.session_type === "isolation" ? "ISO" : "CPD"}
+                {label.slice(0, 3)}
               </Text>
             </View>
             <View style={{ flex: 1 }}>
@@ -1131,7 +1071,7 @@ function RecentSessions({ sessions }: { sessions: Session[] }) {
                   marginTop: 2,
                 }}
               >
-                {exCount} exercises · {gymLabel}
+                {exCount} exercises · {s.gym_name}
               </Text>
             </View>
             <Text style={{ color: Colors.qua, fontSize: 14 }}>›</Text>
@@ -1141,8 +1081,6 @@ function RecentSessions({ sessions }: { sessions: Session[] }) {
     </View>
   );
 }
-
-// ─── Setup prompt ─────────────────────────────────────────────────────────────
 
 function SetupPrompt({
   icon,
@@ -1220,8 +1158,6 @@ function SetupPrompt({
   );
 }
 
-// ─── Greeting helpers ─────────────────────────────────────────────────────────
-
 function getGreeting(): string {
   const hour = new Date().getHours();
   if (hour < 12) return "Good morning";
@@ -1236,8 +1172,6 @@ function getDateLabel(): string {
     month: "long",
   });
 }
-
-// ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function DashboardScreen() {
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -1300,36 +1234,18 @@ export default function DashboardScreen() {
         return;
       }
 
-      // ── Step 4: Check for 1RM data ────────────────────────────────────────
-      let has1RM = false;
-      try {
-        const orm = await getAllOneRepMax();
-        has1RM = Array.isArray(orm) && orm.length > 0;
-      } catch {
-        has1RM = false;
-      }
-
-      if (!has1RM) {
-        setSetupState("needs_calibration");
-        return;
-      }
-
-      // ── Step 5: Trigger block generation ──────────────────────────────────
-      const cyclesData = await getCycles();
-      const hasActiveCycle =
-        Array.isArray(cyclesData) &&
-        cyclesData.some((c: any) => c.status === "in_progress");
-
-      if (hasActiveCycle) {
-        setSetupState("generating");
-        await generateBlock();
-        const [newSessions, newFeedback] = await Promise.all([
-          getWeekSessions(),
-          getWeeklyFeedback(),
-        ]);
-        setSessions(newSessions);
-        setFeedback(newFeedback);
-      }
+      // ── Step 4: Trigger phase generation ──────────────────────────────────
+      // No 1RM check — the first phase generates with target_weight = 0 for
+      // any exercise with no history. The 1RM test sessions in week 1
+      // (sessions 1-2 of every phase) populate real weights once completed.
+      setSetupState("generating");
+      await generatePhase();
+      const [newSessions, newFeedback] = await Promise.all([
+        getWeekSessions(),
+        getWeeklyFeedback(),
+      ]);
+      setSessions(newSessions);
+      setFeedback(newFeedback);
 
       setSetupState("ready");
     } catch (err) {
@@ -1391,7 +1307,7 @@ export default function DashboardScreen() {
           <SetupPrompt
             icon="🏋️"
             title="Set up your gym to get started"
-            message="Add your gym, equipment, and exercises so we can build your first training block."
+            message="Add your gym, equipment, and exercises so we can build your first training phase."
             buttonLabel="Go to Gym Settings"
             onPress={() => router.push("/gym-settings")}
           />
@@ -1411,19 +1327,9 @@ export default function DashboardScreen() {
           <SetupPrompt
             icon="📋"
             title="Add your exercises"
-            message="Your gym and equipment are set up — now add the exercises you'll be training so we can build your first block."
+            message="Your gym and equipment are set up — now add the exercises you'll be training so we can build your first phase."
             buttonLabel="Go to Gym Settings"
             onPress={() => router.push("/gym-settings")}
-          />
-        )}
-
-        {setupState === "needs_calibration" && (
-          <SetupPrompt
-            icon="⚡"
-            title="Let's establish your baseline"
-            message="Before we build your first training block, we need to gauge your current strength across the major muscle groups. This takes around 20–30 minutes."
-            buttonLabel="Start Calibration →"
-            onPress={() => router.push("/calibration")}
           />
         )}
 
@@ -1445,7 +1351,7 @@ export default function DashboardScreen() {
                 letterSpacing: 0.4,
               }}
             >
-              Building your first training block...
+              Building your first training phase...
             </Text>
           </View>
         )}

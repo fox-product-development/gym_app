@@ -20,7 +20,6 @@ import {
   getApprovedEmails,
   addApprovedEmail,
   deleteApprovedEmail,
-  replanSessions,
 } from "../../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -31,17 +30,9 @@ interface UserProfile {
   email: string;
   is_admin: boolean;
   current_phase: string;
-  current_block: number;
   phase_week: number;
   phase_start_date: string;
   agent_tone: string;
-  goal_size: number;
-  goal_strength: number;
-  goal_definition: number;
-  goal_fitness: number;
-  training_level: string;
-  weekly_sessions: number;
-  weight_exercises_per_session: number;
   conditioning_exercises_per_session: number;
 }
 
@@ -171,33 +162,20 @@ function SettingRow({
 const PHASE_LABELS: Record<string, string> = {
   anatomical_adaptation: "Anatomical Adaptation",
   hypertrophy: "Hypertrophy",
+  mixed: "Mixed",
   maximum_strength: "Maximum Strength",
   muscle_definition: "Muscle Definition",
-  rest: "Rest Week",
 };
 
 const PHASE_DESCRIPTIONS: Record<string, string> = {
-  anatomical_adaptation: "Joint & tendon conditioning — 20 reps, 3 sets",
-  hypertrophy: "Muscle growth — 12 reps, 4 sets, 70–80% 1RM",
-  maximum_strength: "Neural strength — 6 reps, 4 sets, 85–95% 1RM",
-  muscle_definition: "Metabolic endurance — 40 reps, 1 set",
-  rest: "Active recovery — light compound work only",
+  anatomical_adaptation: "Joint & tendon conditioning",
+  hypertrophy: "Muscle growth",
+  mixed: "Strength and hypertrophy combined",
+  maximum_strength: "Neural strength",
+  muscle_definition: "Metabolic endurance",
 };
 
-const PHASE_ORDER = [
-  "anatomical_adaptation",
-  "hypertrophy",
-  "maximum_strength",
-  "muscle_definition",
-];
-
 function PhaseDisplay({ profile }: { profile: UserProfile }) {
-  const currentIndex = PHASE_ORDER.indexOf(profile.current_phase);
-  const nextPhase =
-    profile.current_phase === "rest"
-      ? null
-      : PHASE_ORDER[(currentIndex + 1) % PHASE_ORDER.length];
-
   return (
     <View style={{ marginHorizontal: 20, marginTop: 20 }}>
       <SectionLabel>Current Phase</SectionLabel>
@@ -241,67 +219,7 @@ function PhaseDisplay({ profile }: { profile: UserProfile }) {
               {PHASE_DESCRIPTIONS[profile.current_phase]}
             </Text>
           </View>
-          <View style={{ alignItems: "flex-end", gap: 4 }}>
-            <Tag color={Colors.accent}>Week {profile.phase_week}</Tag>
-            <Tag color={Colors.ter}>Block {profile.current_block}</Tag>
-          </View>
-        </View>
-
-        <Divider />
-
-        <View style={{ padding: 14 }}>
-          <View
-            style={{
-              flexDirection: "row",
-              justifyContent: "space-between",
-              marginBottom: 8,
-            }}
-          >
-            <Text
-              style={{
-                fontFamily: "Courier",
-                fontSize: 10,
-                color: Colors.ter,
-                letterSpacing: 0.4,
-              }}
-            >
-              PHASE PROGRESS
-            </Text>
-            <Text
-              style={{ fontFamily: "Courier", fontSize: 10, color: Colors.ter }}
-            >
-              {profile.phase_week} / 6
-            </Text>
-          </View>
-          <View
-            style={{
-              height: 4,
-              borderRadius: 2,
-              backgroundColor: Colors.line2,
-              overflow: "hidden",
-            }}
-          >
-            <View
-              style={{
-                width: `${(profile.phase_week / 6) * 100}%`,
-                height: "100%",
-                backgroundColor: Colors.accent,
-                borderRadius: 2,
-              }}
-            />
-          </View>
-          {nextPhase && (
-            <Text
-              style={{
-                fontFamily: "Courier",
-                fontSize: 10,
-                color: Colors.ter,
-                marginTop: 8,
-              }}
-            >
-              NEXT → {PHASE_LABELS[nextPhase]}
-            </Text>
-          )}
+          <Tag color={Colors.accent}>Week {profile.phase_week}</Tag>
         </View>
       </Card>
     </View>
@@ -619,11 +537,6 @@ export default function SettingsScreen() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [redefineWarningVisible, setRedefineWarningVisible] = useState(false);
-  const [replanModalStep, setReplanModalStep] = useState<0 | 1 | 2>(0); // 0=closed, 1=warning, 2=confirm
-  const [replanning, setReplanning] = useState(false);
-  const [replanError, setReplanError] = useState("");
-  const [replanSuccess, setReplanSuccess] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -650,21 +563,6 @@ export default function SettingsScreen() {
       await updateAgentTone(tone);
     } catch (err) {
       console.error("Failed to update tone:", err);
-    }
-  }
-
-  async function handleReplan() {
-    setReplanning(true);
-    setReplanError("");
-    setReplanSuccess(false);
-    try {
-      await replanSessions();
-      setReplanModalStep(0);
-      setReplanSuccess(true);
-    } catch (err: any) {
-      setReplanError(err.message || "Something went wrong");
-    } finally {
-      setReplanning(false);
     }
   }
 
@@ -714,39 +612,11 @@ export default function SettingsScreen() {
               <SectionLabel>Training</SectionLabel>
               <Card pad={0}>
                 <SettingRow
-                  label="Goals"
-                  value={`Size ${profile.goal_size}★ · Def ${profile.goal_definition}★`}
-                  onPress={() => setRedefineWarningVisible(true)}
-                />
-                <Divider />
-                <SettingRow
                   label="Gym settings"
                   value="Equipment · Exercises"
                   onPress={() => router.push("/gym-settings")}
                 />
-                <Divider />
-                <SettingRow
-                  label="Replan sessions"
-                  value="Regenerate upcoming"
-                  onPress={() => {
-                    setReplanError("");
-                    setReplanSuccess(false);
-                    setReplanModalStep(1);
-                  }}
-                />
               </Card>
-              {replanSuccess && (
-                <Text
-                  style={{
-                    fontSize: 12,
-                    color: "#4CAF82",
-                    marginTop: 8,
-                    paddingLeft: 4,
-                  }}
-                >
-                  Sessions replanned successfully.
-                </Text>
-              )}
             </View>
 
             <AgentToneSelector
@@ -794,296 +664,6 @@ export default function SettingsScreen() {
           </Text>
         </View>
       </ScrollView>
-
-      {/* Redefine goals warning modal */}
-      <Modal visible={redefineWarningVisible} transparent animationType="fade">
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.7)",
-            justifyContent: "flex-end",
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: Colors.card,
-              borderTopLeftRadius: 24,
-              borderTopRightRadius: 24,
-              padding: 24,
-              paddingBottom: 40,
-            }}
-          >
-            <View
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 12,
-                backgroundColor: "rgba(242,181,100,0.15)",
-                alignItems: "center",
-                justifyContent: "center",
-                alignSelf: "center",
-                marginBottom: 14,
-              }}
-            >
-              <Text style={{ fontSize: 22 }}>⚠️</Text>
-            </View>
-            <Text
-              style={{
-                fontSize: 17,
-                fontWeight: "700",
-                color: Colors.text,
-                textAlign: "center",
-                marginBottom: 8,
-              }}
-            >
-              Redefine goals?
-            </Text>
-            <Text
-              style={{
-                fontSize: 14,
-                color: Colors.sec,
-                textAlign: "center",
-                lineHeight: 20,
-                marginBottom: 24,
-              }}
-            >
-              Changing your goals will recalculate your training cycle. Your
-              current block will complete as planned before any changes take
-              effect.
-            </Text>
-            <View style={{ gap: 10 }}>
-              <Pressable
-                onPress={() => {
-                  setRedefineWarningVisible(false);
-                  router.push("/onboarding?mode=redefine");
-                }}
-                style={{
-                  backgroundColor: Colors.accent,
-                  borderRadius: 12,
-                  padding: 14,
-                  alignItems: "center",
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 15,
-                    fontWeight: "700",
-                    color: Colors.accentInk,
-                  }}
-                >
-                  Continue
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setRedefineWarningVisible(false)}
-                style={{
-                  backgroundColor: "transparent",
-                  borderRadius: 12,
-                  padding: 12,
-                  alignItems: "center",
-                  borderWidth: 0.5,
-                  borderColor: Colors.line,
-                }}
-              >
-                <Text style={{ fontSize: 14, color: Colors.sec }}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Replan sessions modal — step 1: warning */}
-      <Modal visible={replanModalStep === 1} transparent animationType="fade">
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.7)",
-            justifyContent: "flex-end",
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: Colors.card,
-              borderTopLeftRadius: 24,
-              borderTopRightRadius: 24,
-              padding: 24,
-              paddingBottom: 40,
-            }}
-          >
-            <View
-              style={{
-                width: 44,
-                height: 44,
-                borderRadius: 12,
-                backgroundColor: "rgba(242,181,100,0.15)",
-                alignItems: "center",
-                justifyContent: "center",
-                alignSelf: "center",
-                marginBottom: 14,
-              }}
-            >
-              <Text style={{ fontSize: 22 }}>🔄</Text>
-            </View>
-            <Text
-              style={{
-                fontSize: 17,
-                fontWeight: "700",
-                color: Colors.text,
-                textAlign: "center",
-                marginBottom: 8,
-              }}
-            >
-              Replan sessions?
-            </Text>
-            <Text
-              style={{
-                fontSize: 14,
-                color: Colors.sec,
-                textAlign: "center",
-                lineHeight: 20,
-                marginBottom: 24,
-              }}
-            >
-              This will regenerate all upcoming sessions in your current block
-              using your latest settings and goal notes. Completed and
-              in-progress sessions will not be affected.
-            </Text>
-            <View style={{ gap: 10 }}>
-              <Pressable
-                onPress={() => setReplanModalStep(2)}
-                style={{
-                  backgroundColor: Colors.accent,
-                  borderRadius: 12,
-                  padding: 14,
-                  alignItems: "center",
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 15,
-                    fontWeight: "700",
-                    color: Colors.accentInk,
-                  }}
-                >
-                  Continue
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setReplanModalStep(0)}
-                style={{
-                  backgroundColor: "transparent",
-                  borderRadius: 12,
-                  padding: 12,
-                  alignItems: "center",
-                  borderWidth: 0.5,
-                  borderColor: Colors.line,
-                }}
-              >
-                <Text style={{ fontSize: 14, color: Colors.sec }}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Replan sessions modal — step 2: confirm */}
-      <Modal visible={replanModalStep === 2} transparent animationType="fade">
-        <View
-          style={{
-            flex: 1,
-            backgroundColor: "rgba(0,0,0,0.7)",
-            justifyContent: "flex-end",
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: Colors.card,
-              borderTopLeftRadius: 24,
-              borderTopRightRadius: 24,
-              padding: 24,
-              paddingBottom: 40,
-            }}
-          >
-            <Text
-              style={{
-                fontSize: 17,
-                fontWeight: "700",
-                color: Colors.text,
-                textAlign: "center",
-                marginBottom: 8,
-              }}
-            >
-              Are you sure?
-            </Text>
-            <Text
-              style={{
-                fontSize: 14,
-                color: Colors.sec,
-                textAlign: "center",
-                lineHeight: 20,
-                marginBottom: 24,
-              }}
-            >
-              Your upcoming planned sessions will be deleted and regenerated.
-              This cannot be undone.
-            </Text>
-            {replanError ? (
-              <Text
-                style={{
-                  fontSize: 13,
-                  color: Colors.warn,
-                  textAlign: "center",
-                  marginBottom: 12,
-                }}
-              >
-                {replanError}
-              </Text>
-            ) : null}
-            <View style={{ gap: 10 }}>
-              <Pressable
-                onPress={handleReplan}
-                disabled={replanning}
-                style={{
-                  backgroundColor: Colors.accent,
-                  borderRadius: 12,
-                  padding: 14,
-                  alignItems: "center",
-                  opacity: replanning ? 0.7 : 1,
-                }}
-              >
-                {replanning ? (
-                  <ActivityIndicator color={Colors.accentInk} />
-                ) : (
-                  <Text
-                    style={{
-                      fontSize: 15,
-                      fontWeight: "700",
-                      color: Colors.accentInk,
-                    }}
-                  >
-                    Replan Now
-                  </Text>
-                )}
-              </Pressable>
-              <Pressable
-                onPress={() => setReplanModalStep(0)}
-                disabled={replanning}
-                style={{
-                  backgroundColor: "transparent",
-                  borderRadius: 12,
-                  padding: 12,
-                  alignItems: "center",
-                  borderWidth: 0.5,
-                  borderColor: Colors.line,
-                  opacity: replanning ? 0.5 : 1,
-                }}
-              >
-                <Text style={{ fontSize: 14, color: Colors.sec }}>Cancel</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
