@@ -849,7 +849,11 @@ No extra fields. No explanation. No markdown.`;
         totalWeeks: total_weeks,
         sessionsPerWeek: sessions_per_week,
         sessionOrder:
-          template.sessionOrder || template.sessions.map((s) => s.type),
+          template.sessionOrder ||
+          Array.from(
+            { length: sessions_per_week },
+            (_, i) => template.sessions[i % template.sessions.length].type,
+          ),
         phasePlan,
         enrichedConditioning,
         gymId,
