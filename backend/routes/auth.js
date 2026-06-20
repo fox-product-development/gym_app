@@ -65,7 +65,7 @@ router.post("/register", async (req, res) => {
     const result = await pool.query(
       `INSERT INTO users (username, email, password)
        VALUES ($1, $2, $3)
-       RETURNING id, username, email, is_admin, current_phase, current_block, phase_week, phase_start_date`,
+       RETURNING id, username, email, is_admin, current_phase, cycle_position, phase_week, phase_start_date`,
       [username, email.toLowerCase(), hashedPassword],
     );
 
@@ -138,7 +138,7 @@ router.post("/login", async (req, res) => {
         email: user.email,
         is_admin: user.is_admin,
         current_phase: user.current_phase,
-        current_block: user.current_block,
+        cycle_position: user.cycle_position,
         phase_week: user.phase_week,
         phase_start_date: user.phase_start_date,
       },
