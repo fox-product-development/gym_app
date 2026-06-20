@@ -1759,6 +1759,33 @@ router.get("/weekly-feedback", requireAuth, async (req, res) => {
   }
 });
 
+// ─── Test-only: trigger phase advancement for a single user ─────────────────
+// POST /ai/test-advance-phase
+// Cron-secret only — not callable via JWT. Wraps cron.js's
+// runPhaseAdvancementForUser so it can be triggered over HTTP against the
+// live deployment for testing, without invoking the full Sunday job loop.
+
+router.post("/test-advance-phase", async (req, res) => {
+  const cronSecret = req.headers["x-cron-secret"];
+  if (!cronSecret || cronSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: "Invalid cron secret" });
+  }
+
+  const { user_id } = req.body;
+  if (!user_id) {
+    return res.status(400).json({ error: "user_id is required" });
+  }
+
+  try {
+    const { runPhaseAdvancementForUser } = require("../cron");
+    await runPhaseAdvancementForUser(user_id);
+    res.status(200).json({ message: "Phase advancement triggered", user_id });
+  } catch (err) {
+    console.error("Test advance phase error:", err.message);
+    res.status(500).json({ error: "Server error", detail: err.message });
+  }
+});
+
 // ─── System prompt ────────────────────────────────────────────────────────────
 
 const PHASE_GENERATION_SYSTEM_PROMPT = `You are a personal gym coach and exercise selector. You follow periodisation principles from Tudor Bompa's Serious Strength Training.
