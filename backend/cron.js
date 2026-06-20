@@ -160,6 +160,28 @@ async function triggerWeekGeneration(user) {
   }
 }
 
+// ─── Test-only: single-user phase advancement (no report) ────────────────────
+// Runs the same advancement logic as the real Sunday job, scoped to one
+// user, with report generation skipped entirely. Never called by the
+// scheduled cron — only invoked manually for testing.
+
+async function runPhaseAdvancementForUser(userId) {
+  const result = await pool.query(
+    `SELECT id, username, email, current_phase, cycle_position,
+            phase_week, agent_tone
+     FROM users WHERE id = $1`,
+    [userId],
+  );
+
+  if (result.rows.length === 0) {
+    console.log(`User ${userId} not found`);
+    return;
+  }
+
+  await advancePhaseWeek(result.rows[0]);
+  console.log(`✓ Phase advancement test complete for user ${userId}`);
+}
+
 // ─── Main job ─────────────────────────────────────────────────────────────────
 
 async function runSundayReport(exitWhenDone = false) {
@@ -212,7 +234,6 @@ async function generateReportForUser(user, overrideWeekStartDate = null) {
            'target_sets', pe.target_sets,
            'target_reps', pe.target_reps,
            'target_weight', pe.target_weight,
-           'range_exceeded', pe.range_exceeded
          ) ORDER BY pe.order_index
        ) FILTER (WHERE pe.id IS NOT NULL) AS planned_exercises,
        json_agg(
@@ -272,16 +293,6 @@ async function generateReportForUser(user, overrideWeekStartDate = null) {
     [user.id],
   );
 
-  const poResult = await pool.query(
-    `SELECT DISTINCT pe.exercise_name, pe.muscles_primary
-     FROM planned_exercises pe
-     JOIN sessions s ON s.id = pe.session_id
-     WHERE s.user_id = $1
-       AND s.completed_at >= NOW() - INTERVAL '1 week'
-       AND pe.range_exceeded = TRUE`,
-    [user.id],
-  );
-
   const oneRepMaxResult = await pool.query(
     `SELECT DISTINCT ON (exercise_name)
        exercise_name, estimated_1rm, logged_at
@@ -294,7 +305,6 @@ async function generateReportForUser(user, overrideWeekStartDate = null) {
   const userPrompt = buildUserPrompt({
     user,
     sessions: sessionResult.rows,
-    poExercises: poResult.rows,
     oneRepMaxHistory: oneRepMaxResult.rows,
     bodyComp: bodyCompResult.rows,
     dietLogs: dietResult.rows,
@@ -355,4 +365,8 @@ if (require.main === module) {
   runSundayReport(true);
 }
 
-module.exports = { runSundayReport, generateReportForUser };
+module.exports = {
+  runSundayReport,
+  generateReportForUser,
+  runPhaseAdvancementForUser,
+};

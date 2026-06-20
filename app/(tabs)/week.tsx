@@ -1923,7 +1923,12 @@ export default function WeekScreen() {
 
         {!loading && (
           <Pressable
-            onPress={() => setExtraModalVisible(true)}
+            onPress={() => {
+              if (profile?.current_phase !== "transition") {
+                setExtraModalVisible(true);
+              }
+            }}
+            disabled={profile?.current_phase === "transition"}
             style={{
               marginHorizontal: 20,
               marginTop: 4,
@@ -1935,40 +1940,56 @@ export default function WeekScreen() {
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "space-between",
+              opacity: profile?.current_phase === "transition" ? 0.5 : 1,
             }}
           >
-            <Text
-              style={{
-                fontSize: 16,
-                fontWeight: "600",
-                color: Colors.text,
-                letterSpacing: -0.2,
-              }}
-            >
-              Generate Extra Session
-            </Text>
-            <View
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 999,
-                borderWidth: 1.5,
-                borderColor: Colors.accent,
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
+            <View>
               <Text
                 style={{
-                  color: Colors.accent,
-                  fontSize: 20,
-                  lineHeight: 22,
-                  fontWeight: "300",
+                  fontSize: 16,
+                  fontWeight: "600",
+                  color: Colors.text,
+                  letterSpacing: -0.2,
                 }}
               >
-                +
+                Generate Extra Session
               </Text>
+              {profile?.current_phase === "transition" && (
+                <Text
+                  style={{
+                    fontSize: 12,
+                    color: Colors.ter,
+                    marginTop: 2,
+                  }}
+                >
+                  Not available during transition — it's your week off
+                </Text>
+              )}
             </View>
+            {profile?.current_phase !== "transition" && (
+              <View
+                style={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: 999,
+                  borderWidth: 1.5,
+                  borderColor: Colors.accent,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Text
+                  style={{
+                    color: Colors.accent,
+                    fontSize: 20,
+                    lineHeight: 22,
+                    fontWeight: "300",
+                  }}
+                >
+                  +
+                </Text>
+              </View>
+            )}
           </Pressable>
         )}
 

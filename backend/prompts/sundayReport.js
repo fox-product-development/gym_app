@@ -51,7 +51,6 @@ Tone guide is provided per athlete — follow it precisely.`;
 function buildUserPrompt({
   user,
   sessions,
-  poExercises,
   oneRepMaxHistory,
   bodyComp,
   dietLogs,
@@ -75,10 +74,6 @@ ${toneGuide}
 SESSION DATA — LAST 4 WEEKS
 Each session includes planned exercises (with target sets, reps, and weight in kg) and logged sets (actual weight and reps completed). The range_exceeded flag is true when the athlete hit the maximum target reps on every set — this triggers a progressive overload weight increase.
 ${JSON.stringify(sessions, null, 2)}
-
-PROGRESSIVE OVERLOAD ACHIEVED THIS WEEK
-These exercises triggered the range_exceeded flag this week, meaning the athlete completed all sets at the phase target rep count and their working weight will increase.
-${poExercises.length > 0 ? poExercises.map((p) => `${p.exercise_name} (${p.muscles_primary})`).join(", ") : "None this week"}
 
 ESTIMATED 1RM HISTORY
 Most recent estimated one-rep max per exercise. Calculated via the Epley formula from the first set of each session. Informational only — not used for planning. Useful for spotting strength trends.
