@@ -401,15 +401,19 @@ async function enrichExercisesForSession(
   weightLookup,
   gymId,
   userId,
+  phase,
 ) {
   const enriched = exercises.map((ex) => {
-    const isHamstrings = ex.muscles_primary === "Hamstrings";
+    // MD's nonstop pairing (weeks 4-6) requires every exercise in a pair/
+    // group to share the same rep count — reducing hamstrings here would
+    // break that. The reduction only applies outside Muscle Definition.
+    const isHamstrings =
+      ex.muscles_primary === "Hamstrings" && phase !== "muscle_definition";
 
     const mainPercentage = isHamstrings
       ? sessionConfig.percentage - 0.1
       : sessionConfig.percentage;
     const mainReps = isHamstrings ? sessionConfig.reps - 1 : sessionConfig.reps;
-
     const weight = calculateExerciseWeight(
       ex.exercise,
       mainPercentage,
@@ -1071,6 +1075,7 @@ async function generateOneWeek({
       weightLookup,
       gymId,
       userId,
+      phase,
     );
 
     let groupIds = null;

@@ -690,24 +690,23 @@ function ExerciseBlock({
               <View
                 style={{
                   backgroundColor: Colors.card2,
-                  borderRadius: 999,
-                  width: 20,
-                  height: 20,
-                  alignItems: "center",
-                  justifyContent: "center",
+                  borderRadius: 6,
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
                   borderWidth: 0.5,
-                  borderColor: Colors.line2,
+                  borderColor: Colors.accent,
                 }}
               >
                 <Text
                   style={{
                     fontFamily: "Courier",
-                    fontSize: 10,
+                    fontSize: 11,
                     fontWeight: "700",
                     color: Colors.accent,
+                    letterSpacing: 0.4,
                   }}
                 >
-                  {exercise.group_id}
+                  GROUP {exercise.group_id}
                 </Text>
               </View>
             )}

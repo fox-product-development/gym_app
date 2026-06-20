@@ -203,9 +203,9 @@ const muscleDefinitionUser1 = {
   week_1: [{ percentage: 0.3, reps: 30, sets: 2 }],
   week_2: [{ percentage: 0.3, reps: 40, sets: 2 }],
   week_3: [{ percentage: 0.3, reps: 50, sets: 2 }],
-  week_4: [{ percentage: 0.3, reps: 100, sets: 1 }], // reps = total per pair
-  week_5: [{ percentage: 0.3, reps: 200, sets: 1 }], // reps = total per group of 4
-  week_6: [{ percentage: 0.3, reps: 400, sets: 1 }], // reps = total across all 8
+  week_4: [{ percentage: 0.3, reps: 50, sets: 2 }], // nonstop pair, 50 each
+  week_5: [{ percentage: 0.3, reps: 50, sets: 2 }], // nonstop group of 4, 50 each
+  week_6: [{ percentage: 0.3, reps: 50, sets: 2 }], // nonstop all 8, 50 each
 };
 
 const PHASE_CONFIG = Object.freeze({
