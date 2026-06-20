@@ -403,9 +403,16 @@ async function enrichExercisesForSession(
   userId,
 ) {
   const enriched = exercises.map((ex) => {
+    const isHamstrings = ex.muscles_primary === "Hamstrings";
+
+    const mainPercentage = isHamstrings
+      ? sessionConfig.percentage - 0.1
+      : sessionConfig.percentage;
+    const mainReps = isHamstrings ? sessionConfig.reps - 1 : sessionConfig.reps;
+
     const weight = calculateExerciseWeight(
       ex.exercise,
-      sessionConfig.percentage,
+      mainPercentage,
       weightLookup,
     );
 
@@ -414,17 +421,24 @@ async function enrichExercisesForSession(
       muscles_primary: ex.muscles_primary,
       sub_component: ex.sub_component,
       sets: sessionConfig.sets,
-      target_reps: sessionConfig.reps,
+      target_reps: mainReps,
       weight,
     };
 
     if (sessionConfig.finisher) {
+      const finisherPercentage = isHamstrings
+        ? sessionConfig.finisher.percentage - 0.1
+        : sessionConfig.finisher.percentage;
+      const finisherReps = isHamstrings
+        ? sessionConfig.finisher.reps - 1
+        : sessionConfig.finisher.reps;
+
       result.finisher_weight = calculateExerciseWeight(
         ex.exercise,
-        sessionConfig.finisher.percentage,
+        finisherPercentage,
         weightLookup,
       );
-      result.finisher_reps = sessionConfig.finisher.reps;
+      result.finisher_reps = finisherReps;
       result.finisher_sets = sessionConfig.finisher.sets;
     }
 
@@ -468,8 +482,8 @@ async function insertSessionExercises(
       `INSERT INTO planned_exercises
          (session_id, exercise_name, muscles_primary, sub_component,
           order_index, target_sets, target_reps, target_weight, set_style,
-          group_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          group_id, finisher_weight, finisher_reps, finisher_sets)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         sessionId,
         ex.exercise,
@@ -481,6 +495,9 @@ async function insertSessionExercises(
         ex.weight,
         "standard",
         groupId,
+        ex.finisher_weight ?? null,
+        ex.finisher_reps ?? null,
+        ex.finisher_sets ?? null,
       ],
     );
   }

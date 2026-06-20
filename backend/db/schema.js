@@ -262,6 +262,9 @@ async function createTables() {
           CHECK (set_style IN ('standard', 'drop')),
         metric          TEXT,
         group_id        INTEGER,
+        finisher_weight NUMERIC(6,2),
+        finisher_reps   INTEGER,
+        finisher_sets   INTEGER,
         created_at      TIMESTAMP DEFAULT NOW()
       );
     `);
