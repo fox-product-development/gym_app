@@ -31,20 +31,16 @@ async function advancePhaseWeek(user) {
   );
 
   if (phase_week < entry.weeks) {
-    // Still within the current phase — just move to the next week and
-    // generate that week's sessions using the exercises already selected
-    // for this phase.
+    // Still within the current phase — just move to the next week.
+    // Sessions for every week of the phase were already generated up
+    // front when the phase started (see triggerPhaseGeneration), so
+    // there is nothing left to generate here.
     const newWeek = phase_week + 1;
     await pool.query(`UPDATE users SET phase_week = $1 WHERE id = $2`, [
       newWeek,
       id,
     ]);
     console.log(`✓ Phase week advanced to ${newWeek} for user ${id}`);
-
-    await triggerWeekGeneration({
-      ...user,
-      phase_week: newWeek,
-    });
     return;
   }
 
