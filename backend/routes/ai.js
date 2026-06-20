@@ -940,6 +940,15 @@ async function generateTransitionInheriting(
         enrichedConditioning[type] = []; // transition skips conditioning
       }
 
+      // Repeat the prior phase's distinct session types to fill however many
+      // sessions transition needs per week — sessionTypes may have fewer
+      // entries than sessionsPerWeek (e.g. Hypertrophy has 2 types, lower and
+      // upper, but transition runs 3 sessions/week).
+      const sessionOrder = Array.from(
+        { length: sessionsPerWeek },
+        (_, i) => sessionTypes[i % sessionTypes.length],
+      );
+
       await generateAllWeeksForProgramme({
         client,
         userId,
@@ -948,7 +957,7 @@ async function generateTransitionInheriting(
         phase: "transition",
         totalWeeks,
         sessionsPerWeek,
-        sessionOrder: sessionTypes,
+        sessionOrder,
         phasePlan,
         enrichedConditioning,
         gymId,
