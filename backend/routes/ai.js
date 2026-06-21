@@ -9,6 +9,21 @@
 // no block concept — the AI selects exercises ONCE per phase, and every
 // week within that phase reuses those exercises with that week's
 // phaseConfig loading values.
+//
+// MIXED PHASE IS USER-KEYED AT THE TEMPLATE LEVEL. Unlike every other
+// phase, Mixed has a genuinely different session structure per user:
+//   - user1: 2 MxS sessions + 2 H sessions per week (mixed_mxs, mixed_h_24,
+//     mixed_mxs, mixed_h_6) — both H sessions are independently
+//     AI-selected, sharing 3 of their 5/6 exercises by instruction to the
+//     AI (see slots text).
+//   - user2: 1 MxS session + 3 H sessions per week (mixed_h_1, mixed_h_2,
+//     mixed_mxs, mixed_h_6). Session 4 (mixed_h_6) is NOT AI-selected at
+//     all — it is a deterministic, server-built copy of specific exercises
+//     already chosen for Session 1 and Session 2 (Table 12.2's Day 6
+//     column reuses a fixed subset, not a free choice). See
+//     buildUser2MixedH6() below.
+// PHASE_SESSION_TEMPLATES.mixed is therefore an object keyed by userKey,
+// not a flat template like every other phase.
 
 const express = require("express");
 const Anthropic = require("@anthropic-ai/sdk");
@@ -43,6 +58,9 @@ function getUserKey(userId) {
 // sessions run per week, how many exercises each session needs, and the
 // muscle/role slots the AI should fill. This replaces the old wildcard-slot
 // compound/isolation model entirely — every phase has its own shape.
+//
+// Every phase EXCEPT mixed is a flat template shared by all users. Mixed is
+// keyed by userKey — see file header note.
 const PHASE_SESSION_TEMPLATES = {
   anatomical_adaptation: {
     sessionsPerWeek: 4,
@@ -78,30 +96,81 @@ const PHASE_SESSION_TEMPLATES = {
     sessionOrder: ["lower", "upper", "lower", "upper"],
   },
   mixed: {
-    sessionsPerWeek: 4,
-    sessions: [
-      {
-        type: "mixed_mxs",
-        exerciseCount: 6,
-        slots:
-          "6 full-body compound exercises: Quads (squat variant), Hamstrings, Chest (press), Back (row), Shoulders (press), Calves.",
-      },
-      {
-        type: "mixed_h_24",
-        exerciseCount: 5,
-        slots:
-          "5 upper accessory exercises: Triceps, Back (pulldown variant), Shoulders (lateral), Shoulders (shrug/trap), Lower Back.",
-      },
-      {
-        type: "mixed_h_6",
-        exerciseCount: 6,
-        slots:
-          "6 exercises: Quads (lunge/unilateral), Core, Biceps, plus the SAME Triceps, Back (pulldown variant), and Shoulders (lateral) exercises selected for the mixed_h_24 session above. Do not select shoulder shrug or lower back exercises for this session.",
-      },
-    ],
-    // Session order: MxS, H(2/4), MxS, H(6). Both MxS sessions use the same
-    // 6 exercises (loading differs by week per phaseConfig.mixed.mxs).
-    sessionOrder: ["mixed_mxs", "mixed_h_24", "mixed_mxs", "mixed_h_6"],
+    // ─── user1: 2 MxS + 2 H sessions/week ──────────────────────────────────
+    // Source: Table 12.4 (H portion) + Table 12.5 (MxS portion), both
+    // Recreational.
+    user1: {
+      sessionsPerWeek: 4,
+      sessions: [
+        {
+          type: "mixed_mxs",
+          exerciseCount: 6,
+          slots:
+            "6 full-body compound exercises: Quads (squat variant), Hamstrings, Chest (press), Back (row), Shoulders (press), Calves.",
+        },
+        {
+          type: "mixed_h_24",
+          exerciseCount: 5,
+          slots:
+            "5 upper accessory exercises: Triceps, Back (pulldown variant), Shoulders (lateral), Shoulders (shrug/trap), Lower Back.",
+        },
+        {
+          type: "mixed_h_6",
+          exerciseCount: 6,
+          slots:
+            "6 exercises: Quads (lunge/unilateral), Core, Biceps, plus the SAME Triceps, Back (pulldown variant), and Shoulders (lateral) exercises selected for the mixed_h_24 session above. Do not select shoulder shrug or lower back exercises for this session.",
+        },
+      ],
+      // Session order: MxS, H(2/4), MxS, H(6). Both MxS sessions use the
+      // same 6 exercises (loading differs by week per phaseConfig.mixed.mxs).
+      sessionOrder: ["mixed_mxs", "mixed_h_24", "mixed_mxs", "mixed_h_6"],
+    },
+    // ─── user2: 1 MxS + 3 H sessions/week ──────────────────────────────────
+    // Source: Table 12.2 (H portion) + Table 12.3 (MxS portion), both
+    // Entry-level. Session 4 (mixed_h_6) is NOT AI-selected — it is built
+    // server-side as a deterministic copy of specific exercises already
+    // selected for Session 1 (mixed_h_1) and Session 2 (mixed_h_2). See
+    // buildUser2MixedH6(). It is deliberately OMITTED from the sessions
+    // array used to build the AI prompt/response structure — only
+    // mixed_h_1, mixed_h_2, and mixed_mxs are AI-selected. sessionOrder
+    // still includes mixed_h_6 in its correct calendar position so week
+    // generation produces it in the right place.
+    user2: {
+      sessionsPerWeek: 4,
+      sessions: [
+        {
+          type: "mixed_h_1",
+          exerciseCount: 8,
+          slots: "8 exercises: Quads/Legs x4, Back x2, Calves x1, Chest x1.",
+        },
+        {
+          type: "mixed_h_2",
+          exerciseCount: 6,
+          slots: "6 exercises: Chest x1, Shoulders x3, Arms x1, Core x1.",
+        },
+        {
+          type: "mixed_mxs",
+          exerciseCount: 5,
+          slots:
+            "5 full-body compound exercises: Quads (leg press), Chest (flat press), Hamstrings (supine curl), Back (row), Calves.",
+        },
+      ],
+      sessionOrder: ["mixed_h_1", "mixed_h_2", "mixed_mxs", "mixed_h_6"],
+      // Fixed reuse map for Session 4 (mixed_h_6) — NOT sent to the AI.
+      // Each entry is { from: <source session type>, index: <0-based index
+      // into that session's exercise array> }, in the exact order Session 4
+      // should display them. Source: Table 12.2's Day 6 column.
+      h6ReuseMap: [
+        { from: "mixed_h_1", index: 1 }, // 1.2 — Legs
+        { from: "mixed_h_1", index: 2 }, // 1.3 — Legs
+        { from: "mixed_h_1", index: 3 }, // 1.4 — Legs
+        { from: "mixed_h_1", index: 7 }, // 1.8 — Chest
+        { from: "mixed_h_2", index: 1 }, // 2.2 — Shoulders
+        { from: "mixed_h_2", index: 3 }, // 2.4 — Shoulders
+        { from: "mixed_h_2", index: 4 }, // 2.5 — Arms
+        { from: "mixed_h_2", index: 5 }, // 2.6 — Core
+      ],
+    },
   },
   maximum_strength: {
     sessionsPerWeek: 3,
@@ -126,6 +195,17 @@ const PHASE_SESSION_TEMPLATES = {
     ],
   },
 };
+
+// Resolves a phase's session template. Mixed is user-keyed; every other
+// phase is a flat template shared by all users. Centralising this lookup
+// here means every route that needs a template goes through one place
+// instead of repeating the `phase === "mixed"` branch.
+function resolveTemplate(phase, userKey) {
+  if (phase === "mixed") {
+    return PHASE_SESSION_TEMPLATES.mixed[userKey];
+  }
+  return PHASE_SESSION_TEMPLATES[phase];
+}
 
 async function getSessionHistory(userId) {
   const result = await pool.query(
@@ -467,6 +547,27 @@ async function enrichExercisesForSession(
   return enriched;
 }
 
+// Builds Session 4 (mixed_h_6) for user2's Mixed phase by copying specific
+// exercises already selected for Session 1 (mixed_h_1) and Session 2
+// (mixed_h_2), per the template's h6ReuseMap. This is NOT an AI selection —
+// Table 12.2's Day 6 column reuses a fixed, specific subset of the week's
+// other exercises rather than offering a free choice. Copying the full
+// exercise object (not just the name) preserves muscles_primary and
+// sub_component, which downstream gym-swap logic relies on to find a
+// replacement exercise at a different gym.
+function buildUser2MixedH6(phasePlan, h6ReuseMap) {
+  const exercises = h6ReuseMap.map(({ from, index }) => {
+    const sourceExercises = phasePlan[from]?.exercises;
+    if (!sourceExercises || !sourceExercises[index]) {
+      throw new Error(
+        `Cannot build mixed_h_6: missing exercise at ${from}[${index}]`,
+      );
+    }
+    return { ...sourceExercises[index] };
+  });
+  return { exercises, conditioning: [] };
+}
+
 // Inserts weight exercises and conditioning exercises into planned_exercises
 // for a given session. groupIds, if provided, is an array the same length as
 // weightExs assigning each exercise a group_id (used for MD weeks 4-6
@@ -667,7 +768,10 @@ router.post("/generate-phase", async (req, res) => {
     // than trusting the caller's body — this is the single source of truth
     // (cycleConfig.js), so the route can't be told something inconsistent
     // with the user's actual cycle state.
-    const cycleEntry = getCycleEntry(userResult.rows[0].cycle_position);
+    const cycleEntry = getCycleEntry(
+      userKey,
+      userResult.rows[0].cycle_position,
+    );
     const phase = cycleEntry.phase;
     const total_weeks = cycleEntry.weeks;
     const sessions_per_week = cycleEntry.sessionsPerWeek;
@@ -690,7 +794,7 @@ router.post("/generate-phase", async (req, res) => {
     const effectivePhaseForTemplate = preselect_for_md
       ? "muscle_definition"
       : phase;
-    const template = PHASE_SESSION_TEMPLATES[effectivePhaseForTemplate];
+    const template = resolveTemplate(effectivePhaseForTemplate, userKey);
     if (!template && phase !== "transition") {
       return res.status(400).json({ error: `Unknown phase: ${phase}` });
     }
@@ -747,11 +851,19 @@ router.post("/generate-phase", async (req, res) => {
     const gymCSV = await buildGymCSV(gymId, userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
 
-    const sessionSlotDescriptions = template.sessions
+    // For user2's Mixed phase, mixed_h_6 is server-built (not AI-selected —
+    // see buildUser2MixedH6) and must be excluded from the AI prompt and
+    // expected response structure entirely.
+    const aiSessions =
+      phase === "mixed" && template.h6ReuseMap
+        ? template.sessions.filter((s) => s.type !== "mixed_h_6")
+        : template.sessions;
+
+    const sessionSlotDescriptions = aiSessions
       .map((s) => `- ${s.type} (${s.exerciseCount} exercises): ${s.slots}`)
       .join("\n");
 
-    const responseStructure = template.sessions
+    const responseStructure = aiSessions
       .map(
         (s) => `  "${s.type}": {
     "exercises": [
@@ -822,7 +934,7 @@ No extra fields. No explanation. No markdown.`;
       .join("");
     const phasePlan = JSON.parse(cleanJSON(rawText));
 
-    for (const sessionDef of template.sessions) {
+    for (const sessionDef of aiSessions) {
       if (!phasePlan[sessionDef.type]) {
         throw new Error(
           `Invalid phase plan structure from Claude — missing "${sessionDef.type}"`,
@@ -830,14 +942,25 @@ No extra fields. No explanation. No markdown.`;
       }
     }
 
+    // Server-build mixed_h_6 for user2's Mixed phase from the AI's actual
+    // selections for mixed_h_1 / mixed_h_2 — see buildUser2MixedH6.
+    if (phase === "mixed" && template.h6ReuseMap) {
+      phasePlan.mixed_h_6 = buildUser2MixedH6(phasePlan, template.h6ReuseMap);
+    }
+
     // Enrich conditioning once per session template (phase-independent —
-    // same conditioning exercises used across all weeks).
+    // same conditioning exercises used across all weeks). mixed_h_6 (user2)
+    // carries no conditioning of its own (see buildUser2MixedH6) so it's
+    // skipped here.
     const enrichedConditioning = {};
     for (const sessionDef of template.sessions) {
-      enrichedConditioning[sessionDef.type] = enrichConditioningExercises(
-        phasePlan[sessionDef.type].conditioning || [],
-        conditioningLookup,
-      );
+      enrichedConditioning[sessionDef.type] =
+        sessionDef.type === "mixed_h_6" && template.h6ReuseMap
+          ? []
+          : enrichConditioningExercises(
+              phasePlan[sessionDef.type].conditioning || [],
+              conditioningLookup,
+            );
     }
 
     const client = await pool.connect();
@@ -1049,9 +1172,11 @@ async function generateOneWeek({
       const mixedWeek = getMixedWeekConfig(userKey, week);
       const track = sessionType === "mixed_mxs" ? "mxs" : "h";
       // For mxs sessions, index within the mxs sub-array by how many mxs
-      // sessions have occurred so far this week (0 or 1). For h sessions,
-      // h tracks only have one config per week shared by both h session
-      // types (h_24 and h_6).
+      // sessions have occurred so far this week (0 or 1, depending on
+      // user). For h-type sessions (mixed_h_24/mixed_h_6 for user1;
+      // mixed_h_1/mixed_h_2/mixed_h_6 for user2), h tracks only have one
+      // config per week shared by every h session type — loading is
+      // identical across all of them, only exercise selection differs.
       if (track === "mxs") {
         const mxsOccurrence =
           sessionOrder
@@ -1112,6 +1237,17 @@ async function generateOneWeek({
 // Swaps a single planned session to a different gym. Re-selects exercises
 // for that one session only (since the exercise library differs per gym),
 // using the same session template and that week's phaseConfig loading.
+//
+// EDGE CASE — NOT HANDLED: for user2's Mixed phase, mixed_h_6 has no
+// AI-selection template of its own (see buildUser2MixedH6) — its exercises
+// are normally a deterministic copy from mixed_h_1/mixed_h_2 at phase
+// generation time. If a gym swap targets a mixed_h_6 session in isolation,
+// there is no "current phase's mixed_h_1/mixed_h_2 AI output" available to
+// re-copy from at this point — the route will fall through to the generic
+// "Select exercises appropriate for this session type and phase" prompt
+// instead of reusing the deterministic reuse map. Flagged, not fixed —
+// confirm with Mike whether isolated gym swaps of mixed_h_6 actually occur
+// in practice before building special-case handling for it.
 
 router.post("/generate-gym-session", requireAuth, async (req, res) => {
   const { session_id, gym_id } = req.body;
@@ -1167,7 +1303,7 @@ router.post("/generate-gym-session", requireAuth, async (req, res) => {
     const gymCSV = await buildGymCSV(gym_id, req.userId);
     const condCSV = buildConditioningCSV(conditioningLookup);
 
-    const template = PHASE_SESSION_TEMPLATES[phase];
+    const template = resolveTemplate(phase, userKey);
     const sessionDef = template?.sessions.find((s) => s.type === session_type);
     const slotsDescription = sessionDef
       ? sessionDef.slots
@@ -1325,7 +1461,7 @@ router.post("/extra-session", requireAuth, async (req, res) => {
       userResult.rows[0];
     const conditioningCount = conditioning_exercises_per_session || 3;
 
-    const template = PHASE_SESSION_TEMPLATES[current_phase];
+    const template = resolveTemplate(current_phase, userKey);
     const effectiveSessionType =
       session_type || (template ? template.sessions[0].type : "full_body");
     const sessionDef = template?.sessions.find(

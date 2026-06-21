@@ -16,19 +16,37 @@
 //   Where a table shows a genuine split within one session (a different
 //   load for the final set(s)), the session config carries a `finisher`
 //   field for that extra set-block. See maximum_strength.user1.week_2,
-//   session index 2, for the only current example of this.
+//   session index 2, and mixed.user2.week_2 mxs entry, for examples.
 //
 // Source tables used per phase per user (see BOMPA_PROGRAMME_REFERENCE.md
 // for the full book context):
 //   AA            — Table 10.2, both users (identical table)
 //   Hypertrophy   — Table 11.4 (user1, Advanced), Table 11.2 (user2, Entry)
-//   Mixed         — Tables 12.4 + 12.5 (user1, Recreational H + MxS portions). N/A for user2.
-//   MxS           — Table 13.2 (user1, Recreational). N/A for user2.
-//   MD            — Table 14.1 (user1, Recreational). N/A for user2.
+//   Mixed         — Tables 12.4 + 12.5 (user1, Recreational H + MxS portions).
+//                   Tables 12.2 + 12.3 (user2, Entry-level H + MxS portions).
+//   MxS           — Table 13.2 (user1, Recreational). N/A for user2 — Bompa
+//                   advises Entry-level athletes avoid MxS work; no table
+//                   provided. See cycleConfig.js note re: user2's MxS slots.
+//   MD            — Table 14.1 (user1, Recreational). user2 shares this same
+//                   table — Bompa provides no Entry-level MD table and flags
+//                   no specific concern for Entry-level athletes doing MD
+//                   work (unlike MxS), so Mike has opted to reuse the
+//                   Recreational values as-is for now rather than modify
+//                   them without a source basis.
 //
 // "Session" here means session number within the week (1st, 2nd, 3rd...),
 // NOT a calendar day. Which day of the week a session actually falls on is
 // determined by the user's real-world schedule, not by this config.
+//
+// TABLE TRANSCRIPTION NOTE: where a Bompa table shows minor per-exercise
+// variation within a week (e.g. one exercise's rep count differs slightly
+// from the rest, or a rep-only row with no percentage), that variation is
+// not captured here — PHASE_CONFIG stores one value per session for the
+// week, matching the table's dominant/majority pattern. Hamstring-specific
+// differences are excluded from this rule entirely, since hamstrings
+// already get a dedicated flat adjustment elsewhere (-10 percentage points,
+// -1 rep — see enrichExercisesForSession in ai.js) and should not also be
+// reflected here.
 //
 // user3 — TEST ACCOUNT ONLY. Mirrors user1's values exactly (same object
 // reference, not a copy) so the existing test user (DB id 3) can exercise
@@ -129,7 +147,7 @@ const hypertrophyUser2 = {
   ],
 };
 
-// ─── Mixed values — user1 only (Tables 12.4 H portion + 12.5 MxS portion) ────
+// ─── Mixed values — user1 (Tables 12.4 H portion + 12.5 MxS portion) ────────
 const mixedUser1 = {
   week_1: {
     mxs: [
@@ -151,6 +169,40 @@ const mixedUser1 = {
       { percentage: 0.8, reps: 8, sets: 4 },
     ],
     h: [{ percentage: 0.7, reps: 8, sets: 4 }],
+  },
+};
+
+// ─── Mixed values — user2 (Tables 12.2 H portion + 12.3 MxS portion, Entry) ──
+// H portion (Table 12.2): dominant pattern across both muscle-group tracks
+// is LOW/MEDIUM/HIGH at 40/50/60%, 12 reps, 3 sets. Minor per-exercise
+// variation in the source table (e.g. standing leg curl staying at 10 reps
+// rather than stepping to 60%, back extension being rep-only) is not
+// captured here — see file header TABLE TRANSCRIPTION NOTE.
+//
+// MxS portion (Table 12.3): only 1 MxS session/week (vs user1's 2), on Day
+// 4 (weeks 1-2) / Day 5 (week 3). Week 2 has a genuine within-session split
+// — 1 set at 70/8 followed by 2 sets at 80/6 — captured via the `finisher`
+// field, consistent with how user1's maximum_strength week_2 session 3
+// already handles a main+finisher split.
+const mixedUser2 = {
+  week_1: {
+    mxs: [{ percentage: 0.7, reps: 7, sets: 3 }],
+    h: [{ percentage: 0.4, reps: 12, sets: 3 }],
+  },
+  week_2: {
+    mxs: [
+      {
+        percentage: 0.7,
+        reps: 8,
+        sets: 1,
+        finisher: { percentage: 0.8, reps: 6, sets: 2 },
+      },
+    ],
+    h: [{ percentage: 0.5, reps: 12, sets: 3 }],
+  },
+  week_3: {
+    mxs: [{ percentage: 0.8, reps: 6, sets: 3 }],
+    h: [{ percentage: 0.6, reps: 10, sets: 3 }],
   },
 };
 
@@ -198,7 +250,7 @@ const maximumStrengthUser1 = {
   ],
 };
 
-// ─── Muscle Definition values — user1 only (Table 14.1, Recreational) ───────
+// ─── Muscle Definition values — user1 (Table 14.1, Recreational) ───────────
 const muscleDefinitionUser1 = {
   week_1: [{ percentage: 0.3, reps: 30, sets: 2 }],
   week_2: [{ percentage: 0.3, reps: 40, sets: 2 }],
@@ -239,15 +291,23 @@ const PHASE_CONFIG = Object.freeze({
   },
 
   // ─── Mixed ────────────────────────────────────────────────────────────────
-  // user1 only. Source: Table 12.4 (H portion) + Table 12.5 (MxS portion),
-  // both Recreational. Two session types per week: MxS sessions (straight
-  // sets, heavier) and H sessions (split, lighter). H portion uses one value
-  // per week shared across both H session groups (Day 2 + Day 6 in the book
-  // matched exactly). MxS portion has genuine per-session variation in week 2.
-  // N/A for user2 — this user's cycle has no Mixed phase.
+  // user1 source: Table 12.4 (H portion) + Table 12.5 (MxS portion), both
+  // Recreational. 2 MxS sessions + 2 H sessions per week. H portion uses
+  // one value per week shared across both H session groups (Day 2 + Day 6
+  // in the book matched exactly). MxS portion has genuine per-session
+  // variation in week 2.
+  //
+  // user2 source: Table 12.2 (H portion) + Table 12.3 (MxS portion), both
+  // Entry-level. 1 MxS session + 3 H sessions per week — a different split
+  // from user1. See PHASE_SESSION_TEMPLATES.mixed in ai.js: the
+  // sessionOrder there is currently fixed at module level for user1's 2+2
+  // split and will need a user2-specific equivalent before user2 can
+  // actually run a Mixed phase — flagged as a follow-up, not addressed
+  // here.
   mixed: {
     poEnabled: true,
     user1: mixedUser1,
+    user2: mixedUser2,
     user3: mixedUser1, // TEST ACCOUNT — mirrors user1
   },
 
@@ -256,7 +316,13 @@ const PHASE_CONFIG = Object.freeze({
   // per-session variation within each week. Week 2, session 3 has a real
   // within-session split: 3 sets at 80/6 followed by a 1-set finisher at
   // 90/3 — captured via the `finisher` field rather than a second top-level
-  // session entry. N/A for user2.
+  // session entry.
+  //
+  // N/A for user2 — Bompa advises Entry-level athletes avoid MxS work, and
+  // provides no Entry-level table for this phase. user2's cycleConfig.js
+  // still contains maximum_strength entries pending Mike's decision to swap
+  // them to anatomical_adaptation; until that's applied, those cycle
+  // positions will throw at lookup time for user2. See cycleConfig.js note.
   maximum_strength: {
     poEnabled: true,
     user1: maximumStrengthUser1,
@@ -264,13 +330,20 @@ const PHASE_CONFIG = Object.freeze({
   },
 
   // ─── Muscle Definition ────────────────────────────────────────────────────
-  // user1 only. Source: Table 14.1 (Recreational). One value per week, flat
-  // 30% load throughout. Weeks 4-6 are a structural change (nonstop
-  // grouping), not a loading change — group_id assignment happens in ai.js,
-  // not here. N/A for user2.
+  // user1 source: Table 14.1 (Recreational). One value per week, flat 30%
+  // load throughout. Weeks 4-6 are a structural change (nonstop grouping),
+  // not a loading change — group_id assignment happens in ai.js, not here.
+  //
+  // user2: shares user1's values (same object reference, not a copy).
+  // Bompa provides no Entry-level MD table and flags no specific concern
+  // for Entry-level athletes doing MD work (unlike MxS) — Mike has opted to
+  // reuse the Recreational values as-is for now rather than introduce
+  // unsourced modifications. Revisit if this doesn't suit user2 in
+  // practice.
   muscle_definition: {
     poEnabled: true,
     user1: muscleDefinitionUser1,
+    user2: muscleDefinitionUser1, // shares user1's values — see note above
     user3: muscleDefinitionUser1, // TEST ACCOUNT — mirrors user1
   },
 
