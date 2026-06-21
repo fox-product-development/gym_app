@@ -68,7 +68,10 @@ const user2Cycle = [
   { phase: "muscle_definition", weeks: 3, sessionsPerWeek: 4 }, // 14
   { phase: "mixed", weeks: 3, sessionsPerWeek: 4 }, // 15
   { phase: "transition", weeks: 1, sessionsPerWeek: 3 }, // 16
-  { phase: "muscle_definition", weeks: 4, sessionsPerWeek: 4 }, // 17
+  // Manual override, phase 17 should be
+  // { phase: "muscle_definition", weeks: 4, sessionsPerWeek: 4 },
+  // changing to hypertrophy to give a more natural entry point
+  { phase: "hypertrophy", weeks: 6, sessionsPerWeek: 4 }, // 17
   { phase: "transition", weeks: 4, sessionsPerWeek: 3 }, // 18
 ];
 // Total weeks: 3+3+3+1+3+3+3+4+3+3+1+3+3+1+3+3+1+4+4 = 52
