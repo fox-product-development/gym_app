@@ -154,6 +154,12 @@ const PHASE_SESSION_TEMPLATES = {
           slots:
             "5 full-body compound exercises: Quads (leg press), Chest (flat press), Hamstrings (supine curl), Back (row), Calves.",
         },
+        {
+          type: "mixed_h_6",
+          exerciseCount: 8,
+          slots:
+            "8 exercises: Quads/Legs x3, Chest x1, Shoulders x2, Arms x1, Core x1. This session normally reuses exercises already selected for mixed_h_1 and mixed_h_2 rather than being independently selected — only use this template if generating mixed_h_6 in isolation (e.g. a gym swap) without that prior selection available.",
+        },
       ],
       sessionOrder: ["mixed_h_1", "mixed_h_2", "mixed_mxs", "mixed_h_6"],
       // Fixed reuse map for Session 4 (mixed_h_6) — NOT sent to the AI.
