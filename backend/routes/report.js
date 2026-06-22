@@ -77,9 +77,8 @@ router.post("/generate", requireAuth, async (req, res) => {
 
     // Fetch full user row — cron's generateReportForUser needs all profile fields
     const userResult = await pool.query(
-      `SELECT id, username, email, current_phase, current_block, phase_week,
-              phase_cycle, agent_tone, goal_size, goal_strength, goal_definition,
-              goal_fitness, training_level, weekly_sessions, goal_description
+      `SELECT id, username, email, current_phase, phase_week,
+              cycle_position, agent_tone
        FROM users WHERE id = $1`,
       [req.userId],
     );
