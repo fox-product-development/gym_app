@@ -66,7 +66,7 @@ ATHLETE PROFILE
 - Training level: ${user.training_level || "not set"}
 - Goals: Size ${user.goal_size || "?"}★ · Strength ${user.goal_strength || "?"}★ · Definition ${user.goal_definition || "?"}★ · Fitness ${user.goal_fitness || "?"}★
 - Preferences: ${user.goal_description || "none specified"}
-- Phase: ${user.current_phase} · Block ${user.current_block} · Week ${user.phase_week} of 6
+- Phase: ${user.current_phase} · Week ${user.phase_week}
 
 TONE
 ${toneGuide}

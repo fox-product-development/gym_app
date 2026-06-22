@@ -402,7 +402,8 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
 
   try {
     const result = await pool.query(
-      `SELECT e.exercise, eq.increment, eq.max_weight
+      `SELECT e.exercise, eq.type AS eq_type, e.equipment_id,
+              eq.increment, eq.max_weight
        FROM exercises e
        LEFT JOIN equipment eq ON eq.id = e.equipment_id
        WHERE e.user_id = $1 AND e.gym_id = $2`,
@@ -412,10 +413,16 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
     const equipMap = {};
     for (const row of result.rows) {
       equipMap[row.exercise.toLowerCase()] = {
+        eq_type: row.eq_type || null,
+        equipment_id: row.equipment_id || null,
         increment: row.increment ? parseFloat(row.increment) : null,
         max_weight: row.max_weight ? parseFloat(row.max_weight) : null,
       };
     }
+
+    // Cache valid-weights lists per equipment_id so loadable equipment
+    // sharing the same barbell/EZ bar only triggers one plate-pool query.
+    const validWeightsCache = {};
 
     for (const ex of exercises) {
       const lookup = equipMap[ex.exercise.toLowerCase()];
@@ -424,7 +431,32 @@ async function validateAndCorrectWeights(exercises, gymId, userId) {
       let weight = parseFloat(ex.weight) || 0;
       if (weight <= 0) continue;
 
-      if (lookup.increment && lookup.increment > 0) {
+      if (lookup.eq_type === "loadable" && lookup.equipment_id) {
+        // Plate-based equipment — snap to nearest achievable weight from
+        // the plate pool rather than a fixed increment.
+        if (!validWeightsCache[lookup.equipment_id]) {
+          validWeightsCache[lookup.equipment_id] =
+            await getValidWeightsForEquipment(
+              lookup.equipment_id,
+              gymId,
+              userId,
+            );
+        }
+        const validWeights = validWeightsCache[lookup.equipment_id];
+        if (validWeights.length > 0) {
+          let closest = validWeights[0];
+          let closestDiff = Math.abs(weight - closest);
+          for (const vw of validWeights) {
+            const diff = Math.abs(weight - vw);
+            if (diff < closestDiff) {
+              closest = vw;
+              closestDiff = diff;
+            }
+          }
+          weight = closest;
+        }
+      } else if (lookup.increment && lookup.increment > 0) {
+        // Fixed/machine equipment — snap to nearest fixed increment.
         weight = Math.round(weight / lookup.increment) * lookup.increment;
         if (weight <= 0) weight = lookup.increment;
       }
