@@ -51,8 +51,6 @@ app.use("/user", userRoutes);
 const reportRoutes = require("./routes/report");
 app.use("/report", reportRoutes);
 
-const bridgeRoutes = require("./routes/bridge");
-app.use("/bridge", bridgeRoutes);
 
 const dietRoutes = require("./routes/diet");
 app.use("/diet", dietRoutes);

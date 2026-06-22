@@ -358,41 +358,6 @@ router.patch("/:id/complete", requireAuth, async (req, res) => {
 
     await client.query("COMMIT");
 
-    // ─── Push completed session to Activity Coach ─────────────────────────
-    // Non-blocking — failure here does not affect session completion.
-    // Bridge removal is tracked as backlog (non-urgent) — left as-is here.
-    try {
-      const activityPayload = {
-        type: "gym",
-        date: session.completed_at,
-        duration_minutes: 60,
-        notes: session.notes || null,
-        user_id: process.env.ACTIVITY_COACH_USER_ID,
-      };
-
-      const response = await fetch(
-        "https://www.activitycoach.co.uk/api/bridge/activities",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${process.env.BRIDGE_SECRET}`,
-          },
-          body: JSON.stringify(activityPayload),
-        },
-      );
-
-      if (!response.ok) {
-        console.error(
-          "Activity Coach push failed:",
-          response.status,
-          await response.text(),
-        );
-      }
-    } catch (pushErr) {
-      console.error("Activity Coach push error:", pushErr.message);
-    }
-
     res.json(session);
   } catch (err) {
     await client.query("ROLLBACK");
