@@ -6,23 +6,23 @@ Last updated: June 2026
 
 ## 1. Project Overview
 
-GymApp is a multi-user web-based gym tracking application. It uses AI (Claude) to generate training blocks, track performance, provide weekly feedback, and manage progressive overload across periodisation phases. Accessible via web browser and bookmarked on iPhone.
+GymApp is a multi-user web-based gym tracking application. It uses AI (Claude) to select exercises per training phase, tracks performance, provides weekly coaching reports, and manages progressive overload via periodic 1RM retesting. Training logic follows Tudor Bompa's periodisation methodology from _Serious Strength Training_. Accessible via web browser and bookmarked on iPhone.
 
 ---
 
 ## 2. Tech Stack
 
-| Layer         | Technology                                 | Notes                                                                     |
-| ------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
-| Frontend      | React Native with Expo (web export)        | Deployed to Vercel                                                        |
-| Navigation    | Expo Router (file-based)                   | One file = one screen                                                     |
-| Backend / API | Node.js + Express                          | Deployed to Railway                                                       |
-| Database      | PostgreSQL                                 | Hosted on Railway                                                         |
-| AI            | Anthropic Claude API (`claude-sonnet-4-6`) | Used for block generation, gym session swap, extra session, Sunday report |
-| Auth          | JWT tokens                                 | Stored in localStorage; invite-only registration via approved emails      |
-| Styling       | Inline React Native styles                 | All colours from `constants/theme.ts`                                     |
-| Email         | Resend                                     | Weekly report delivery                                                    |
-| Deployment    | Vercel (frontend) + Railway (backend + DB) | Auto-deploys on push to main                                              |
+| Layer         | Technology                                 | Notes                                                                       |
+| ------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
+| Frontend      | React Native with Expo (web export)        | Deployed to Vercel                                                          |
+| Navigation    | Expo Router (file-based)                   | One file = one screen                                                       |
+| Backend / API | Node.js + Express                          | Deployed to Railway                                                         |
+| Database      | PostgreSQL                                 | Hosted on Railway                                                           |
+| AI            | Anthropic Claude API (`claude-sonnet-4-6`) | Used for exercise selection, gym session swap, extra session, Sunday report |
+| Auth          | JWT tokens                                 | Stored in localStorage; invite-only registration via approved emails        |
+| Styling       | Inline React Native styles                 | All colours from `constants/theme.ts`                                       |
+| Email         | Resend                                     | Weekly report delivery                                                      |
+| Deployment    | Vercel (frontend) + Railway (backend + DB) | Auto-deploys on push to main                                                |
 
 ---
 
@@ -37,35 +37,40 @@ gym_app/
 │   │   ├── log.tsx             ← Body Comp / Diet / Mood
 │   │   ├── progress.tsx        ← Exercise History
 │   │   └── settings.tsx        ← Settings
-│   ├── _layout.tsx             ← Root layout, auth check, onboarding redirect
+│   ├── _layout.tsx             ← Root layout, auth check
 │   ├── login.tsx               ← Login screen
 │   ├── register.tsx            ← Registration screen
-│   ├── onboarding.tsx          ← 4-step onboarding / goal redefine flow
 │   ├── gym-settings.tsx        ← Gym, equipment, plate, exercise management
-│   └── session.tsx             ← Active Session screen
+│   └── session.tsx             ← Active Session screen (includes 1RM test mode)
 ├── constants/
-│   ├── theme.ts                ← Design tokens (colours, fonts, spacing)
-│   └── gyms.ts                 ← Legacy exercise libraries (no longer used)
+│   └── theme.ts                ← Design tokens (colours, fonts, spacing)
 ├── services/
 │   └── api.ts                  ← Central API service layer
 └── backend/
     ├── index.js                ← Express server entry point + node-cron scheduler
     ├── middleware.js            ← JWT auth middleware
-    ├── weightCalc.js           ← DB-driven weight calculation (replaces validWeights.js)
+    ├── weightCalc.js           ← Plate-pool weight enumeration for loadable equipment
     ├── email.js                ← Resend integration for weekly reports
-    ├── cron.js                 ← Sunday report + phase advancement + block generation
+    ├── cron.js                 ← Sunday phase advancement + report generation
+    ├── cycleConfig.js          ← Per-user phase sequencing (replaces DB cycles table)
+    ├── phaseConfig.js          ← Per-phase, per-user, per-week loading values
+    ├── prompts/
+    │   └── sundayReport.js     ← System prompt and user prompt builder for weekly report
     ├── routes/
     │   ├── auth.js             ← Register, login (approved email check)
-    │   ├── user.js             ← Profile (includes exercise/session count settings)
-    │   ├── sessions.js         ← Sessions CRUD, set logging, PO detection, replan
+    │   ├── user.js             ← Profile
+    │   ├── sessions.js         ← Sessions CRUD, set logging, 1RM test completion
     │   ├── bodycomp.js         ← Body composition + image extraction
     │   ├── onerepmax.js        ← 1RM history
-    │   ├── ai.js               ← All Claude API calls
+    │   ├── ai.js               ← All Claude API calls (phase gen, gym swap, extra session)
     │   ├── gyms.js             ← Gym, equipment, plate, exercise CRUD
     │   ├── diet.js             ← Diet logging + image extraction
     │   ├── mood.js             ← Mood/energy logging
     │   ├── cardio.js           ← Cardio logging
     │   └── report.js           ← Manual report generation
+    ├── scripts/
+    │   ├── reset-testuser.js   ← Reset test user (user ID 3)
+    │   └── populate-testuser.js ← Populate test user data
     └── db/
         ├── index.js            ← PostgreSQL connection pool
         └── schema.js           ← Table definitions (run with --fresh to reset)
@@ -77,19 +82,23 @@ gym_app/
 
 All design tokens live in `constants/theme.ts`.
 
-| Token              | Value                    | Usage                          |
-| ------------------ | ------------------------ | ------------------------------ |
-| `Colors.bg`        | `#0A1226`                | Screen background              |
-| `Colors.card`      | `#131D38`                | Card background                |
-| `Colors.card2`     | `#1A2645`                | Secondary card / active states |
-| `Colors.accent`    | `#FF7763`                | Primary action colour (coral)  |
-| `Colors.accentDim` | `rgba(255,119,99,0.16)`  | Accent background tint         |
-| `Colors.accentInk` | `#1A0A06`                | Text on accent backgrounds     |
-| `Colors.text`      | `#ffffff`                | Primary text                   |
-| `Colors.sec`       | `rgba(255,255,255,0.6)`  | Secondary text                 |
-| `Colors.ter`       | `rgba(255,255,255,0.35)` | Tertiary / label text          |
-| `Colors.warn`      | `#F2B564`                | Warning colour                 |
-| `Colors.line`      | `rgba(255,255,255,0.06)` | Dividers                       |
+| Token              | Value                    | Usage                                            |
+| ------------------ | ------------------------ | ------------------------------------------------ |
+| `Colors.bg`        | `#0A1226`                | Screen background                                |
+| `Colors.card`      | `#131D38`                | Card background                                  |
+| `Colors.card2`     | `#1A2645`                | Secondary card / active states                   |
+| `Colors.accent`    | `#FF7763`                | Primary action colour (coral)                    |
+| `Colors.accentDim` | `rgba(255,119,99,0.16)`  | Accent background tint                           |
+| `Colors.accentInk` | `#1A0A06`                | Text on accent backgrounds                       |
+| `Colors.text`      | `#ffffff`                | Primary text                                     |
+| `Colors.sec`       | `rgba(255,255,255,0.6)`  | Secondary text                                   |
+| `Colors.ter`       | `rgba(255,255,255,0.35)` | Tertiary / label text                            |
+| `Colors.warn`      | `#F2B564`                | Warning colour                                   |
+| `Colors.line`      | `rgba(255,255,255,0.06)` | Dividers                                         |
+| `Colors.line2`     | `rgba(255,255,255,0.10)` | Slightly stronger divider/border (active states) |
+| `Colors.qua`       | `rgba(255,255,255,0.18)` | Quaternary text (placeholder/empty values)       |
+| `Colors.tabBg`     | `rgba(10,18,38,0.92)`    | Tab bar background                               |
+| `Colors.green`     | `#4CAF82`                | Success/positive colour                          |
 
 Font: Courier (monospace for numbers/labels), System (SF Pro on iOS) for body text.
 
@@ -99,28 +108,29 @@ Font: Courier (monospace for numbers/labels), System (SF Pro on iOS) for body te
 
 ### `users`
 
-| Field                                | Type      | Notes                                                                      |
-| ------------------------------------ | --------- | -------------------------------------------------------------------------- |
-| `id`                                 | SERIAL PK |                                                                            |
-| `username`                           | TEXT      | Unique                                                                     |
-| `email`                              | TEXT      |                                                                            |
-| `password`                           | TEXT      | bcrypt hashed                                                              |
-| `is_admin`                           | BOOLEAN   |                                                                            |
-| `current_phase`                      | TEXT      | anatomical_adaptation / hypertrophy / maximum_strength / muscle_definition |
-| `current_block`                      | INTEGER   | 1 or 2                                                                     |
-| `phase_week`                         | INTEGER   | 1–7 within current phase (week 7 = rest week)                              |
-| `phase_start_date`                   | DATE      | When the current phase started                                             |
-| `phase_cycle`                        | TEXT      |                                                                            |
-| `agent_tone`                         | TEXT      | motivational / coaching / neutral / drill_sergeant                         |
-| `training_level`                     | TEXT      | new / amateur / serious / professional                                     |
-| `weekly_sessions`                    | INTEGER   |                                                                            |
-| `weight_exercises_per_session`       | INTEGER   | Default 6                                                                  |
-| `conditioning_exercises_per_session` | INTEGER   | Default 3                                                                  |
-| `goal_size`                          | INTEGER   | 1–5 star rating                                                            |
-| `goal_strength`                      | INTEGER   | 1–5 star rating                                                            |
-| `goal_definition`                    | INTEGER   | 1–5 star rating                                                            |
-| `goal_fitness`                       | INTEGER   | 1–5 star rating                                                            |
-| `goal_description`                   | TEXT      | Free text — used as "Athlete notes" in AI prompts                          |
+| Field                                | Type      | Notes                                                                                           |
+| ------------------------------------ | --------- | ----------------------------------------------------------------------------------------------- |
+| `id`                                 | SERIAL PK |                                                                                                 |
+| `username`                           | TEXT      | Unique                                                                                          |
+| `email`                              | TEXT      | Unique                                                                                          |
+| `password`                           | TEXT      | bcrypt hashed                                                                                   |
+| `is_admin`                           | BOOLEAN   |                                                                                                 |
+| `current_phase`                      | TEXT      | anatomical_adaptation / hypertrophy / mixed / maximum_strength / muscle_definition / transition |
+| `cycle_position`                     | INTEGER   | Index into CYCLE_CONFIG array in cycleConfig.js                                                 |
+| `phase_week`                         | INTEGER   | 1-based, within current cycle entry                                                             |
+| `phase_start_date`                   | DATE      | When the current phase started                                                                  |
+| `agent_tone`                         | TEXT      | motivational / coaching / neutral / drill_sergeant                                              |
+| `conditioning_exercises_per_session` | INTEGER   |                                                                                                 |
+| `created_at`                         | TIMESTAMP |                                                                                                 |
+
+### `approved_emails`
+
+| Field      | Type      | Notes                       |
+| ---------- | --------- | --------------------------- |
+| `id`       | SERIAL PK |                             |
+| `email`    | TEXT      | Unique                      |
+| `used`     | BOOLEAN   | Set to true on registration |
+| `added_at` | TIMESTAMP |                             |
 
 ### `gyms`
 
@@ -129,34 +139,35 @@ Font: Courier (monospace for numbers/labels), System (SF Pro on iOS) for body te
 | `id`         | SERIAL PK  |                                                 |
 | `user_id`    | INTEGER FK |                                                 |
 | `gym_name`   | TEXT       |                                                 |
-| `is_default` | BOOLEAN    | One default per user; used for block generation |
+| `is_default` | BOOLEAN    | One default per user; used for phase generation |
 
 ### `equipment`
 
-| Field               | Type       | Notes                                    |
-| ------------------- | ---------- | ---------------------------------------- |
-| `id`                | SERIAL PK  |                                          |
-| `user_id`           | INTEGER FK |                                          |
-| `gym_id`            | INTEGER FK |                                          |
-| `equipment_name`    | TEXT       |                                          |
-| `type`              | TEXT       | loadable / fixed / machine / apparatus   |
-| `unladen_weight_kg` | NUMERIC    | Bar/handle weight for loadable equipment |
-| `increment_kg`      | NUMERIC    | Weight increment for fixed/machine       |
-| `max_weight_kg`     | NUMERIC    | Maximum weight for fixed/machine         |
+| Field            | Type       | Notes                                         |
+| ---------------- | ---------- | --------------------------------------------- |
+| `id`             | SERIAL PK  |                                               |
+| `user_id`        | INTEGER FK |                                               |
+| `gym_id`         | INTEGER FK |                                               |
+| `equipment_name` | TEXT       |                                               |
+| `type`           | TEXT       | loadable / fixed / machine / apparatus        |
+| `unladen_weight` | NUMERIC    | Bar/handle weight for loadable equipment      |
+| `increment`      | NUMERIC    | Weight step for fixed/machine                 |
+| `max_weight`     | NUMERIC    | Maximum weight for fixed/machine              |
+| `unit`           | TEXT       | kg or lbs — display suffix and increment unit |
 
 ### `plates`
 
-| Field       | Type       | Notes                          |
-| ----------- | ---------- | ------------------------------ |
-| `id`        | SERIAL PK  |                                |
-| `user_id`   | INTEGER FK |                                |
-| `gym_id`    | INTEGER FK |                                |
-| `weight_kg` | NUMERIC    |                                |
-| `quantity`  | INTEGER    | Total count of this plate size |
+| Field      | Type       | Notes                                             |
+| ---------- | ---------- | ------------------------------------------------- |
+| `id`       | SERIAL PK  |                                                   |
+| `user_id`  | INTEGER FK |                                                   |
+| `gym_id`   | INTEGER FK |                                                   |
+| `weight`   | NUMERIC    | Weight per plate (unitless — unit from equipment) |
+| `quantity` | INTEGER    | Total count of this plate size                    |
 
 ### `conditioning`
 
-Shared conditioning exercise library (not per-user).
+Shared conditioning exercise library (gym_id nullable — most apply to all gyms).
 
 | Field      | Type       | Notes                                                     |
 | ---------- | ---------- | --------------------------------------------------------- |
@@ -170,52 +181,60 @@ Shared conditioning exercise library (not per-user).
 
 ### `programmes`
 
-One row per AI-generated 3-week block.
+One row per phase run.
 
-| Field          | Type       | Notes  |
-| -------------- | ---------- | ------ |
-| `id`           | SERIAL PK  |        |
-| `user_id`      | INTEGER FK |        |
-| `phase`        | TEXT       |        |
-| `block_number` | INTEGER    | 1 or 2 |
-| `week_start`   | DATE       |        |
+| Field         | Type       | Notes                                             |
+| ------------- | ---------- | ------------------------------------------------- |
+| `id`          | SERIAL PK  |                                                   |
+| `user_id`     | INTEGER FK |                                                   |
+| `phase`       | TEXT       | Same CHECK as users.current_phase                 |
+| `total_weeks` | INTEGER    | How many weeks this phase runs (from cycleConfig) |
+| `week_start`  | DATE       |                                                   |
+| `created_at`  | TIMESTAMP  |                                                   |
 
 ### `sessions`
 
 One row per training session (planned or completed).
 
-| Field          | Type       | Notes                                   |
-| -------------- | ---------- | --------------------------------------- |
-| `id`           | SERIAL PK  |                                         |
-| `programme_id` | INTEGER FK |                                         |
-| `user_id`      | INTEGER FK |                                         |
-| `gym_id`       | INTEGER FK | References gyms table                   |
-| `session_type` | TEXT       | compound / isolation / extra            |
-| `occurrence`   | INTEGER    | 1 = first compound, 2 = repeat compound |
-| `week_number`  | INTEGER    | Within the block (1–7)                  |
-| `gym`          | TEXT       | Legacy text column — being phased out   |
-| `status`       | TEXT       | planned / in_progress / complete        |
-| `notes`        | TEXT       | Session-level notes                     |
-| `started_at`   | TIMESTAMP  |                                         |
-| `completed_at` | TIMESTAMP  |                                         |
+| Field          | Type       | Notes                                                                  |
+| -------------- | ---------- | ---------------------------------------------------------------------- |
+| `id`           | SERIAL PK  |                                                                        |
+| `programme_id` | INTEGER FK |                                                                        |
+| `user_id`      | INTEGER FK |                                                                        |
+| `gym_id`       | INTEGER FK | References gyms table                                                  |
+| `session_type` | TEXT       | full_body / upper / lower / mixed_mxs / mixed_h_24 / mixed_h_6 / extra |
+| `week_number`  | INTEGER    | Within the phase (1-6)                                                 |
+| `is_1rm_test`  | BOOLEAN    | Flags session as 1RM testing session                                   |
+| `status`       | TEXT       | planned / in_progress / complete                                       |
+| `notes`        | TEXT       | Session-level notes                                                    |
+| `started_at`   | TIMESTAMP  |                                                                        |
+| `completed_at` | TIMESTAMP  |                                                                        |
+| `created_at`   | TIMESTAMP  |                                                                        |
+
+Note: `session_type` values depend on the phase. User 2's Mixed phase also uses `mixed_h_1` and `mixed_h_2` — the CHECK constraint on the live DB has been broadened to allow any text value (old enum constraint was dropped during redesign).
 
 ### `planned_exercises`
 
 One row per exercise within a session. Includes both weight exercises and conditioning exercises (conditioning has `muscles_primary = 'Conditioning'`).
 
-| Field             | Type       | Notes                                               |
-| ----------------- | ---------- | --------------------------------------------------- |
-| `id`              | SERIAL PK  |                                                     |
-| `session_id`      | INTEGER FK |                                                     |
-| `exercise_name`   | TEXT       |                                                     |
-| `muscles_primary` | TEXT       | 'Conditioning' for conditioning exercises           |
-| `sub_component`   | TEXT       | e.g. "Sternal head", "Lower lat"                    |
-| `order_index`     | INTEGER    | Display order                                       |
-| `target_sets`     | INTEGER    |                                                     |
-| `target_reps`     | INTEGER    |                                                     |
-| `target_weight`   | NUMERIC    | kg for weights; seconds for time-based conditioning |
-| `range_exceeded`  | BOOLEAN    | True when all sets hit max reps for the phase       |
-| `set_style`       | TEXT       | standard / drop                                     |
+| Field             | Type       | Notes                                                          |
+| ----------------- | ---------- | -------------------------------------------------------------- |
+| `id`              | SERIAL PK  |                                                                |
+| `session_id`      | INTEGER FK |                                                                |
+| `exercise_name`   | TEXT       |                                                                |
+| `muscles_primary` | TEXT       | 'Conditioning' for conditioning exercises                      |
+| `sub_component`   | TEXT       | e.g. "Sternal head", "Lower lat"                               |
+| `order_index`     | INTEGER    | Display order                                                  |
+| `target_sets`     | INTEGER    |                                                                |
+| `target_reps`     | INTEGER    |                                                                |
+| `target_weight`   | NUMERIC    | kg for weights; seconds for time-based conditioning            |
+| `set_style`       | TEXT       | standard / drop                                                |
+| `metric`          | TEXT       | time / reps (conditioning only)                                |
+| `group_id`        | INTEGER    | MD weeks 4-6 nonstop grouping; NULL for all other phases/weeks |
+| `finisher_weight` | NUMERIC    | Nullable — finisher set weight (phases with finisher loading)  |
+| `finisher_reps`   | INTEGER    | Nullable — finisher set reps                                   |
+| `finisher_sets`   | INTEGER    | Nullable — finisher set count                                  |
+| `created_at`      | TIMESTAMP  |                                                                |
 
 ### `logged_sets`
 
@@ -227,14 +246,15 @@ One row per set actually completed during a session.
 | `session_id`    | INTEGER FK |                       |
 | `exercise_name` | TEXT       |                       |
 | `set_number`    | INTEGER    |                       |
-| `drop_number`   | INTEGER    |                       |
-| `weight`        | NUMERIC    | kg                    |
+| `drop_number`   | INTEGER    | Default 0             |
+| `weight`        | NUMERIC    |                       |
 | `reps`          | INTEGER    | Actual reps completed |
 | `notes`         | TEXT       | Per-set notes         |
+| `logged_at`     | TIMESTAMP  |                       |
 
 ### `one_rep_max_history`
 
-Calculated from first set of each exercise per session. Informational only — not used for planning.
+Written ONLY by the 1RM test completion handler in sessions.js. Normal session set logging does not write here.
 
 | Field            | Type       | Notes                         |
 | ---------------- | ---------- | ----------------------------- |
@@ -242,29 +262,29 @@ Calculated from first set of each exercise per session. Informational only — n
 | `user_id`        | INTEGER FK |                               |
 | `exercise_name`  | TEXT       |                               |
 | `estimated_1rm`  | NUMERIC    | Epley: weight × (1 + reps/30) |
-| `weight_used`    | NUMERIC    |                               |
-| `reps_performed` | INTEGER    |                               |
+| `weight_used`    | NUMERIC    | Nullable                      |
+| `reps_performed` | INTEGER    | Nullable                      |
 | `logged_at`      | TIMESTAMP  |                               |
 
 ### `exercises`
 
-One row per exercise per user per gym. Stores target weight maintained by the progressive overload system.
+One row per exercise per user per gym. Linked to specific equipment via `equipment_id`.
 
 | Field               | Type       | Notes                                                   |
 | ------------------- | ---------- | ------------------------------------------------------- |
 | `id`                | SERIAL PK  |                                                         |
 | `user_id`           | INTEGER FK |                                                         |
-| `gym_id`            | INTEGER FK | References gyms table                                   |
-| `equipment_id`      | INTEGER FK | References equipment table — drives weight limits       |
+| `gym_id`            | INTEGER FK |                                                         |
+| `equipment_id`      | INTEGER FK | References equipment — drives weight validation         |
 | `exercise`          | TEXT       |                                                         |
 | `muscles_primary`   | TEXT       |                                                         |
 | `muscles_secondary` | TEXT       |                                                         |
 | `type`              | TEXT       | Compound / Isolation                                    |
-| `equipment_type`    | TEXT       | Legacy — being phased out in favour of equipment_id     |
 | `sub_component`     | TEXT       |                                                         |
 | `emg_score`         | INTEGER    | 1–5                                                     |
 | `active`            | BOOLEAN    | Default true; inactive exercises excluded from planning |
-| `target_weight_kg`  | NUMERIC    | NULL until first block; maintained by PO system         |
+| `target_weight`     | NUMERIC    | Legacy/informational — not used for weight calculation  |
+| `created_at`        | TIMESTAMP  |                                                         |
 
 ### `body_composition`
 
@@ -288,33 +308,34 @@ One row per exercise per user per gym. Stores target weight maintained by the pr
 | `ai_summary`               | TEXT       | Full plain text report     |
 | `phase_change_recommended` | BOOLEAN    |                            |
 | `phase_change_suggestion`  | TEXT       |                            |
+| `created_at`               | TIMESTAMP  |                            |
 
 ### `diet_logs`
 
-| Field             | Type       | Notes |
-| ----------------- | ---------- | ----- |
-| `id`              | SERIAL PK  |       |
-| `user_id`         | INTEGER FK |       |
-| `logged_at`       | DATE       |       |
-| `calories_kcal`   | NUMERIC    |       |
-| `fat_g`           | NUMERIC    |       |
-| `saturated_fat_g` | NUMERIC    |       |
-| `carbs_g`         | NUMERIC    |       |
-| `sugar_g`         | NUMERIC    |       |
-| `fibre_g`         | NUMERIC    |       |
-| `protein_g`       | NUMERIC    |       |
-| `salt_g`          | NUMERIC    |       |
+| Field             | Type       | Notes                   |
+| ----------------- | ---------- | ----------------------- |
+| `id`              | SERIAL PK  |                         |
+| `user_id`         | INTEGER FK |                         |
+| `logged_at`       | DATE       | Unique per user per day |
+| `calories_kcal`   | NUMERIC    |                         |
+| `fat_g`           | NUMERIC    |                         |
+| `saturated_fat_g` | NUMERIC    |                         |
+| `carbs_g`         | NUMERIC    |                         |
+| `sugar_g`         | NUMERIC    |                         |
+| `fibre_g`         | NUMERIC    |                         |
+| `protein_g`       | NUMERIC    |                         |
+| `salt_g`          | NUMERIC    |                         |
 
 ### `mood_logs`
 
-| Field       | Type       | Notes |
-| ----------- | ---------- | ----- |
-| `id`        | SERIAL PK  |       |
-| `user_id`   | INTEGER FK |       |
-| `logged_at` | DATE       |       |
-| `mood`      | INTEGER    | 1–5   |
-| `energy`    | INTEGER    | 1–5   |
-| `notes`     | TEXT       |       |
+| Field       | Type       | Notes                   |
+| ----------- | ---------- | ----------------------- |
+| `id`        | SERIAL PK  |                         |
+| `user_id`   | INTEGER FK |                         |
+| `logged_at` | DATE       | Unique per user per day |
+| `mood`      | INTEGER    | 1–5                     |
+| `energy`    | INTEGER    | 1–5                     |
+| `notes`     | TEXT       |                         |
 
 ### `cardio_logs`
 
@@ -328,128 +349,88 @@ One row per exercise per user per gym. Stores target weight maintained by the pr
 | `distance_km`      | NUMERIC    |       |
 | `notes`            | TEXT       |       |
 
-### `approved_emails`
-
-| Field   | Type      | Notes                       |
-| ------- | --------- | --------------------------- |
-| `id`    | SERIAL PK |                             |
-| `email` | TEXT      | Unique                      |
-| `used`  | BOOLEAN   | Set to true on registration |
-
 ---
 
 ## 6. Training Logic
 
-### Phase Cycle (automatic, Sunday cron job)
+### Phase Sequencing
 
-1. Anatomical Adaptation — 7 weeks (weeks 1–6 training, week 7 rest)
-2. Hypertrophy — 7 weeks
-3. Maximum Strength — 7 weeks
-4. Muscle Definition — 7 weeks
-5. → Repeats from Anatomical Adaptation
+Phase sequencing is defined in `cycleConfig.js`, not the database. Each user has their own cycle array keyed by `user1`, `user2`, etc. The `cycle_position` column on the users table is an index into this array. When a phase completes (phase_week reaches the entry's `weeks` value), cycle_position increments and wraps to 0 at the end.
 
-Week 7 is always a rest week within each phase. There is no separate rest phase. Rest week sessions use the same exercises as Week 6 at 3 sets × 12 reps × 45% of target weight.
+There are no blocks. The AI selects exercises ONCE per phase, and every week within that phase reuses those exercises with different loading values from `phaseConfig.js`.
 
-### Phase Rep/Set Schemes
+There are no rest weeks as a separate mechanism. Transition entries in the cycle config serve this purpose — they inherit exercises from the prior phase and apply reduced loading.
 
-| Phase                 | Sets | Target Reps | Minimum Reps |
-| --------------------- | ---- | ----------- | ------------ |
-| Anatomical Adaptation | 3    | 20          | 15           |
-| Hypertrophy           | 4    | 12          | 8            |
-| Maximum Strength      | 4    | 6           | 3            |
-| Muscle Definition     | 1    | 40          | 30           |
-| Rest Week             | 3    | 12          | —            |
+### User Cycles
 
-### Weekly Training Pattern
+**User 1:** 52-week annual cycle (14 entries):
+AA → H → Mixed → MxS → T → MD → T → AA → H → Mixed → MxS → T → H(temp) → T
 
-Sessions alternate Compound → Isolation, taking as many as the user's `weekly_sessions` setting allows:
+**User 2:** 18-entry, 52-week non-bulk cycle modelled on Bompa Figure 2.6. No standalone MxS phases.
 
-- 3 sessions: C → I → C
-- 4 sessions: C → I → C → I
-- 5 sessions: C → I → C → I → C
+### Phase Session Types
 
-Sessions are not mapped to specific days of the week — the user trains when their schedule allows.
+Each phase has its own session structure defined in `PHASE_SESSION_TEMPLATES` in `ai.js`. Session types are phase-specific, not the old compound/isolation model:
 
-### Block Structure
+| Phase                 | Session types                               | Sessions/week |
+| --------------------- | ------------------------------------------- | ------------- |
+| Anatomical Adaptation | full_body ×4 (same exercises)               | 4             |
+| Hypertrophy           | lower, upper, lower, upper                  | 4             |
+| Mixed (user 1)        | mixed_mxs, mixed_h_24, mixed_mxs, mixed_h_6 | 4             |
+| Mixed (user 2)        | mixed_h_1, mixed_h_2, mixed_mxs, mixed_h_6  | 4             |
+| Maximum Strength      | full_body ×3 (same exercises)               | 3             |
+| Muscle Definition     | full_body ×4 (same exercises)               | 4             |
+| Transition            | Inherits prior phase's session types        | 3             |
 
-- Each phase has 2 blocks of 3 weeks each, plus a rest week at week 7
-- Block 1: Weeks 1–3 (generated at week 1)
-- Block 2: Weeks 4–6 (generated at week 4 by Sunday cron)
-- Rest week: Week 7 (sessions created by Sunday cron, copying Week 6 exercises at reduced load)
-- No exercise from Block 1 may appear in Block 2
+### Mixed Phase — User-Keyed Templates
 
-### Session Structure
+Unlike all other phases, Mixed has genuinely different session structures per user:
 
-Each session consists of N weight exercises followed by M conditioning exercises, both configurable per user.
+**User 1:** 2 MxS + 2 H sessions. mixed_h_24 and mixed_h_6 share 3 exercises by AI instruction.
 
-**Compound session weight exercises (base 6, wildcards flex with user setting):**
+**User 2:** 1 MxS + 3 H sessions. Session 4 (mixed_h_6) is NOT AI-selected — it is built server-side by `buildUser2MixedH6()` as a deterministic copy of specific exercises from Sessions 1 and 2, following Table 12.2's Day 6 column via `h6ReuseMap`.
 
-- 1 × Back, 1 × Chest, 1 × Lower Back, 1 × Quads, 1 × Shoulders
-- Additional slots are Wildcards, guided by `goal_description`
-- At 5 exercises, the Wildcard is removed; at 7+, extra Wildcards are added
+### Weight Calculation
 
-**Isolation session weight exercises (base 6, wildcards flex with user setting):**
+The server calculates all weights — the AI only selects exercises. The weight pipeline is:
 
-- Core (always position 1), Biceps, Triceps, Shoulders, Forearms
-- Wildcard slots from {Core, Calves, Hamstrings} and then any undertrained muscle
+1. `buildWeightLookup()` fetches the most recent 1RM per exercise from `one_rep_max_history`
+2. `calculateExerciseWeight()` multiplies 1RM × the session config's percentage (from `phaseConfig.js`). Returns 0 if no 1RM exists.
+3. `enrichExercisesForSession()` applies sets, reps, and weight per exercise from the session config, including finisher sets where the config defines them
+4. `validateAndCorrectWeights()` snaps weights to physically achievable values:
+   - **Loadable equipment** (barbells, EZ bars, plate-loaded dumbbells): calls `getValidWeightsForEquipment()` from `weightCalc.js` to enumerate all achievable weights from the plate pool, then snaps to the nearest one. Results are cached per equipment_id.
+   - **Fixed/machine equipment**: rounds to the nearest increment value
+   - Both paths apply `max_weight` cap
 
-**Conditioning exercises (appended after weight exercises):**
+### Hamstring Load Reduction
 
-- Selected from the `conditioning` table
-- AI picks at least 1 cardio and 1 core category, remainder guided by goals and phase
-- For time-based exercises (metric = time): `target_weight` stores seconds (e.g. Plank 60 = 60 seconds)
-- For rep-based exercises: `target_weight` = 0
+Hamstrings receive a flat −10 percentage-point load reduction plus 1 fewer rep per set. This is a static drop applied in `enrichExercisesForSession()`, not a multiplier. The reduction is skipped during Muscle Definition to preserve nonstop pairing rep counts.
 
-### Progressive Overload Rules
+### 1RM Testing Schedule
 
-- **range_exceeded flag:** Set to true on a planned_exercises row when all sets for that exercise hit maximum reps for the current phase
-- **Weight increase:** Next valid increment based on equipment constraints via `weightCalc.js`:
-  - Fixed/machine equipment: current weight + `increment_kg`, capped at `max_weight_kg`
-  - Loadable equipment: calculates all achievable plate combinations from the `plates` table, finds the next weight above current
-- **No cascade:** PO only updates the triggering exercise, not related exercises
-- **No automatic decrease:** Missing minimum reps does not trigger an automatic weight reduction
-- **Athlete notes:** If `goal_description` contains explicit avoidance instructions (e.g. "avoid legs"), the AI excludes those exercises from session planning. Vague soreness mentions are ignored — the Sunday report nudges the user to add explicit avoidance notes if patterns are detected.
+1RM retesting is the sole progressive overload mechanism. Tests are scheduled every 3 weeks — week 1 of every phase, and week 4 for 6-week phases. Within a test week, the first occurrence of each distinct session type is flagged as `is_1rm_test = true`. Transition phases never test.
 
-### 1RM Estimation
+When a 1RM test session is completed, `recalculateFromOneRmTest` in `sessions.js` writes new 1RM values to `one_rep_max_history` and recalculates target weights for all remaining sessions in the current programme.
 
-- Epley formula: `weight × (1 + reps / 30)`
-- Only calculated on set_number = 1 per exercise per session (first set is most stable — least fatigue)
-- Stored in one_rep_max_history for reference and AI context
-- Not used for target weight calculation — target_weight_kg in exercises table is the source of truth
+### Muscle Definition — Nonstop Grouping
 
-### Target Weight System
+MD weeks 4-6 use `group_id` on planned_exercises to assign exercises into nonstop-execution groups:
 
-- target_weight_kg in the exercises table is the single source of truth for planning
-- Set by the AI on first block generation (using 1RM % or conservative estimate if no history)
-- Updated by the PO system (next valid increment on range_exceeded)
-- Phase percentages used for initial weight setting:
-  - Anatomical Adaptation: 60% of 1RM
-  - Hypertrophy: 67% of 1RM
-  - Maximum Strength: 80% of 1RM
-  - Muscle Definition: 55% of 1RM
+- Week 4: 4 pairs (groups 1-4, 2 exercises each)
+- Week 5: 2 groups of 4 (groups 1-2)
+- Week 6: 1 group of 8 (group 1, all exercises)
 
-### Weight Validation
+Weeks 1-3 have no grouping (group_id = NULL).
 
-`validateAndCorrectWeights` runs after every AI-generated session plan before saving to the database. For each exercise it looks up the linked equipment via `equipment_id` and enforces:
+### Finisher Sets
 
-- Increment rounding (weight must be a multiple of `increment_kg`)
-- Max weight cap (weight must not exceed `max_weight_kg`)
-- For loadable equipment without increment/max, the AI prompt includes valid weight lists generated from the plate pool
+Some phase/week configs in `phaseConfig.js` include a finisher block (additional sets at a different percentage/reps after the main sets). These are stored as three nullable columns on `planned_exercises`: `finisher_weight`, `finisher_reps`, `finisher_sets`.
 
 ### Gym Setup
 
-Each user has one or more gyms in the `gyms` table with one marked as default. Block generation uses the user's default gym. Session gym swap allows switching to any gym — the AI regenerates exercises for the selected gym.
+Each user has one or more gyms in the `gyms` table with one marked as default. Phase generation uses the default gym. Session gym swap allows switching to any gym — the AI regenerates exercises for the selected gym.
 
-Exercises are stored in the `exercises` table per user per gym, linked to specific equipment via `equipment_id`. The `buildGymCSV` function JOINs exercises to equipment and includes `equipment_name`, `increment_kg`, and `max_weight_kg` per exercise row in the AI prompt.
-
-### Onboarding
-
-4-step flow for new users (also used for "Redefine Goals" from settings):
-
-1. Goals — star ratings for Size, Strength, Definition, General Fitness
-2. Training level — New / Amateur / Serious / Professional
-3. Session structure — sessions per week, weight exercises per session, conditioning exercises per session (with suggested defaults by level)
-4. Anything else — free text notes (becomes "Athlete notes" in AI prompts)
+Exercises are stored in the `exercises` table per user per gym, linked to specific equipment via `equipment_id`. The `buildGymCSV` function JOINs exercises to equipment and includes `equipment_name` per exercise row in the AI prompt.
 
 ---
 
@@ -457,47 +438,37 @@ Exercises are stored in the `exercises` table per user per gym, linked to specif
 
 All Claude API calls are in `backend/routes/ai.js`. Model: `claude-sonnet-4-6`.
 
-### POST /ai/generate-block
+### POST /ai/generate-phase
 
-- Called at Week 1 and Week 4 of each phase (triggered by Sunday cron or manually)
-- Accepts either a valid JWT (frontend) or `x-cron-secret` header (cron job internal call)
-- Generates compound and isolation session plans for 3 weeks
-- Uses user's default gym from the `gyms` table
-- Reads exercise library from exercises table (JOINed to equipment for weight constraints)
+- Called ONCE when a new phase starts (triggered by cron.js)
+- Accepts either a valid JWT (frontend) or `x-cron-secret` header (cron job)
+- AI selects exercises for the entire phase in a single call
+- Server generates every week's sessions from those exercises using phaseConfig loading values
+- For user2's Mixed phase, mixed_h_6 is built server-side (not AI-selected)
+- Transition phases that are NOT pre-selecting MD exercises inherit from the prior programme (no AI call)
+- Transition phases preceding MD pre-select MD exercises at transition loading
 - Includes conditioning exercises from the `conditioning` table
-- Uses full context: phase, block, session history, 1RM history, body comp, diet, mood, cardio, athlete notes, previous block exercises
-- `validateAndCorrectWeights` runs on the AI response before saving
-- Returns JSON, writes 9 sessions to the database (3 weeks × compound occ1 + compound occ2 + isolation)
-- Max tokens: 2000
+- `validateAndCorrectWeights` runs on all exercises before saving
+- Max tokens: 2500
 
 ### POST /ai/generate-gym-session
 
 - Called when user confirms gym swap at session start
 - Takes `session_id` and `gym_id`
-- Generates a single compound or isolation session for the selected gym
-- Deletes existing planned exercises and replaces with alternatives for the selected gym
-- Includes conditioning exercises
+- AI selects exercises for that one session at the swap gym
+- Server applies that week's phaseConfig loading
 - `validateAndCorrectWeights` runs before saving
 - Marks session as in_progress immediately
 - Max tokens: 1500
 
-### POST /ai/generate-missing
-
-- Called by the replan endpoint to regenerate specific weeks
-- Takes `programme_id`, `weeks_needed` array, and `existing_plan` as baseline
-- Uses existing plan as baseline — only changes exercises where avoidance notes or quantity changes require it
-- `validateAndCorrectWeights` runs before saving
-- Max tokens: 2000
-
 ### POST /ai/extra-session
 
 - Called from Extra Session UI on week screen
-- Takes `gym_id` parameter
-- Generates exercises with target weights using full context
-- Includes conditioning exercises
+- Takes `gym_id` and optional `session_type`
+- AI selects exercises based on undertrained muscle groups and recovery needs
+- Server applies current week's phaseConfig loading
 - `validateAndCorrectWeights` runs before saving
-- Creates session in database with session_type = 'extra', starts it immediately
-- Returns session_id for direct navigation to session screen
+- Creates session with session_type = 'extra', starts immediately
 - Max tokens: 1500
 
 ### POST /ai/exercise-metadata
@@ -508,50 +479,57 @@ All Claude API calls are in `backend/routes/ai.js`. Model: `claude-sonnet-4-6`.
 ### POST /ai/suggest-exercises
 
 - Takes `gym_id`, returns 15 suggested exercises with `equipment_id` values
-- AI receives the gym's equipment list with IDs and assigns exercises to specific equipment
-- Backend validates returned equipment IDs exist at the gym
+- AI receives the gym's equipment list and assigns exercises to specific equipment
 - Max tokens: 3000
 
 ### GET /ai/weekly-feedback
 
 - Returns the most recent Sunday report for the user
 
+### POST /ai/test-advance-phase
+
+- Cron-secret only — not callable via JWT
+- Wraps cron.js's `runPhaseAdvancementForUser` for testing
+
+### POST /report/generate (in report.js)
+
+- Manual report generation endpoint
+- Optional `week_start_date` to regenerate a past week's report
+- Calls `generateReportForUser` from cron.js
+
 ### POST /bodycomp/extract-from-image
 
 - Accepts base64-encoded scale screenshot
-- Sends to Claude to extract weight, muscle mass, and body fat %
-- Returns extracted values as JSON — does not save anything
-- Frontend pre-fills the manual entry form for confirmation before saving
+- Claude extracts weight, muscle mass, and body fat %
+- Returns values for frontend confirmation before saving
 
 ### cron.js (Sunday 10:30PM UTC — node-cron, runs inside Express server)
 
 Phase advancement logic runs first, then report generation:
 
-1. If phase_week = 7 → advance to next phase, reset to week 1 block 1, trigger Block 1 generation
-2. Else increment phase_week by 1
-3. If new phase_week = 4 → set current_block = 2, trigger Block 2 generation via internal HTTP call to /ai/generate-block using CRON_SECRET
-4. If new phase_week = 7 → create rest week sessions (copy Week 6 exercises at 3×12@45% of target weight)
-5. Read 4 weeks of session history, body comp, 1RM history, diet, mood, cardio, and range_exceeded flags
-6. Send to Claude with structured report prompt (causal narrative, Stop/Start/Continue structure, per-user agent tone)
-7. Store plain text response in weekly_feedback table
-8. Email report to user via Resend
+1. Read all users
+2. For each user, call `advancePhaseWeek`:
+   - If `phase_week < entry.weeks`: increment phase_week
+   - If `phase_week >= entry.weeks`: advance to next cycle entry, reset phase_week to 1, trigger phase generation via internal HTTP call to `/ai/generate-phase`
+3. Generate weekly coaching report for each user (Claude API call with structured prompt)
+4. Store report in `weekly_feedback` table
+5. Email report to user via Resend
 
 ---
 
 ## 8. Exercise Selection Rules (for AI context)
 
-The AI applies these rules in priority order when selecting exercises for a block:
+The AI applies these rules in priority order when selecting exercises for a phase:
 
-1. **Athlete notes** — if explicit avoidance instructions exist (e.g. "avoid", "do not", "exclude"), strictly exclude those exercises. Ignore vague mentions of discomfort. Tolerate spelling mistakes.
-2. **Sub-component coverage** — exclude sub-components used in the previous block
-3. **Progressive overload response** — favour exercises with stronger historical PO performance; apply dampening after 2 consecutive block selections
-4. **Recency** — deprioritise exercises from the last block unless EMG gap is 2+ points
-5. **EMG score** (1–5) — prefer higher scores when other factors are equal
-6. **Tiebreaker** — table order in the exercise library
+1. **Sub-component coverage** — avoid repeating the same sub-component used in the athlete's previous phase
+2. **Progressive overload** — favour exercises with stronger historical performance
+3. **Recency** — deprioritise exercises from the immediately preceding phase unless EMG gap is 2+ points
+4. **EMG score** (1–5) — prefer higher scores when other factors are equal
+5. **Tiebreaker** — table order in the exercise library
 
-**Block exclusion rule:** No exercise from Block 1 may appear in Block 2, across both session types.
+**Exercise ordering rule:** Do not place exercises targeting the same primary muscle group consecutively. Alternate between upper and lower body where possible.
 
-**Conditioning selection:** At least 1 cardio category and 1 core category per session. Remaining slots guided by goals and phase. For time-based exercises, `weight_kg` equals the target seconds. For rep-based, `weight_kg` = 0.
+**Conditioning selection:** At least 1 cardio category and 1 core category per session. Exercise names must match the conditioning library exactly.
 
 ---
 
@@ -562,26 +540,26 @@ The AI applies these rules in priority order when selecting exercises for a bloc
 | POST   | /auth/register               | Create account (approved email required)          |
 | POST   | /auth/login                  | Login, returns JWT                                |
 | GET    | /user/profile                | Get user profile                                  |
-| PATCH  | /user/profile                | Update profile / onboarding settings              |
+| PATCH  | /user/profile                | Update profile (agent_tone, conditioning count)   |
 | GET    | /sessions/week               | Get sessions for current phase_week               |
 | GET    | /sessions/:id                | Get single session with exercises and logged sets |
 | POST   | /sessions                    | Create a session                                  |
-| POST   | /sessions/replan             | Delete planned sessions and regenerate            |
 | PATCH  | /sessions/:id/start          | Start a session                                   |
-| POST   | /sessions/:id/sets           | Log a set (1RM on first set, PO detection)        |
-| PATCH  | /sessions/:id/complete       | Complete a session                                |
+| POST   | /sessions/:id/sets           | Log a set                                         |
+| PATCH  | /sessions/:id/complete       | Complete a session (triggers 1RM recalc if test)  |
+| PATCH  | /sessions/:id/reopen         | Reopen a completed session                        |
 | POST   | /bodycomp                    | Log body composition entry                        |
 | GET    | /bodycomp                    | Get body comp history                             |
 | POST   | /bodycomp/extract-from-image | Extract body comp values from scale screenshot    |
 | GET    | /onerepmax                   | Get latest 1RM for all exercises                  |
 | GET    | /onerepmax/:exercise         | Get full 1RM history for one exercise             |
-| POST   | /ai/generate-block           | Generate a training block                         |
+| POST   | /ai/generate-phase           | Generate a training phase                         |
 | POST   | /ai/generate-gym-session     | Regenerate session for a different gym            |
-| POST   | /ai/generate-missing         | Regenerate specific weeks (used by replan)        |
 | POST   | /ai/extra-session            | Generate and start extra session                  |
 | POST   | /ai/exercise-metadata        | AI lookup for exercise metadata                   |
 | POST   | /ai/suggest-exercises        | AI suggests exercises for a gym                   |
 | GET    | /ai/weekly-feedback          | Get latest Sunday report                          |
+| POST   | /ai/test-advance-phase       | Test phase advancement (cron-secret only)         |
 | POST   | /report/generate             | Manually generate a weekly report                 |
 | POST   | /diet                        | Log diet entry                                    |
 | GET    | /diet                        | Get diet history                                  |
@@ -590,7 +568,9 @@ The AI applies these rules in priority order when selecting exercises for a bloc
 | GET    | /mood                        | Get mood history                                  |
 | POST   | /cardio                      | Log cardio entry                                  |
 | GET    | /cardio                      | Get cardio history                                |
+| PUT    | /cardio/:id                  | Update cardio entry                               |
 | DELETE | /cardio/:id                  | Delete cardio entry                               |
+| POST   | /cardio/extract-from-image   | Extract cardio from screenshot                    |
 | GET    | /gyms                        | Get user's gyms                                   |
 | POST   | /gyms                        | Create a gym                                      |
 | PATCH  | /gyms/:id                    | Update gym (name, default)                        |
@@ -627,44 +607,42 @@ The AI applies these rules in priority order when selecting exercises for a bloc
 
 ## 11. Current State (June 2026)
 
-- Multi-user support live — two active users
+- Multi-user support live — two active users plus test user (user ID 3)
 - Domain live at gym.activitycoach.co.uk
-- All screens built and wired to real data
+- Bompa redesign complete: cycleConfig drives phase sequencing, phaseConfig drives loading, AI selects exercises once per phase, server calculates all weights
+- Phase-specific session types replace compound/isolation model
+- 1RM retesting every 3 weeks as sole progressive overload mechanism
+- Mixed phase fully implemented with user-keyed templates
+- Muscle Definition nonstop grouping (weeks 4-6) with group_id
+- Finisher sets supported via nullable columns on planned_exercises
+- Transition phases inherit exercises from prior phase at reduced loading
+- Weight validation covers both plate-based (loadable) and fixed-increment equipment
 - Conditioning exercises system active (22 exercises across cardio, core, mobility, TRX)
-- Equipment-driven weight constraints via `equipment_id` FK
-- PO system rewritten: increment-based (not percentage), no cascade, uses `weightCalc.js`
-- Session replanning feature live in settings
-- Onboarding includes session structure step (sessions, weight exercises, conditioning)
-- AI prompts include athlete notes for explicit exercise avoidance
+- Equipment-driven weight constraints via equipment_id FK
+- Sunday coaching reports with causal narrative, per-user agent tone, emailed via Resend
+- Activity Coach bridge removed (app decommissioned)
 
-### Remaining backlog
+### Code review backlog (bugs)
 
-- Conditioning display fix — Plank shows 60kg instead of 60s (code deployed but may be browser cache; `muscles_primary = 'Conditioning'` confirmed in DB)
-- Drop `equipment_type` text column from exercises table (legacy, replaced by `equipment_id`)
-- Drop `gym` text column from sessions table (legacy, replaced by `gym_id`)
-- Account creation not redirecting to onboarding flow
-- Exercise kebab menu z-index — dropdown hidden behind sibling rows across muscle groups; needs converting from absolute positioning to a Modal
-- Sunday report — should reference conditioning exercises and include athlete notes nudge pattern
-- Per-exercise progressive overload toggle (opt-in, not automatic)
-- Manual target weight editing at exercise level
-- Activity Coach link on dashboard
+1. `ai.js` `validateAndCorrectWeights`: trailing underscore bug from `_kg` rename (`increment_` and `max_weight_`) — weight snapping and max cap never run — **may be resolved by the June 22 rewrite; verify**
+2. `ai.js` `generate-gym-session`: `phase_week` is undefined in prompt — lives on users table, not sessions table
+3. `session.tsx`: per-exercise notes captured in UI but never passed to `onLogSet` or sent to API
+4. `session.tsx`: `sessionId` prop on `ExerciseBlock` declared but never used
+5. `gym-settings.tsx`: equipment and plate deletion have no confirmation step
+6. `session.tsx`: `Colors.line2` and `Colors.qua` used but not in documented theme tokens
 
-### Completed backlog
+### Non-urgent backlog
 
-- ~~Multi-user support~~ — invite-only registration, per-user gym/equipment/exercises, onboarding flow, agent tone settings
-- ~~Conditioning exercises~~ — separate `conditioning` table, appended to all sessions, category-aware AI selection
-- ~~Session structure settings~~ — `weight_exercises_per_session` and `conditioning_exercises_per_session` on users table, configurable in onboarding
-- ~~Replan sessions~~ — button in settings with two-step modal, deletes planned sessions and regenerates via `/ai/generate-missing`
-- ~~Equipment system~~ — `equipment_id` FK on exercises, `max_weight_kg` on equipment, equipment edit modal, equipment picker on add-exercise
-- ~~Suggest exercises with equipment~~ — AI returns `equipment_id` per exercise, validated against gym's equipment
-- ~~DB-driven weight validation~~ — `weightCalc.js` replaces `validWeights.js`, calculates valid weights from plate pool for loadable equipment
-- ~~PO rewrite~~ — increment-based progression, no cascade, uses `getNextValidWeight` from `weightCalc.js`
-- ~~Gym system overhaul~~ — `gym_id` FK on sessions, default gym per user, dynamic gym selection in all AI routes, removed all hardcoded "work"/"home" references
-- ~~Domain setup (gym.activitycoach.co.uk)~~ — done
-- ~~Weight conventions and loadable weight constraints~~ — AI prompts updated with equipment-specific weight guidance
-- ~~Body fat % field~~ — added body_fat_pct column to body_composition table
-- ~~Image-to-body-comp logging~~ — "Log from photo" button on Body Comp screen
-- ~~Extra session UI~~ — Generate Extra Session button with dynamic gym picker
-- ~~Phase advancement~~ — Sunday cron (10:30PM UTC) increments phase_week weekly
-- ~~Diet, mood, cardio logging~~ — three-tab log screen, cardio on week screen
-- ~~Sunday report redesign~~ — causal narrative, Stop/Start/Continue, per-user agent tone, emailed via Resend
+1. Update `schema.js` to allow NULL on `weight_used` and `reps_performed` in `one_rep_max_history` (DB already altered)
+
+### Upcoming features
+
+1. Extra session: add session type picker (isolation or compound) before gym selection
+2. POST `/ai/propose-cycle`: reads goal sliders, proposes phase sequence (frontend `proposeCycle()` exists, route not implemented)
+3. Sunday AI report: prompt too long, not pulling from session notes or exercise notes — needs streamlining
+
+### Known issues
+
+1. Extra session modal: cancel on frontend doesn't abort backend API call — session still created after navigating away
+2. AI exercise ordering: similar muscle group exercises placed consecutively — need spacing rule enforcement
+3. `mixedWeek.sessionOrder` in `ai.js` is module-level constant rather than user-keyed (working correctly by coincidence)

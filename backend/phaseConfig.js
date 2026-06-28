@@ -16,7 +16,9 @@
 //   Where a table shows a genuine split within one session (a different
 //   load for the final set(s)), the session config carries a `finisher`
 //   field for that extra set-block. See maximum_strength.user1.week_2,
-//   session index 2, and mixed.user2.week_2 mxs entry, for examples.
+//   session index 2; mixed.user2.week_2 mxs entry; and mixed.user1.week_1
+//   mxs session index 1 and mixed.user1.week_2 mxs session index 0, for
+//   examples.
 //
 // Source tables used per phase per user (see BOMPA_PROGRAMME_REFERENCE.md
 // for the full book context):
@@ -69,40 +71,40 @@ const aaShared = {
 const hypertrophyUser1 = {
   // [Lower/Low, Upper/Low, Lower/High, Upper/High]
   week_1: [
-    { percentage: 0.6, reps: 12, sets: 4 },
-    { percentage: 0.6, reps: 12, sets: 4 },
-    { percentage: 0.6, reps: 12, sets: 4 },
-    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
   ],
   week_2: [
-    { percentage: 0.6, reps: 15, sets: 4 },
-    { percentage: 0.6, reps: 15, sets: 4 },
-    { percentage: 0.7, reps: 10, sets: 4 },
-    { percentage: 0.7, reps: 10, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
   ],
   week_3: [
-    { percentage: 0.75, reps: 10, sets: 4 },
-    { percentage: 0.75, reps: 10, sets: 4 },
-    { percentage: 0.75, reps: 10, sets: 4 },
-    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.6, reps: 15, sets: 4 },
+    { percentage: 0.6, reps: 15, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
   ],
   week_4: [
-    { percentage: 0.6, reps: 12, sets: 4 },
-    { percentage: 0.6, reps: 12, sets: 4 },
-    { percentage: 0.7, reps: 10, sets: 4 },
-    { percentage: 0.7, reps: 10, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
+    { percentage: 0.5, reps: 12, sets: 4 },
   ],
   week_5: [
-    { percentage: 0.75, reps: 10, sets: 4 },
-    { percentage: 0.75, reps: 10, sets: 4 },
-    { percentage: 0.75, reps: 10, sets: 4 },
-    { percentage: 0.75, reps: 10, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 12, sets: 4 },
+    { percentage: 0.6, reps: 10, sets: 4 },
+    { percentage: 0.6, reps: 10, sets: 4 },
   ],
   week_6: [
-    { percentage: 0.8, reps: 8, sets: 5 },
-    { percentage: 0.8, reps: 8, sets: 5 },
-    { percentage: 0.85, reps: 5, sets: 5 },
-    { percentage: 0.85, reps: 5, sets: 5 },
+    { percentage: 0.7, reps: 10, sets: 5 },
+    { percentage: 0.7, reps: 10, sets: 5 },
+    { percentage: 0.7, reps: 8, sets: 5 },
+    { percentage: 0.7, reps: 8, sets: 5 },
   ],
 };
 
@@ -152,13 +154,23 @@ const mixedUser1 = {
   week_1: {
     mxs: [
       { percentage: 0.7, reps: 8, sets: 3 },
-      { percentage: 0.7, reps: 8, sets: 3 },
+      {
+        percentage: 0.7,
+        reps: 8,
+        sets: 2,
+        finisher: { percentage: 0.8, reps: 6, sets: 1 },
+      },
     ],
     h: [{ percentage: 0.5, reps: 12, sets: 3 }],
   },
   week_2: {
     mxs: [
-      { percentage: 0.7, reps: 8, sets: 3 },
+      {
+        percentage: 0.7,
+        reps: 8,
+        sets: 1,
+        finisher: { percentage: 0.8, reps: 7, sets: 2 },
+      },
       { percentage: 0.8, reps: 7, sets: 3 },
     ],
     h: [{ percentage: 0.6, reps: 12, sets: 3 }],

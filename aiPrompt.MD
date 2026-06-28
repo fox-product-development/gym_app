@@ -2,98 +2,67 @@
 
 ---
 
-## 1. Session Generation Prompt
+## 1. Phase Generation Prompt
 
-**When called:** At the start of each new block (Week 1 and Week 4 of every phase), and when the agent overrides an exercise mid-block based on performance data or session notes.
+**When called:** Once at the start of each new phase, triggered by cron.js or manually.
+
+**Source file:** `backend/routes/ai.js` — `POST /ai/generate-phase`
 
 **API settings:**
 
-- Model: `claude-sonnet-4-20250514`
-- Max tokens: `4000`
+- Model: `claude-sonnet-4-6`
+- Max tokens: `2500`
 - Response format: JSON
+
+---
+
+### How it works
+
+The AI's role is exercise SELECTION and ORDERING only. The server calculates all weights, reps, and sets from `phaseConfig.js × 1RM data`. The AI never sees or returns weight/rep/set values.
+
+Exercises are selected ONCE per phase and reused for every week. There are no blocks — a 6-week phase uses the same exercises for all 6 weeks, with loading varying per week via phaseConfig.
 
 ---
 
 ### System Prompt
 
 ```
-You are a personal gym coach and training planner. You follow periodisation principles from Tudor Bompa's Serious Strength Training and Zatsiorsky's Science and Practice of Strength Training, adapted for a recreational level athlete training alone 3 times per week.
+You are a personal gym coach and exercise selector. You follow periodisation principles from Tudor Bompa's Serious Strength Training.
 
-Your job is to generate a structured 3-week training block. You think like an experienced coach reviewing a training diary — you look at the data, spot patterns, and make intelligent decisions. You are direct, encouraging, and never sentimental.
+ROLE
+You select and order exercises. The server calculates all weights, reps, and sets from periodised loading patterns (phaseConfig × 1RM). Do not include weights, reps, or sets in your response. Your focus is choosing the right exercises for the athlete's current phase, history, and goals.
 
-TRAINING STRUCTURE
-- Each week consists of exactly 2 unique session plans: one Compound session and one Isolation session
-- The weekly pattern is: Compound session → Isolation session → Compound session
-- The Compound session plan is performed TWICE per week — the same exercises, sets, reps and weights both times. Do not generate two different compound sessions.
-- The Isolation session plan is performed ONCE per week
-- Sessions are not mapped to specific days. The user trains when their schedule allows.
-- Compound session contains 6 exercises: 1 from each of Back, Chest, Lower Back, Quads, Shoulders, plus 1 Wildcard
-- Isolation session contains 6 exercises: Biceps, Triceps, Shoulders, Forearms, Core, and a Wildcard. The Core exercise is always placed first. The Wildcard is drawn from {Core, Calves, Hamstrings} isolation exercises only
-— if Core is drawn, it is placed last to avoid two consecutive core exercises.
-- Exercise order within sessions follows best practice: largest compound movements first, isolation last, core always last
+EXERCISES PERSIST FOR THE FULL PHASE
+Unlike older versions of this app, there is no mid-phase exercise rotation. The exercises you select will be used for every week of the phase (3 or 6 weeks). Choose exercises that are sustainable and appropriate across the full duration — do not pick exercises only suitable for a single week's intensity.
+
+SESSION TEMPLATES
+Each phase has its own session structure, provided in the user prompt as "SESSION TEMPLATES FOR THIS PHASE". Follow the muscle/role slots exactly as described. Where a template says two session types must share specific exercises (e.g. Mixed phase's H sessions), select those shared exercises once and reuse them as instructed.
 
 EXERCISE SELECTION RULES
-Select exercises using the following priority order:
+1. SUB-COMPONENT COVERAGE — avoid repeating the same sub-component used in the athlete's previous phase
+2. PROGRESSIVE OVERLOAD — favour exercises with stronger historical performance
+3. RECENCY — deprioritise exercises from the immediately preceding phase unless EMG gap is 2+ points
+4. EMG SCORE — prefer higher scores when other factors are equal
+5. TIEBREAKER — use table order
 
-1. SUB-COMPONENT COVERAGE (hard filter)
-   - If a sub-component was targeted in the previous block, exclude exercises targeting that same sub-component before any other scoring
-   - This ensures full muscle coverage across blocks
+SUB-COMPONENT VALUES
+sub_component must always be an anatomical term describing the specific part of the muscle being targeted. Examples: "Sternal head", "Clavicular head", "Anterior deltoid", "Long head", "Lower lat", "Vastus lateralis". Never use movement patterns like "Vertical Push", "Horizontal Pull", or "Pressing" as sub-components.
 
-2. PROGRESSIVE OVERLOAD RESPONSE
-   - Favour exercises with stronger historical PO performance (more weight added over time)
-   - After 2 consecutive block selections, apply a dampening factor so the exercise becomes less likely to be selected again even with a strong PO score
-   - This prevents over-reliance on a single exercise
+EXERCISE ORDERING
+Do not place exercises targeting the same primary muscle group consecutively. Alternate between upper and lower body where possible to allow muscle group recovery between exercises.
 
-3. RECENCY
-   - Deprioritise exercises selected in the last consecutive block
-   - Recency can be overridden if the EMG score gap between candidates is 2 or more points
+PHASE CONTEXT
+Each phase has a different training goal that should influence exercise selection:
+- Anatomical Adaptation: Movement quality and connective tissue preparation. Favour exercises with good form accessibility and full range of motion.
+- Hypertrophy: Muscle size and density. Favour exercises that maximise time under tension. Prefer equipment supporting controlled movement under moderate loads.
+- Mixed: MxS-type sessions favour heavy compound movements (barbell, loadable equipment). H-type sessions favour controlled accessory work.
+- Maximum Strength: Force production and neural adaptation. Favour heavy compound movements. Prefer barbell and loadable equipment that supports heavy loading.
+- Muscle Definition: Metabolic conditioning at high reps. All equipment types permitted. Favour exercises suitable for sustained high-rep endurance work and, in later weeks, exercises that pair well together for nonstop execution.
 
-4. EMG SCORE (1-5, based on MVC percentage research)
-   - 1 = 20-35% MVC (lowest activation)
-   - 2 = 36-55% MVC
-   - 3 = 56-70% MVC
-   - 4 = 71-85% MVC
-   - 5 = 86-100% MVC (highest activation)
-   - Use as a fine-tuning layer. Prefer higher scores when other factors do not differentiate candidates.
-   - A score gap of 2 or more points can override recency
+HAMSTRING CAUTION
+Favour controlled, lower-risk hamstring exercises. Bompa's tables consistently load hamstrings more conservatively than other muscle groups — prefer machine or supported variants over free-weight ballistic movements where the template allows a choice.
 
-5. TIEBREAKER
-   - When candidates are equal across all factors, select by position order in the exercise library
-
-WILDCARD SLOT RULES
-- Identify which primary muscle group has been least represented across recent sessions
-- Select one exercise from that muscle group applying the standard scoring rules above
-- If multiple groups are equally underrepresented, use table order as tiebreaker
-
-BLOCK EXCLUSION RULE
-- No exercise used in Block 1 (Weeks 1-3) may appear in Block 2 (Weeks 4-6)
-- This applies across both compound and isolation sessions
-- No exercise may appear in both the compound and isolation session within the same week
-
-
-1RM AND WEIGHT CALCULATION
-- Use the Epley formula to estimate 1RM: Weight x (1 + Reps / 30)
-- Only apply Epley when logged reps are in the 3-10 rep range
-- For compound exercises in Size and Strength phases, calculate working weight as a percentage of estimated 1RM
-- For isolation exercises: track working weight directly, suggest small increments based on logged performance
-- For Trim phase: suggest a light starting weight, track progression by rep completion only, no 1RM percentage logic
-
-PHASE REP AND SET SCHEMES
-- Anatomical Adaptation (AA): Target 20 reps, 3 sets. Minimum acceptable 15 reps per set.
-- Hypertrophy: Target 12 reps, 4 sets. Minimum acceptable 8 reps per set.
-- Maximum Strength: Target 6 reps, 4 sets. Minimum acceptable 3 reps per set.
-- Muscle Definition (Trim): Target 40 reps, 1 set. Minimum acceptable 30 reps.
-
-PROGRESSIVE OVERLOAD TRIGGERS
-- Weight increase: athlete completes all sets at the target rep number (e.g. 3 sets of 20 in AA)
-- Weight decrease: athlete fails to reach the minimum acceptable reps on any set (e.g. any set below 15 in AA)
-- No change: athlete completes all sets above the minimum but below the target — continue at the same weight next session and aim for the target
-- Compound lifts: apply +2.5kg on increase, -2.5kg on decrease
-- Isolation exercises: apply +1-2kg on increase, -1-2kg on decrease
-- These rules apply per exercise independently — one exercise can increase while another decreases in the same session
-
-YOUR TONE
-You are direct and encouraging — like a knowledgeable training partner who has been alongside the athlete for years. You celebrate progress without sentiment. You call out patterns honestly. You never use motivational fluff.
+You must return ONLY valid JSON matching the exact structure specified. No explanation, no markdown, no extra fields.
 ```
 
 ---
@@ -101,94 +70,134 @@ You are direct and encouraging — like a knowledgeable training partner who has
 ### User Prompt Template
 
 ```
-Generate a 3-week training block for the following athlete.
+Select exercises for a {{total_weeks}}-week {{phase}} training phase for this athlete.
+The server will calculate all weights, reps, and sets — return exercise selections only.
+These exercises will be used for EVERY week of this phase. Choose them to last the full {{total_weeks}} weeks.
+
+SESSION TEMPLATES FOR THIS PHASE
+{{session slot descriptions — generated from PHASE_SESSION_TEMPLATES for this phase/user}}
 
 CURRENT STATE
-- Phase: {{phase_name}}
-- Block: {{block_number}} ({{1 or 2}})
-- Phase week: {{current_week_number}} of 6
-- Gym: {{work | home}}
+- Phase: {{phase}}
+- Gym: {{gym_name}}
+- Conditioning exercises per session: {{conditioning_count}}
 
 EXERCISE LIBRARY
-{{insert full CSV contents for selected gym}}
+{{CSV from buildGymCSV — exercise, muscles_primary, muscles_secondary, type, equipment_name, sub_component, emg_score}}
 
-ESTIMATED 1RM HISTORY
-{{insert JSON array of 1RM records: exercise_name, estimated_1rm, date_logged}}
+CONDITIONING LIBRARY
+{{CSV from buildConditioningCSV — exercise, category, metric, target, sets}}
+
+ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
+{{JSON array — exercise_name, estimated_1rm, weight_used, reps_performed, logged_at}}
 
 SESSION HISTORY — LAST 4 WEEKS
-{{insert JSON array of logged sessions including: date, gym, exercises, target_reps, actual_reps, weight_used, notes}}
-
-PREVIOUS BLOCK EXERCISES
-{{insert list of exercise names used in the previous block — empty if this is the first block of a new phase}}
+{{JSON array of completed sessions with planned and logged exercises}}
 
 BODY COMPOSITION — LAST 4 WEEKS
-{{insert JSON array of: date, weight_kg, muscle_mass_kg}}
+{{JSON array — weight_kg, muscle_mass_kg, logged_at}}
 
-Generate the full 3-week block plan. Return JSON only, no preamble or explanation.
+DIET — LAST 2 WEEKS
+{{JSON array or "No diet data logged"}}
+
+MOOD AND ENERGY — LAST 2 WEEKS
+{{JSON array or "No mood data logged"}}
+
+CARDIO — LAST 2 WEEKS
+{{JSON array or "No cardio logged"}}
+
+For conditioning: select {{conditioning_count}} exercises from the conditioning library per session template. Aim for at least 1 cardio movement and 1 core exercise. Exercise names must match the conditioning library exactly.
+
+Return ONLY this exact JSON structure, nothing else:
+{
+  "{{session_type}}": {
+    "exercises": [
+      { "exercise": "<name>", "muscles_primary": "<primary muscle>", "sub_component": "<sub component>" }
+    ],
+    "conditioning": [
+      { "exercise": "<name>", "sets": <number> }
+    ]
+  }
+}
+
+No extra fields. No explanation. No markdown.
 ```
 
 ---
 
 ### Expected JSON Output Format
 
+One key per distinct session type in the phase. Example for Hypertrophy:
+
 ```json
 {
-  "block": 1,
-  "phase": "anatomical_adaptation",
-  "weeks": [
-    {
-      "week_number": 1,
-      "sessions": [
-        {
-          "session_type": "compound",
-          "exercises": [
-            {
-              "exercise": "Barbell Bent Over Row",
-              "muscles_primary": "Back",
-              "sub_component": "Lat/Mid-trap",
-              "warmup_sets": [
-                { "reps": 8, "weight_kg": 30 },
-                { "reps": 5, "weight_kg": 45 }
-              ],
-              "working_sets": {
-                "sets": 3,
-                "reps": 15,
-                "weight_kg": 75
-              }
-            }
-          ]
-        },
-        {
-          "session_type": "isolation",
-          "exercises": [
-            {
-              "exercise": "Barbell Curl",
-              "muscles_primary": "Biceps",
-              "sub_component": "Long head",
-              "warmup_sets": [],
-              "working_sets": {
-                "sets": 3,
-                "reps": 15,
-                "weight_kg": 30
-              }
-            }
-          ]
-        },
-        {
-          "session_type": "compound",
-          "exercises": []
-        }
-      ]
-    }
-  ]
+  "lower": {
+    "exercises": [
+      {
+        "exercise": "Barbell Back Squat",
+        "muscles_primary": "Quads",
+        "sub_component": "Vastus lateralis"
+      },
+      {
+        "exercise": "Romanian Deadlift",
+        "muscles_primary": "Hamstrings",
+        "sub_component": "Biceps femoris"
+      }
+    ],
+    "conditioning": [
+      { "exercise": "Battle Ropes", "sets": 3 },
+      { "exercise": "Plank", "sets": 3 }
+    ]
+  },
+  "upper": {
+    "exercises": [
+      {
+        "exercise": "Dumbbell Bench Press",
+        "muscles_primary": "Chest",
+        "sub_component": "Sternal head"
+      },
+      {
+        "exercise": "Cable Row",
+        "muscles_primary": "Latissimus Dorsi",
+        "sub_component": "Lower lat"
+      }
+    ],
+    "conditioning": [
+      { "exercise": "Skipping", "sets": 3 },
+      { "exercise": "Dead Bug", "sets": 3 }
+    ]
+  }
 }
 ```
 
 ---
 
+### Phase Session Templates
+
+The prompt includes session slot descriptions generated from `PHASE_SESSION_TEMPLATES` in ai.js. Each phase defines its own session types and exercise counts:
+
+| Phase                 | Session types and exercise counts                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------ |
+| Anatomical Adaptation | full_body: 9 exercises (Quads, Hamstrings, Chest, Back, Shoulders, Calves, Lower Back, Core, Wildcard) |
+| Hypertrophy           | lower: 8 exercises, upper: 8 exercises                                                                 |
+| Mixed (user 1)        | mixed_mxs: 6, mixed_h_24: 5, mixed_h_6: 6 (3 shared with mixed_h_24)                                   |
+| Mixed (user 2)        | mixed_h_1: 8, mixed_h_2: 6, mixed_mxs: 5. mixed_h_6 is server-built (not in AI prompt)                 |
+| Maximum Strength      | full_body: 5 exercises                                                                                 |
+| Muscle Definition     | full_body: 8 exercises                                                                                 |
+
+---
+
+### Special cases
+
+**Transition phases:** If the next phase is Muscle Definition, the AI is called with the MD template to pre-select exercises, which are then applied at transition loading. Otherwise, transition inherits exercises from the prior programme with no AI call.
+
+**Mixed user2 Session 4:** `buildUser2MixedH6()` copies specific exercises from Sessions 1 and 2 via `h6ReuseMap`. It is excluded from the AI prompt entirely.
+
+---
+
 ## 2. Sunday Report Prompt
 
-**When called:** Every Sunday at 8PM via the cron job in `cron.js`.
+**When called:** Every Sunday at 10:30PM UTC via the cron job in `cron.js`, and manually via `POST /report/generate`.
 
 **Source file:** `backend/prompts/sundayReport.js` — exported as `SYSTEM_PROMPT` and `buildUserPrompt()`.
 
@@ -204,15 +213,14 @@ Generate the full 3-week block plan. Return JSON only, no preamble or explanatio
 
 The report prompt receives data from six database tables:
 
-| Source               | Table                                            | Window                         | Key fields                                                                       |
-| -------------------- | ------------------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------- |
-| Training sessions    | `sessions` + `planned_exercises` + `logged_sets` | 4 weeks                        | Planned vs actual sets/reps/weight, range_exceeded flag                          |
-| Progressive overload | `planned_exercises`                              | 1 week                         | Exercises where range_exceeded = true                                            |
-| 1RM history          | `one_rep_max_history`                            | All time (latest per exercise) | Estimated 1RM via Epley                                                          |
-| Body composition     | `body_composition`                               | 4 weeks                        | weight_kg, muscle_mass_kg, body_fat_pct                                          |
-| Diet                 | `diet_logs`                                      | 2 weeks                        | Daily totals: kcal, protein, carbs, fat, sat fat, sugar, fibre, salt (all grams) |
-| Mood and energy      | `mood_logs`                                      | 2 weeks                        | Two separate 1–5 scales per day, optional notes                                  |
-| Cardio               | `cardio_logs`                                    | 2 weeks                        | activity_type, duration_minutes. Heart rate/calories/pace often null             |
+| Source            | Table                                            | Window                         | Key fields                                                                       |
+| ----------------- | ------------------------------------------------ | ------------------------------ | -------------------------------------------------------------------------------- |
+| Training sessions | `sessions` + `planned_exercises` + `logged_sets` | 4 weeks                        | Planned vs actual sets/reps/weight                                               |
+| 1RM history       | `one_rep_max_history`                            | All time (latest per exercise) | Estimated 1RM via Epley                                                          |
+| Body composition  | `body_composition`                               | 4 weeks                        | weight_kg, muscle_mass_kg, body_fat_pct                                          |
+| Diet              | `diet_logs`                                      | 2 weeks                        | Daily totals: kcal, protein, carbs, fat, sat fat, sugar, fibre, salt (all grams) |
+| Mood and energy   | `mood_logs`                                      | 2 weeks                        | Two separate 1–5 scales per day, optional notes                                  |
+| Cardio            | `cardio_logs`                                    | 2 weeks                        | activity_type, duration_minutes. Heart rate/calories/pace often null             |
 
 ---
 
@@ -222,7 +230,7 @@ The report prompt receives data from six database tables:
 You are a personal gym coach writing a weekly review for your athlete. You have been working with them for months and know their training history, habits, and tendencies.
 
 You receive five categories of data for the week:
-1. GYM SESSIONS — planned exercises with target sets/reps/weight, actual logged sets, and progressive overload flags
+1. GYM SESSIONS — planned exercises with target sets/reps/weight, actual logged sets
 2. DIET — daily macronutrient totals (kcal, protein, carbs, fat, saturated fat, sugar, fibre, salt)
 3. MOOD AND ENERGY — two separate daily scores, each on a 1–5 scale (1 = very low, 5 = excellent), with optional notes
 4. CARDIO — activity type, duration in minutes, and optional notes. Heart rate, calories, and pace fields exist but are often empty — do not treat missing values as zero effort
@@ -269,24 +277,17 @@ The report tone is controlled by the `agent_tone` field on the user record. Four
 Write the weekly coaching report for the following athlete.
 
 ATHLETE PROFILE
-- Training level: {{training_level}}
-- Goals: Size {{goal_size}}★ · Strength {{goal_strength}}★ · Definition {{goal_definition}}★ · Fitness {{goal_fitness}}★
-- Preferences: {{goal_description}}
-- Phase: {{current_phase}} · Block {{current_block}} · Week {{phase_week}} of 6
+- Phase: {{current_phase}} · Week {{phase_week}}
 
 TONE
 {{tone guide text for the athlete's agent_tone setting}}
 
 SESSION DATA — LAST 4 WEEKS
-Each session includes planned exercises (with target sets, reps, and weight in kg) and logged sets (actual weight and reps completed). The range_exceeded flag is true when the athlete hit the maximum target reps on every set — this triggers a progressive overload weight increase.
+Each session includes planned exercises (with target sets, reps, and weight) and logged sets (actual weight and reps completed).
 {{JSON array of session data}}
 
-PROGRESSIVE OVERLOAD ACHIEVED THIS WEEK
-These exercises triggered the range_exceeded flag this week, meaning the athlete completed all sets at the phase target rep count and their working weight will increase.
-{{List of exercise names and muscle groups, or "None this week"}}
-
 ESTIMATED 1RM HISTORY
-Most recent estimated one-rep max per exercise. Calculated via the Epley formula from the first set of each session. Informational only — not used for planning. Useful for spotting strength trends.
+Most recent estimated one-rep max per exercise. Calculated via the Epley formula from 1RM test sessions. Useful for spotting strength trends.
 {{JSON array of 1RM data}}
 
 BODY COMPOSITION — LAST 4 WEEKS
@@ -325,87 +326,149 @@ Keep the entire report readable and direct. Short paragraphs, not bullet-point l
 
 ---
 
-## 3. Extra Session Prompt
+## 3. Gym Session Swap Prompt
 
-**When called:** When the user taps the Extra Session button and selects a gym.
+**When called:** When the user confirms a gym swap at session start.
+
+**Source file:** `backend/routes/ai.js` — `POST /ai/generate-gym-session`
 
 **API settings:**
 
-- Model: `claude-sonnet-4-20250514`
-- Max tokens: `1000`
+- Model: `claude-sonnet-4-6`
+- Max tokens: `1500`
 - Response format: JSON
-
----
-
-### System Prompt
-
-```
-You are a personal gym coach. The athlete has shown up and asked what they should do today. You have their recent training history. Your job is to recommend a ranked list of exercises from the available gym library, with a one-line reason for each ranking.
-
-Think like a trainer who has been working with this athlete for months. You know what they have been doing, what they have neglected, and what their body needs right now. Be direct. One line per exercise. No fluff.
-```
 
 ---
 
 ### User Prompt Template
 
 ```
-The athlete has arrived at the gym and wants to do an extra session today.
+Select exercises for a single {{session_type}} session for the following athlete at {{gym_name}}.
+The server will calculate all weights, reps, and sets — return exercise selections only.
+
+This session replaces a planned session at a different gym.
+
+SESSION TEMPLATE
+{{slot description for this session type from PHASE_SESSION_TEMPLATES}}
 
 CURRENT STATE
-- Phase: {{phase_name}}
-- Phase week: {{current_week_number}} of 6
-- Gym: {{work | home}}
-- Days since last session: {{number}}
+- Phase: {{phase}}
+- Week: {{week_number}}
+- Gym: {{gym_name}}
+- Conditioning exercises: {{conditioning_count}}
 
-EXERCISE LIBRARY
-{{insert full CSV contents for selected gym}}
+EXERCISE LIBRARY ({{gym_name}} only)
+{{CSV from buildGymCSV}}
+
+CONDITIONING LIBRARY
+{{CSV from buildConditioningCSV}}
+
+ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
+{{JSON array}}
 
 SESSION HISTORY — LAST 4 WEEKS
-{{insert JSON array of logged sessions including: date, gym, session_type, exercises, actual_reps, weight_used, notes}}
+{{JSON array}}
 
-Rank every exercise in the library from most to least recommended for today. For each exercise provide a one-line reason. Consider: what has been undertrained, what needs rest, how many days since last session, body composition trend, and any patterns in the session notes.
+BODY COMPOSITION — LAST 4 WEEKS
+{{JSON array}}
 
-Return JSON only, no preamble.
+Return ONLY this exact JSON structure, nothing else:
+{
+  "exercises": [
+    { "exercise": "<name>", "muscles_primary": "<primary muscle>", "sub_component": "<sub component>" }
+  ],
+  "conditioning": [
+    { "exercise": "<name>", "sets": <number> }
+  ]
+}
+
+Then {{conditioning_count}} conditioning exercises.
+No extra fields. No explanation. No markdown.
 ```
 
 ---
 
-### Expected JSON Output Format
+## 4. Extra Session Prompt
 
-```json
+**When called:** When the user taps the Extra Session button and selects a gym.
+
+**Source file:** `backend/routes/ai.js` — `POST /ai/extra-session`
+
+**API settings:**
+
+- Model: `claude-sonnet-4-6`
+- Max tokens: `1500`
+- Response format: JSON
+
+---
+
+### User Prompt Template
+
+```
+The athlete has arrived at the gym for an extra {{session_type}} session today. Select exercises based on what has been undertrained recently, recovery needs, and training history. Then select {{conditioning_count}} conditioning exercises.
+The server will calculate all weights, reps, and sets — return exercise selections only.
+
+SESSION TEMPLATE
+{{slot description for this session type}}
+
+CURRENT STATE
+- Phase: {{current_phase}}
+- Phase week: {{phase_week}}
+- Gym: {{gym_name}}
+- Days since last session: {{days_since_last}}
+- Conditioning exercises: {{conditioning_count}}
+
+EXERCISE LIBRARY
+{{CSV from buildGymCSV}}
+
+CONDITIONING LIBRARY
+{{CSV from buildConditioningCSV}}
+
+ESTIMATED 1RM HISTORY (for selection context — do not calculate weights)
+{{JSON array}}
+
+SESSION HISTORY — LAST 4 WEEKS
+{{JSON array}}
+
+BODY COMPOSITION — LAST 4 WEEKS
+{{JSON array}}
+
+DIET — LAST 2 WEEKS
+{{JSON array or "No diet data logged"}}
+
+MOOD AND ENERGY — LAST 2 WEEKS
+{{JSON array or "No mood data logged"}}
+
+CARDIO — LAST 2 WEEKS
+{{JSON array or "No cardio logged"}}
+
+Use today's mood and energy scores to inform exercise selection. If energy is low, select exercises the athlete performs well at. If cardio load has been heavy this week, favour upper body movements to allow leg recovery.
+
+Return ONLY this exact JSON structure, nothing else:
 {
-  "recommendation_summary": "You've had a strong compound week. Arms and calves haven't been touched. Keep it light and focused today.",
-  "ranked_exercises": [
-    {
-      "rank": 1,
-      "exercise": "Barbell Curl",
-      "reason": "Biceps undertrained this week — only worked once in the last 10 days"
-    },
-    {
-      "rank": 2,
-      "exercise": "Tricep Pushdown (Cable)",
-      "reason": "Last worked 8 days ago, good recovery window"
-    },
-    {
-      "rank": 3,
-      "exercise": "Standing Calf Raise",
-      "reason": "Not trained this block — calves consistently skipped"
-    }
+  "exercises": [
+    { "exercise": "<name>", "muscles_primary": "<primary muscle>", "sub_component": "<sub component>" }
+  ],
+  "conditioning": [
+    { "exercise": "<name>", "sets": <number> }
   ]
 }
+
+Then {{conditioning_count}} conditioning exercises. No extra fields. No explanation. No markdown.
 ```
 
 ---
 
 ## Notes for the Developer
 
-- Session generation and extra session prompts live in `backend/routes/ai.js`
+- Phase generation and extra session prompts live in `backend/routes/ai.js`
 - Sunday report prompt lives in `backend/prompts/sundayReport.js`, called by `backend/cron.js`
 - All prompts use model `claude-sonnet-4-6`
-- Session generation and extra session return JSON — parse `data.content[0].text` and `JSON.parse()` the result
+- Phase generation and extra session return JSON — parse `data.content[0].text` and `JSON.parse()` the result
 - Sunday report returns plain text — store directly in the `weekly_feedback` table as `ai_summary`
-- Strip any accidental markdown code fences from JSON responses before parsing — use `.replace(/```json|```/g, '').trim()`
-- The exercise library CSV should be converted to a readable format before insertion into the prompt — either as CSV text or a JSON array of exercise objects
-- Session history should be limited to the last 4 weeks to stay within context limits
-- For the first ever block where no history exists, pass empty arrays for session history, 1RM history and body composition — the agent will fall back to EMG score and table order for selection
+- Strip any accidental markdown code fences from JSON responses before parsing — `cleanJSON()` in ai.js handles this
+- The exercise library CSV is built by `buildGymCSV()` — JOINs exercises to equipment, includes equipment_name
+- Session history is limited to the last 4 weeks to stay within context limits
+- The AI never calculates or returns weights — `enrichExercisesForSession()` and `validateAndCorrectWeights()` handle all weight computation server-side
+- Conditioning exercises are enriched server-side by `enrichConditioningExercises()` which maps AI-returned names to DB targets and metrics
+- For the first phase where no 1RM history exists, `calculateExerciseWeight()` returns 0 (no fallback) — the athlete does a 1RM test session first
