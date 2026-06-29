@@ -196,15 +196,147 @@ async function runSundayReport(exitWhenDone = false) {
 }
 
 // ─── Report generation ────────────────────────────────────────────────────────
-// (unchanged — body composition, diet, mood, cardio, 1RM history queries
-// and report email logic, identical to the previous version)
 
 async function generateReportForUser(user, overrideWeekStartDate = null) {
-  // ... unchanged from previous version ...
-}
+  console.log(`Generating report for user ${user.id}...`);
 
-if (require.main === module) {
-  runSundayReport(true);
+  const sessionResult = await pool.query(
+    `SELECT
+       s.id, s.session_type, s.week_number,
+       g.gym_name AS gym,
+       s.status, s.notes, s.started_at, s.completed_at,
+       json_agg(
+         json_build_object(
+           'exercise_name', pe.exercise_name,
+           'muscles_primary', pe.muscles_primary,
+           'sub_component', pe.sub_component,
+           'target_sets', pe.target_sets,
+           'target_reps', pe.target_reps,
+           'target_weight', pe.target_weight
+         ) ORDER BY pe.order_index
+       ) FILTER (WHERE pe.id IS NOT NULL) AS planned_exercises,
+       json_agg(
+         json_build_object(
+           'exercise_name', ls.exercise_name,
+           'set_number', ls.set_number,
+           'weight', ls.weight,
+           'reps', ls.reps,
+           'notes', ls.notes
+         ) ORDER BY ls.exercise_name, ls.set_number
+       ) FILTER (WHERE ls.id IS NOT NULL) AS logged_sets
+     FROM sessions s
+     LEFT JOIN gyms g ON g.id = s.gym_id
+     LEFT JOIN planned_exercises pe ON pe.session_id = s.id
+     LEFT JOIN logged_sets ls ON ls.session_id = s.id
+     WHERE s.user_id = $1
+       AND s.created_at >= NOW() - INTERVAL '4 weeks'
+     GROUP BY s.id, g.gym_name
+     ORDER BY s.created_at DESC`,
+    [user.id],
+  );
+
+  const bodyCompResult = await pool.query(
+    `SELECT weight_kg, muscle_mass_kg, body_fat_pct, logged_at
+     FROM body_composition
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '4 weeks'
+     ORDER BY logged_at ASC`,
+    [user.id],
+  );
+
+  const dietResult = await pool.query(
+    `SELECT logged_at, calories_kcal, protein_g, carbs_g, fat_g,
+            sugar_g, fibre_g, saturated_fat_g, salt_g
+     FROM diet_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [user.id],
+  );
+
+  const moodResult = await pool.query(
+    `SELECT logged_at, mood, energy, notes
+     FROM mood_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [user.id],
+  );
+
+  const cardioResult = await pool.query(
+    `SELECT logged_at, activity_type, duration_minutes, distance_km, notes
+     FROM cardio_logs
+     WHERE user_id = $1
+       AND logged_at >= NOW() - INTERVAL '2 weeks'
+     ORDER BY logged_at ASC`,
+    [user.id],
+  );
+
+  const oneRepMaxResult = await pool.query(
+    `SELECT DISTINCT ON (exercise_name)
+       exercise_name, estimated_1rm, logged_at
+     FROM one_rep_max_history
+     WHERE user_id = $1
+     ORDER BY exercise_name, logged_at DESC`,
+    [user.id],
+  );
+
+  const userPrompt = buildUserPrompt({
+    user,
+    sessions: sessionResult.rows,
+    oneRepMaxHistory: oneRepMaxResult.rows,
+    bodyComp: bodyCompResult.rows,
+    dietLogs: dietResult.rows,
+    moodLogs: moodResult.rows,
+    cardioLogs: cardioResult.rows,
+  });
+
+  const message = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 1500,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: userPrompt }],
+  });
+
+  const reportText = message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+
+  let weekStartDate;
+  if (overrideWeekStartDate) {
+    weekStartDate = overrideWeekStartDate;
+  } else {
+    const today = new Date();
+    const dayOfWeek = today.getDay();
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1));
+    weekStartDate = monday.toISOString().split("T")[0];
+  }
+
+  await pool.query(
+    `INSERT INTO weekly_feedback (user_id, week_start_date, ai_summary)
+     VALUES ($1, $2, $3)
+     ON CONFLICT DO NOTHING`,
+    [user.id, weekStartDate, reportText],
+  );
+
+  console.log(`✓ Report stored for user ${user.id}`);
+
+  if (user.email) {
+    try {
+      await sendWeeklyReport({
+        toEmail: user.email,
+        username: user.username,
+        reportText,
+        weekStartDate,
+      });
+    } catch (err) {
+      console.error(`Failed to email report to ${user.email}:`, err.message);
+    }
+  } else {
+    console.log(`No email address for user ${user.id} — skipping email`);
+  }
 }
 
 module.exports = {
