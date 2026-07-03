@@ -1,0 +1,53 @@
+user_id,gym_id,equipment_name,type,unladen_weights,increment,max_weight,unit
+1,13,Seated Row,Machine,,1.25,100,kg
+1,13,Seated  Low Row station,Loadable,5,,,kg
+1,13,Seated Calf raise,Loadable,5,,,kg
+1,13,Cable machine,Machine,,1.25,70,kg
+1,13,Chest fly,Machine,,2.5,100,kg
+1,13,Leg curl,Machine,,2.5,100,kg
+1,13,Leg extension,Machine,,2.5,100,kg
+1,13,Hip thrust,Machine,,2.5,100,kg
+1,13,Dumbbells,Fixed,,2,50,kg
+1,13,Preacher bench,Apparatus,5,,,kg
+1,13,Standing Calf raise,Machine,,2.5,100,kg
+1,13,Leg press,Loadable,5,,,kg
+1,13,Leg press machine,Machine,,5,150,kg
+1,13,Hack squat,Loadable,10,,,kg
+1,13,Barbell,Loadable,5,,,kg
+1,13,Olympic Barbell,Loadable,20,,,kg
+1,13,Prone Leg Curl,Machine,,2.5,100,kg
+1,13,Vertical Traction,Machine,,2.5,100,kg
+1,13,Lat Pull down,Machine,,2.5,100,kg
+1,13,Upper back row,Machine,,2.5,100,kg
+1,13,Delt raise,Machine,,2.5,100,kg
+1,13,Rear Kick station,Loadable,5,,,kg
+1,13,Deadlift station,Loadable,5,,,kg
+1,13,Belt squat station,Loadable,5,,,kg
+1,13,Incline bench,Apparatus,,,,kg
+1,13,Seated Low Row,Machine,,2.5,100,kg
+2,14,Seated Row,Machine,,1.25,100,kg
+2,14,Seated  Low Row station,Loadable,5,,,kg
+2,14,Seated Calf raise,Loadable,5,,,kg
+2,14,Cable machine,Machine,,1.25,70,kg
+2,14,Chest fly,Machine,,2.5,100,kg
+2,14,Leg curl,Machine,,2.5,100,kg
+2,14,Leg extension,Machine,,2.5,100,kg
+2,14,Hip thrust,Machine,,2.5,100,kg
+2,14,Dumbbells,Fixed,,2,50,kg
+2,14,Preacher bench,Apparatus,5,,,kg
+2,14,Standing Calf raise,Machine,,2.5,100,kg
+2,14,Leg press,Loadable,5,,,kg
+2,14,Leg press machine,Machine,,5,150,kg
+2,14,Hack squat,Loadable,10,,,kg
+2,14,Barbell,Loadable,5,,,kg
+2,14,Olympic Barbell,Loadable,20,,,kg
+2,14,Prone Leg Curl,Machine,,2.5,100,kg
+2,14,Vertical Traction,Machine,,2.5,100,kg
+2,14,Lat Pull down,Machine,,2.5,100,kg
+2,14,Upper back row,Machine,,2.5,100,kg
+2,14,Delt raise,Machine,,2.5,100,kg
+2,14,Rear Kick station,Loadable,5,,,kg
+2,14,Deadlift station,Loadable,5,,,kg
+2,14,Belt squat station,Loadable,5,,,kg
+2,14,Incline bench,Apparatus,,,,kg
+2,14,Seated Low Row,Machine,,2.5,100,kg

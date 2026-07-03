@@ -1,7 +1,7 @@
 // app/session.tsx
 // Active Session screen — loads real session data and handles set logging.
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import {
   getSession,
   logSet,
   updateLoggedSet,
+  updateSessionNote,
   completeSession,
 } from "../services/api";
 
@@ -1159,10 +1160,53 @@ export default function ActiveSessionScreen() {
   const [loggedSets, setLoggedSets] = useState<LoggedSet[]>([]);
   const [sessionNote, setSessionNote] = useState("");
   const [completing, setCompleting] = useState(false);
+  // Holds the pending 5-second auto-save timer for the notes box. A ref
+  // (not state) because we only ever need to read/clear it imperatively —
+  // storing it in state would trigger unnecessary re-renders on every
+  // keystroke.
+  const noteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     loadSession();
   }, [sessionId]);
+
+  // Clears any pending auto-save if the screen is left before it fires, so
+  // we never call the API after the component has unmounted.
+  useEffect(() => {
+    return () => {
+      if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    };
+  }, []);
+
+  async function saveSessionNote(text: string) {
+    try {
+      await updateSessionNote(sessionId, text);
+    } catch (err) {
+      console.error("Failed to save session note:", err);
+    }
+  }
+
+  // Called on every keystroke. Resets the 5-second timer each time, so the
+  // save only fires 5 seconds after typing stops.
+  function handleNoteChange(text: string) {
+    setSessionNote(text);
+    if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
+    noteTimerRef.current = setTimeout(() => {
+      saveSessionNote(text);
+      noteTimerRef.current = null;
+    }, 5000);
+  }
+
+  // Called when the notes box loses focus. Cancels any pending 5-second
+  // timer and saves immediately instead, so tapping away always saves
+  // right away rather than waiting out the debounce.
+  function handleNoteBlur() {
+    if (noteTimerRef.current) {
+      clearTimeout(noteTimerRef.current);
+      noteTimerRef.current = null;
+    }
+    saveSessionNote(sessionNote);
+  }
 
   async function loadSession() {
     setLoading(true);
@@ -1170,6 +1214,7 @@ export default function ActiveSessionScreen() {
       const data = await getSession(sessionId);
       setSession(data);
       setLoggedSets(data.logged_sets || []);
+      setSessionNote(data.notes || "");
       if (data.planned_exercises?.length > 0) {
         setOpenExerciseId(data.planned_exercises[0].id);
       }
@@ -1469,7 +1514,8 @@ export default function ActiveSessionScreen() {
             </Text>
             <TextInput
               value={sessionNote}
-              onChangeText={setSessionNote}
+              onChangeText={handleNoteChange}
+              onBlur={handleNoteBlur}
               placeholder="Add a note about today's session…"
               placeholderTextColor={Colors.qua}
               multiline

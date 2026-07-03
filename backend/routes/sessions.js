@@ -348,8 +348,40 @@ router.patch("/:id/sets/:setId", requireAuth, async (req, res) => {
   }
 });
 
-// ─── Complete a session ───────────────────────────────────────────────────────// PATCH /sessions/:id/complete
+// ─── Update session notes ─────────────────────────────────────────────────────
+// PATCH /sessions/:id/notes
 //
+// Saves session notes independently of completing the session — supports
+// debounced auto-save while the athlete is typing, so notes survive the
+// app being backgrounded/suspended mid-session (see session.tsx). This is
+// separate from the notes write inside PATCH /:id/complete, which remains
+// unchanged for the final save on completion.
+
+router.patch("/:id/notes", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { notes } = req.body;
+
+  try {
+    const result = await pool.query(
+      `UPDATE sessions
+       SET notes = $1
+       WHERE id = $2 AND user_id = $3
+       RETURNING *`,
+      [notes || null, id, req.userId],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update session notes error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ─── Complete a session ───────────────────────────────────────────────────────//
 // If this session is a 1RM test session (is_1rm_test = true), completion
 // triggers the recalculation cascade — and this is now the ONLY place in
 // the app that writes to one_rep_max_history:

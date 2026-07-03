@@ -161,6 +161,10 @@ export async function updateLoggedSet(
   return request(`/sessions/${sessionId}/sets/${setId}`, "PATCH", { reps });
 }
 
+export async function updateSessionNote(sessionId: number, notes: string) {
+  return request(`/sessions/${sessionId}/notes`, "PATCH", { notes });
+}
+
 export async function completeSession(id: number, notes?: string) {
   return request(`/sessions/${id}/complete`, "PATCH", { notes });
 }

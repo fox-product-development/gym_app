@@ -1,0 +1,31 @@
+user_id,gym_id,equipment_name,type,unladen_weights,increment,max_weight,unit
+1,13,Seated Row,Machine,,1.25,100,kg
+1,13,Seated  Low Row station,Loadable,5,,,kg
+1,13,Seated Calf raise,Loadable,5,,,kg
+1,13,Cable machine,Machine,,1.25,70,kg
+1,13,Chest fly,Machine,,2.5,100,kg
+1,13,Leg curl,Machine,,2.5,100,kg
+1,13,Leg extension,Machine,,2.5,100,kg
+1,13,Hip thrust,Machine,,2.5,100,kg
+1,13,Dumbbells,Fixed,,2,50,kg
+1,13,Preacher bench,Apparatus,5,,,kg
+1,13,Standing Calf raise,Machine,,2.5,100,kg
+1,13,Leg press,Loadable,5,,,kg
+1,13,Leg press machine,Machine,,5,150,kg
+1,13,Hack squat,Loadable,10,,,kg
+1,13,Barbell,Loadable,5,,,kg
+User,gym,weight,quantity,,,,
+1,13,1.25,2,,,,
+1,13,2.5,2,,,,
+1,13,5,20,,,,
+1,13,10,20,,,,
+1,13,15,20,,,,
+1,13,20,20,,,,
+1,13,40,20,,,,
+2,14,1.25,2,,,,
+2,14,2.5,2,,,,
+2,14,5,20,,,,
+2,14,10,20,,,,
+2,14,15,20,,,,
+2,14,20,20,,,,
+2,14,40,20,,,,
