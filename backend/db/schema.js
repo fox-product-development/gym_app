@@ -231,6 +231,8 @@ async function createTables() {
           )),
         week_number    INTEGER NOT NULL,
         is_1rm_test    BOOLEAN NOT NULL DEFAULT FALSE,
+        rest_interval  TEXT,
+        tempo          TEXT,
         status         TEXT NOT NULL DEFAULT 'planned'
           CHECK (status IN ('planned', 'in_progress', 'complete')),
         notes          TEXT,

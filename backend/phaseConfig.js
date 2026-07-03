@@ -434,9 +434,50 @@ function getMixedWeekConfig(userKey, weekNumber) {
   return week;
 }
 
+// ─── Rest interval / tempo config ────────────────────────────────────────────
+// Source: Tables 10.1 (AA), 11.1 (H), 13.1 (MxS), 14.1 (MD) — each phase's
+// own guideline table, Recreational column. These are fixed physiological
+// guidelines from the book, not tunable per-user values, so unlike
+// PHASE_CONFIG this is NOT keyed by userKey — one set of values applies to
+// everyone. Rest interval is "between sets" specifically, per Mike's
+// instruction — AA, Mixed's MxS days, and MD are circuit/nonstop formats
+// with no distinct "between sets" figure in their source tables, so their
+// single existing rest value (between exercises / between groups) is used
+// as-is, since it's the only rest interval that occurs in those formats.
+// Mixed inherits directly from the MxS and H rows below rather than having
+// its own separate values — mixed_mxs sessions use the MxS row, every
+// other mixed_* session type (mixed_h_24, mixed_h_6, mixed_h_1, mixed_h_2)
+// uses the H row.
+const REST_TEMPO_CONFIG = Object.freeze({
+  anatomical_adaptation: { rest_interval: "2 Mins", tempo: "Moderate" },
+  hypertrophy: { rest_interval: "45-60 Secs", tempo: "Moderate" },
+  maximum_strength: { rest_interval: "3-5 Mins", tempo: "Fast" },
+  muscle_definition: { rest_interval: "1 Min", tempo: "Slow" },
+  mixed_mxs: { rest_interval: "3-5 Mins", tempo: "Fast" },
+  mixed_h: { rest_interval: "45-60 Secs", tempo: "Moderate" },
+  transition: { rest_interval: "2 Mins", tempo: "Moderate" },
+});
+
+// Returns { rest_interval, tempo } for a given phase and session type.
+// sessionType is only needed to disambiguate Mixed (mxs vs h sessions) —
+// every other phase has a single flat value regardless of session type.
+function getRestTempoConfig(phase, sessionType) {
+  if (phase === "mixed") {
+    const key = sessionType === "mixed_mxs" ? "mixed_mxs" : "mixed_h";
+    return REST_TEMPO_CONFIG[key];
+  }
+
+  const config = REST_TEMPO_CONFIG[phase];
+  if (!config) {
+    throw new Error(`No rest/tempo config for phase "${phase}"`);
+  }
+  return config;
+}
+
 module.exports = {
   PHASE_CONFIG,
   getWeekConfig,
   getSessionConfig,
   getMixedWeekConfig,
+  getRestTempoConfig,
 };

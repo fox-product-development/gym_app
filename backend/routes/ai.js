@@ -30,7 +30,11 @@ const Anthropic = require("@anthropic-ai/sdk");
 const pool = require("../db");
 const requireAuth = require("../middleware");
 const { getValidWeightsForEquipment } = require("../weightCalc");
-const { getWeekConfig, getMixedWeekConfig } = require("../phaseConfig");
+const {
+  getWeekConfig,
+  getMixedWeekConfig,
+  getRestTempoConfig,
+} = require("../phaseConfig");
 const { getCycleEntry } = require("../cycleConfig");
 
 const router = express.Router();
@@ -1246,10 +1250,12 @@ async function generateOneWeek({
       groupIds = getMdGroupIds(week, enrichedExercises.length);
     }
 
+    const restTempo = getRestTempoConfig(phase, sessionType);
+
     const sessionResult = await client.query(
       `INSERT INTO sessions
-         (user_id, programme_id, session_type, week_number, gym_id, is_1rm_test)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+         (user_id, programme_id, session_type, week_number, gym_id, is_1rm_test, rest_interval, tempo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
       [
         userId,
         programmeId,
@@ -1257,6 +1263,8 @@ async function generateOneWeek({
         week,
         gymId,
         testFlags[sessionIndex] || false,
+        restTempo.rest_interval,
+        restTempo.tempo,
       ],
     );
 

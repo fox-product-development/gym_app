@@ -55,6 +55,8 @@ interface SessionData {
   status: string;
   notes: string | null;
   is_1rm_test: boolean;
+  rest_interval: string | null;
+  tempo: string | null;
   planned_exercises: PlannedExercise[];
   logged_sets: LoggedSet[];
 }
@@ -553,6 +555,8 @@ function ExerciseBlock({
   onToggle,
   loggedSetsForExercise,
   isOneRmTest,
+  restInterval,
+  tempo,
   onLogSet,
   onUpdateSet,
 }: {
@@ -561,6 +565,8 @@ function ExerciseBlock({
   onToggle: () => void;
   loggedSetsForExercise: LoggedSet[];
   isOneRmTest: boolean;
+  restInterval: string | null;
+  tempo: string | null;
   onLogSet: (
     setNumber: number,
     dropNumber: number,
@@ -761,8 +767,8 @@ function ExerciseBlock({
             {isOneRmTest
               ? "1RM Test · single attempt"
               : isDropSet
-                ? `Drop set · ${exercise.target_reps} reps @ ${exercise.target_weight} ${unit}${allDone ? "" : `  ·  ${totalLoggedReps}/${exercise.target_reps} reps`}`
-                : `${exercise.target_sets} × ${exercise.target_reps} @ ${weightUnit(exercise.target_weight, exercise)}${completedSets > 0 && !allDone ? `  ·  ${completedSets}/${totalSets} done` : ""}`}
+                ? `Drop set · ${exercise.target_reps} reps @ ${exercise.target_weight} ${unit}  -  Rest interval: ${restInterval} and Tempo ${tempo}${allDone ? "" : `  ·  ${totalLoggedReps}/${exercise.target_reps} reps`}`
+                : `${exercise.target_sets} × ${exercise.target_reps} @ ${weightUnit(exercise.target_weight, exercise)}  -  Rest interval: ${restInterval} and Tempo ${tempo}${completedSets > 0 && !allDone ? `  ·  ${completedSets}/${totalSets} done` : ""}`}
           </Text>
         </View>
 
@@ -1429,6 +1435,8 @@ export default function ActiveSessionScreen() {
               (s) => s.exercise_name === ex.exercise_name,
             )}
             isOneRmTest={session.is_1rm_test}
+            restInterval={session.rest_interval}
+            tempo={session.tempo}
             onLogSet={(setNumber, dropNumber, weight, reps) =>
               handleLogSet(ex, setNumber, dropNumber, weight, reps)
             }
