@@ -310,8 +310,45 @@ router.post("/:id/sets", requireAuth, async (req, res) => {
   }
 });
 
-// ─── Complete a session ───────────────────────────────────────────────────────
-// PATCH /sessions/:id/complete
+// ─── Update a logged set ──────────────────────────────────────────────────────
+// PATCH /sessions/:id/sets/:setId
+//
+// Corrects the rep count on an already-logged set, rather than inserting a
+// duplicate. Only reps are editable via this route — weight is untouched,
+// matching the "Change rep count from X to Y" UI. The ownership check joins
+// back to sessions.user_id since logged_sets itself has no user_id column.
+
+router.patch("/:id/sets/:setId", requireAuth, async (req, res) => {
+  const { id, setId } = req.params;
+  const { reps } = req.body;
+
+  if (!reps) {
+    return res.status(400).json({ error: "reps is required" });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE logged_sets
+       SET reps = $1
+       WHERE id = $2
+         AND session_id = $3
+         AND session_id IN (SELECT id FROM sessions WHERE user_id = $4)
+       RETURNING *`,
+      [reps, setId, id, req.userId],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Logged set not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Update logged set error:", err.message);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ─── Complete a session ───────────────────────────────────────────────────────// PATCH /sessions/:id/complete
 //
 // If this session is a 1RM test session (is_1rm_test = true), completion
 // triggers the recalculation cascade — and this is now the ONLY place in

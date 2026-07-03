@@ -153,6 +153,14 @@ export async function logSet(
   return request(`/sessions/${sessionId}/sets`, "POST", data);
 }
 
+export async function updateLoggedSet(
+  sessionId: number,
+  setId: number,
+  reps: number,
+) {
+  return request(`/sessions/${sessionId}/sets/${setId}`, "PATCH", { reps });
+}
+
 export async function completeSession(id: number, notes?: string) {
   return request(`/sessions/${id}/complete`, "PATCH", { notes });
 }

@@ -13,7 +13,12 @@ import {
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { Colors } from "../constants/theme";
-import { getSession, logSet, completeSession } from "../services/api";
+import {
+  getSession,
+  logSet,
+  updateLoggedSet,
+  completeSession,
+} from "../services/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +39,7 @@ interface PlannedExercise {
 }
 
 interface LoggedSet {
+  id: number;
   exercise_name: string;
   set_number: number;
   drop_number: number;
@@ -342,10 +348,17 @@ function OneRmTestBlock({
 }
 
 // ─── Rep entry modal ──────────────────────────────────────────────────────────
+// Supports two modes: "log" (the original behaviour — enter reps for a new
+// set, pre-filled with the target rep count) and "edit" (reselecting an
+// already-logged set — pre-filled with the existing rep count, and the
+// copy/button reflect that this corrects an existing entry rather than
+// creating a new one).
 
 function RepEntryModal({
   visible,
+  mode = "log",
   targetReps,
+  currentReps,
   weight,
   exerciseName,
   metric,
@@ -354,7 +367,9 @@ function RepEntryModal({
   onClose,
 }: {
   visible: boolean;
+  mode?: "log" | "edit";
   targetReps: number;
+  currentReps?: number;
   weight: number;
   exerciseName: string;
   metric: string | null;
@@ -367,10 +382,14 @@ function RepEntryModal({
 
   useEffect(() => {
     if (visible) {
-      setValue(String(targetReps));
+      setValue(
+        mode === "edit" && currentReps !== undefined
+          ? String(currentReps)
+          : String(targetReps),
+      );
       setIsFresh(true);
     }
-  }, [visible, targetReps]);
+  }, [visible, targetReps, currentReps, mode]);
 
   const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"];
   const unit = equipmentUnit ?? "kg";
@@ -435,7 +454,7 @@ function RepEntryModal({
               marginBottom: 4,
             }}
           >
-            Reps completed
+            {mode === "edit" ? "Change rep count" : "Reps completed"}
           </Text>
           <Text
             style={{
@@ -445,7 +464,9 @@ function RepEntryModal({
               marginBottom: 16,
             }}
           >
-            Target: {targetReps} reps @ {weightLabel}
+            {mode === "edit"
+              ? `Change rep count from ${currentReps} to ${value || "—"}`
+              : `Target: ${targetReps} reps @ ${weightLabel}`}
           </Text>
 
           <View style={{ alignItems: "center", marginBottom: 20 }}>
@@ -515,7 +536,7 @@ function RepEntryModal({
                 color: Colors.accentInk,
               }}
             >
-              Log Set
+              {mode === "edit" ? "Update Set" : "Log Set"}
             </Text>
           </Pressable>
         </Pressable>
@@ -533,6 +554,7 @@ function ExerciseBlock({
   loggedSetsForExercise,
   isOneRmTest,
   onLogSet,
+  onUpdateSet,
 }: {
   exercise: PlannedExercise;
   isOpen: boolean;
@@ -545,6 +567,7 @@ function ExerciseBlock({
     weight: number,
     reps: number,
   ) => void;
+  onUpdateSet: (setId: number, reps: number) => void;
 }) {
   const [repModalOpen, setRepModalOpen] = useState(false);
   const [activeSetNumber, setActiveSetNumber] = useState<number | null>(null);
@@ -552,6 +575,10 @@ function ExerciseBlock({
   const [activeWeight, setActiveWeight] = useState<number>(
     exercise.target_weight,
   );
+  // Set when reselecting an already-logged standard set to correct its rep
+  // count. Drop sets never populate this — editing is not supported for
+  // drop sets (no drop-set UI is pressable once logged, see below).
+  const [editingSet, setEditingSet] = useState<LoggedSet | null>(null);
 
   const isDropSet = exercise.set_style === "drop";
   const isDumbbell = isDumbbellExercise(exercise.exercise_name);
@@ -611,7 +638,16 @@ function ExerciseBlock({
     const alreadyLogged = loggedSetsForExercise.find(
       (s) => s.set_number === setNumber && s.drop_number === 0,
     );
-    if (alreadyLogged) return;
+    if (alreadyLogged) {
+      // Reselecting a completed set corrects its rep count rather than
+      // logging a new one.
+      setEditingSet(alreadyLogged);
+      setActiveSetNumber(setNumber);
+      setActiveDropNumber(0);
+      setActiveWeight(alreadyLogged.weight);
+      setRepModalOpen(true);
+      return;
+    }
     setActiveSetNumber(setNumber);
     setActiveDropNumber(0);
     setActiveWeight(exercise.target_weight);
@@ -619,11 +655,14 @@ function ExerciseBlock({
   }
 
   function handleRepConfirm(reps: number) {
-    if (activeSetNumber !== null) {
+    if (editingSet) {
+      onUpdateSet(editingSet.id, reps);
+    } else if (activeSetNumber !== null) {
       onLogSet(activeSetNumber, activeDropNumber, activeWeight, reps);
     }
     setRepModalOpen(false);
     setActiveSetNumber(null);
+    setEditingSet(null);
   }
 
   function dropLabel(dropNumber: number): string {
@@ -1082,7 +1121,9 @@ function ExerciseBlock({
       {!isOneRmTest && (
         <RepEntryModal
           visible={repModalOpen}
+          mode={editingSet ? "edit" : "log"}
           targetReps={isDropSet ? remainingReps : exercise.target_reps}
+          currentReps={editingSet?.reps}
           weight={activeWeight}
           exerciseName={exercise.exercise_name}
           metric={exercise.metric}
@@ -1091,6 +1132,7 @@ function ExerciseBlock({
           onClose={() => {
             setRepModalOpen(false);
             setActiveSetNumber(null);
+            setEditingSet(null);
           }}
         />
       )}
@@ -1140,7 +1182,7 @@ export default function ActiveSessionScreen() {
     reps: number,
   ) {
     try {
-      await logSet(sessionId, {
+      const created = await logSet(sessionId, {
         exercise_name: exercise.exercise_name,
         set_number: setNumber,
         drop_number: dropNumber,
@@ -1149,6 +1191,7 @@ export default function ActiveSessionScreen() {
       });
 
       const newEntry: LoggedSet = {
+        id: created.id,
         exercise_name: exercise.exercise_name,
         set_number: setNumber,
         drop_number: dropNumber,
@@ -1199,6 +1242,19 @@ export default function ActiveSessionScreen() {
       }
     } catch (err) {
       console.error("Failed to log set:", err);
+    }
+  }
+
+  // Corrects the rep count on an already-logged set. Only reps change —
+  // weight, set_number, and drop_number stay as originally logged.
+  async function handleUpdateSet(setId: number, reps: number) {
+    try {
+      const updated = await updateLoggedSet(sessionId, setId, reps);
+      setLoggedSets((prev) =>
+        prev.map((s) => (s.id === setId ? { ...s, reps: updated.reps } : s)),
+      );
+    } catch (err) {
+      console.error("Failed to update set:", err);
     }
   }
 
@@ -1376,6 +1432,7 @@ export default function ActiveSessionScreen() {
             onLogSet={(setNumber, dropNumber, weight, reps) =>
               handleLogSet(ex, setNumber, dropNumber, weight, reps)
             }
+            onUpdateSet={(setId, reps) => handleUpdateSet(setId, reps)}
           />
         ))}
 
